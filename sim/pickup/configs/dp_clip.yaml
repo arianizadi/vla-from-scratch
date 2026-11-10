@@ -1,0 +1,37 @@
+# Baseline: flow-matching diffusion policy, CLIP ViT-B/32 conditioning (image + text), 100M action transformer.
+# Dataset paths are supplied on the command line by scripts/train.sh.
+save_path: experiments/pickup
+wandb: false
+db_logging: false
+
+model:
+  <<: !include ../../../vla_foundry/config_presets/models/diffusion_policy.yaml
+
+data:
+  <<: !include ../../../vla_foundry/config_presets/data/diffusion_policy.yaml
+  dataset_modality:
+    - robotics
+  dataset_weighting:
+    - 1.0
+  camera_names:
+    - front
+    - wrist
+  image_indices:
+    - -1
+    - 0
+  action_fields:
+    - action
+  proprioception_fields:
+    - state
+  language_instruction_types:
+    - original
+  num_workers: 8
+  prefetch_factor: 4
+
+distributed:
+  fsdp: false
+
+hparams:
+  <<: !include ../../../vla_foundry/config_presets/hparams/diffusion_policy.yaml
+  per_gpu_batch_size: 64
+  global_batch_size: 64

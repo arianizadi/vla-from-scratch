@@ -1,0 +1,53 @@
+# VLA: pretrained Qwen3-VL-2B backbone + 100M flow-matching action transformer (the Foundry
+# "vlm_backbone" recipe, as in examples/training/vla_diffusion_redbellpepper_qwen_2b_thinking.sh).
+# An action token is appended to the prompt; its hidden states from the last 4 VLM layers
+# condition the action head. The whole model is fine-tuned.
+save_path: experiments/pickup
+wandb: false
+db_logging: false
+
+model:
+  <<: !include ../../../vla_foundry/config_presets/models/vla_diffusion_paligemma2.yaml
+  vision_language_backbone:
+    type: vlm_backbone
+    hf_pretrained: Qwen/Qwen3-VL-2B-Thinking
+    num_vlm_layers_to_use: 4
+
+data:
+  <<: !include ../../../vla_foundry/config_presets/data/vla_diffusion.yaml
+  processor: Qwen/Qwen3-VL-2B-Thinking
+  # Qwen's image processor takes pixel-count bounds, not height/width (the preset's PaliGemma-style
+  # `size: {height, width}` makes every batch fail). 224*224 = 50176 keeps the rendered resolution:
+  # 14x14 patches of 16 px, merged 2x2 -> 49 tokens per image, 196 for the 4 images.
+  processor_kwargs:
+    size:
+      shortest_edge: 50176
+      longest_edge: 50176
+  img_num_tokens: 49
+  dataset_modality:
+    - robotics
+  dataset_weighting:
+    - 1.0
+  camera_names:
+    - front
+    - wrist
+  image_indices:
+    - -1
+    - 0
+  action_fields:
+    - action
+  proprioception_fields:
+    - state
+  language_instruction_types:
+    - original
+  num_workers: 8
+  prefetch_factor: 4
+
+distributed:
+  fsdp: false
+
+hparams:
+  <<: !include ../../../vla_foundry/config_presets/hparams/diffusion_policy.yaml
+  lr: 1e-4
+  per_gpu_batch_size: 16
+  global_batch_size: 16

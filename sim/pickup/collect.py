@@ -1,0 +1,148 @@
+"""Collect scripted-expert demonstrations and write them as a LeRobot v2.0 dataset.
+
+The layout (meta/info.json, meta/episodes.jsonl, meta/tasks.jsonl, data/chunk-000/episode_*.parquet
+with inline JPEG image columns) is what vla_foundry's `--type lerobot` preprocessing converter reads.
+
+Per-frame columns: front, wrist (JPEG bytes), state [8], action [8], plus LeRobot bookkeeping.
+action[t] is the command applied after observing frame t.
+
+  python -m sim.pickup.collect --task pick_cube --episodes 200 --out data/lerobot/pick_cube
+"""
+
+import argparse
+import io
+import json
+import multiprocessing as mp
+import time
+from pathlib import Path
+
+import numpy as np
+import pyarrow as pa
+import pyarrow.parquet as pq
+from PIL import Image
+
+from .env import CONTROL_HZ, PickupEnv
+from .expert import ScriptedExpert
+
+CAMERAS = ("front", "wrist")
+
+
+def _jpeg(img, quality=95):
+    buf = io.BytesIO()
+    Image.fromarray(img).save(buf, format="JPEG", quality=quality)
+    return buf.getvalue()
+
+
+def _worker(args):
+    task, seeds, out_dir, worker_id = args
+    env = PickupEnv(task)
+    expert = ScriptedExpert(env, seed=worker_id)
+    results = []
+    for seed in seeds:
+        obs = env.reset(seed=seed)
+        expert.reset()
+        frames = {c: [] for c in CAMERAS}
+        states, actions = [], []
+        done, info = False, {}
+        while not done:
+            action = expert.act()
+            for c in CAMERAS:
+                frames[c].append(_jpeg(obs[c]))
+            states.append(obs["state"])
+            actions.append(action)
+            obs, done, info = env.step(action)
+        if not info["success"]:
+            results.append(dict(seed=seed, success=False))
+            continue
+        tmp = Path(out_dir) / "tmp" / f"seed_{seed:07d}.parquet"
+        table = pa.table(
+            {
+                **{c: pa.array([{"bytes": b, "path": None} for b in frames[c]]) for c in CAMERAS},
+                "state": pa.array([s.tolist() for s in states], type=pa.list_(pa.float32())),
+                "action": pa.array([a.tolist() for a in actions], type=pa.list_(pa.float32())),
+            }
+        )
+        pq.write_table(table, tmp)
+        results.append(dict(seed=seed, success=True, length=len(actions), instruction=env.instruction, path=str(tmp)))
+    env.close()
+    return results
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--task", default="pick_cube")
+    ap.add_argument("--episodes", type=int, default=200, help="number of successful episodes to keep")
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--seed", type=int, default=0, help="first environment seed (training seeds are < 1_000_000)")
+    ap.add_argument("--workers", type=int, default=8)
+    args = ap.parse_args()
+
+    out = Path(args.out)
+    (out / "tmp").mkdir(parents=True, exist_ok=True)
+    (out / "meta").mkdir(exist_ok=True)
+    (out / "data" / "chunk-000").mkdir(parents=True, exist_ok=True)
+
+    t0 = time.time()
+    kept, attempted, next_seed = [], 0, args.seed
+    with mp.get_context("spawn").Pool(args.workers) as pool:
+        while len(kept) < args.episodes:
+            need = args.episodes - len(kept)
+            seeds = list(range(next_seed, next_seed + max(need + need // 10, args.workers)))
+            next_seed = seeds[-1] + 1
+            chunks = [(args.task, seeds[i :: args.workers], str(out), i) for i in range(args.workers)]
+            for res in pool.map(_worker, chunks):
+                attempted += len(res)
+                kept.extend(r for r in res if r["success"])
+    kept = sorted(kept, key=lambda r: r["seed"])[: args.episodes]
+
+    tasks, episodes, index = {}, [], 0
+    for ep_idx, r in enumerate(kept):
+        task_idx = tasks.setdefault(r["instruction"], len(tasks))
+        table = pq.read_table(r["path"])
+        n = table.num_rows
+        table = table.append_column("timestamp", pa.array(np.arange(n, dtype=np.float32) / CONTROL_HZ))
+        table = table.append_column("frame_index", pa.array(np.arange(n, dtype=np.int64)))
+        table = table.append_column("episode_index", pa.array(np.full(n, ep_idx, dtype=np.int64)))
+        table = table.append_column("index", pa.array(np.arange(index, index + n, dtype=np.int64)))
+        table = table.append_column("task_index", pa.array(np.full(n, task_idx, dtype=np.int64)))
+        pq.write_table(table, out / "data" / "chunk-000" / f"episode_{ep_idx:06d}.parquet")
+        episodes.append(dict(episode_index=ep_idx, tasks=[r["instruction"]], length=n, seed=r["seed"]))
+        index += n
+    for f in (out / "tmp").glob("*.parquet"):
+        f.unlink()
+    (out / "tmp").rmdir()
+
+    with open(out / "meta" / "episodes.jsonl", "w") as f:
+        f.writelines(json.dumps(e) + "\n" for e in episodes)
+    with open(out / "meta" / "tasks.jsonl", "w") as f:
+        f.writelines(json.dumps(dict(task_index=i, task=t)) + "\n" for t, i in tasks.items())
+    info = dict(
+        codebase_version="v2.0",
+        robot_type="franka_panda_mujoco",
+        sim_task=args.task,
+        fps=CONTROL_HZ,
+        total_episodes=len(episodes),
+        total_frames=index,
+        total_tasks=len(tasks),
+        expert_success_rate=len([1 for _ in kept]) / max(attempted, 1) if attempted else None,
+        expert_attempted=attempted,
+        data_path="data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
+        features={
+            "front": dict(dtype="image", shape=[224, 224, 3]),
+            "wrist": dict(dtype="image", shape=[224, 224, 3]),
+            "state": dict(dtype="float32", shape=[8], names=["q1", "q2", "q3", "q4", "q5", "q6", "q7", "gripper_open"]),
+            "action": dict(
+                dtype="float32", shape=[8], names=["q1", "q2", "q3", "q4", "q5", "q6", "q7", "gripper_open"]
+            ),
+        },
+    )
+    with open(out / "meta" / "info.json", "w") as f:
+        json.dump(info, f, indent=2)
+    print(
+        f"wrote {len(episodes)} episodes / {index} frames to {out} "
+        f"(expert attempted {attempted}, {time.time() - t0:.0f}s)"
+    )
+
+
+if __name__ == "__main__":
+    main()

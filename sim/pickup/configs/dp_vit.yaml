@@ -1,0 +1,55 @@
+# Baseline: flow-matching diffusion policy with a small ViT trained from scratch. Unlike the CLIP
+# baseline (one pooled vector per image) every 16x16 image patch is a conditioning token, so the
+# action transformer can localise objects. No language input (the passthrough processor drops text).
+save_path: experiments/pickup
+wandb: false
+db_logging: false
+
+model:
+  <<: !include ../../../vla_foundry/config_presets/models/diffusion_policy.yaml
+  vision_language_backbone:
+    type: vit_backbone
+    img_size: 224
+    patch_size: 16
+    hidden_dim: 256
+    inter_dim: 1024
+    n_heads: 4
+    n_layers: 6
+  transformer:
+    type: transformer
+    hidden_dim: 256
+    n_heads: 4
+    n_layers: 6
+    max_seq_len: 2048
+    is_causal: false
+
+data:
+  <<: !include ../../../vla_foundry/config_presets/data/diffusion_policy.yaml
+  processor: "none"
+  image_size: 224
+  dataset_modality:
+    - robotics
+  dataset_weighting:
+    - 1.0
+  camera_names:
+    - front
+    - wrist
+  image_indices:
+    - -1
+    - 0
+  action_fields:
+    - action
+  proprioception_fields:
+    - state
+  language_instruction_types:
+    - original
+  num_workers: 8
+  prefetch_factor: 4
+
+distributed:
+  fsdp: false
+
+hparams:
+  <<: !include ../../../vla_foundry/config_presets/hparams/diffusion_policy.yaml
+  per_gpu_batch_size: 64
+  global_batch_size: 64
