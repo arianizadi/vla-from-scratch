@@ -82,6 +82,7 @@ def main():
         seed = args.seed_start + ep
         obs = env.reset(seed=seed)
         prev_obs, queue, frames = obs, [], []
+        wrong_object = False  # a non-target object was lifted at any point in the episode
         done, info = False, {}
         while not done:
             if not queue:
@@ -106,6 +107,7 @@ def main():
                 frames.append(np.concatenate([obs["front"], obs["wrist"]], axis=1))
             prev_obs = obs
             obs, done, info = env.step(queue.pop(0))
+            wrong_object = wrong_object or bool(info["wrong_object"])
         episodes.append(
             dict(
                 seed=seed,
@@ -113,7 +115,7 @@ def main():
                 instruction=env.instruction,
                 success=bool(info["success"]),
                 steps=env.steps,
-                wrong_object=bool(info["wrong_object"]),
+                wrong_object=wrong_object,
             )
         )
         per_target[env.target][0] += int(info["success"])
