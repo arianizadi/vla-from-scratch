@@ -1,7 +1,11 @@
 # VLA: pretrained Qwen3-VL-2B backbone + 100M flow-matching action transformer (the Foundry
 # "vlm_backbone" recipe, as in examples/training/vla_diffusion_redbellpepper_qwen_2b_thinking.sh).
 # An action token is appended to the prompt; its hidden states from the last 4 VLM layers
-# condition the action head. The whole model is fine-tuned.
+# condition the action head.
+#
+# Fine-tuning all 2.2B parameters needs ~36 GB (weights + gradients + AdamW state), so on a
+# 24 GB GPU only the last 4 language-model layers (the ones whose hidden states are read out) and
+# the action head are trained; the vision tower and lower layers stay frozen.
 save_path: experiments/pickup
 wandb: false
 db_logging: false
@@ -12,6 +16,7 @@ model:
     type: vlm_backbone
     hf_pretrained: Qwen/Qwen3-VL-2B-Thinking
     num_vlm_layers_to_use: 4
+    num_trainable_vlm_layers: 4
 
 data:
   <<: !include ../../../vla_foundry/config_presets/data/vla_diffusion.yaml

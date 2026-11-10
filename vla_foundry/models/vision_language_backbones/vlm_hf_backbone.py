@@ -1,6 +1,9 @@
 """VLM backbone wrapper for action policy conditioning."""
 
+import logging
+
 import torch
+from torch import nn
 
 from vla_foundry.models.model_outputs.backbone_output import VisionLanguageBackboneOutput
 from vla_foundry.models.vision_language_backbones.base import BaseBackboneWrapper
@@ -35,6 +38,41 @@ class VLMHFBackboneWrapper(BaseBackboneWrapper):
             embeddings = self._model.model.get_input_embeddings()
             mean_emb = embeddings.weight[:-1].mean(dim=0)
             embeddings.weight[-1] = mean_emb
+
+        if backbone_params.num_trainable_vlm_layers is not None:
+            self._train_only_last_layers(backbone_params.num_trainable_vlm_layers)
+
+    def _train_only_last_layers(self, num_layers: int) -> None:
+        """Freeze the VLM except the last `num_layers` language-model layers and the final norm."""
+        language_model, layers = None, None
+        for name, module in self._model.model.named_modules():
+            leaf = name.rsplit(".", 1)[-1]
+            if leaf in ("language_model", "text_model") and isinstance(getattr(module, "layers", None), nn.ModuleList):
+                language_model, layers = module, module.layers
+                break
+        if layers is None:
+            raise ValueError(
+                f"num_trainable_vlm_layers is set but no language-model layer stack was found in "
+                f"{type(self._model.model).__name__}."
+            )
+        if not 0 <= num_layers <= len(layers):
+            raise ValueError(f"num_trainable_vlm_layers must be in [0, {len(layers)}], got {num_layers}.")
+
+        for param in self._model.parameters():
+            param.requires_grad = False
+        trainable = list(layers[len(layers) - num_layers :]) if num_layers > 0 else []
+        final_norm = getattr(language_model, "norm", None)
+        if num_layers > 0 and isinstance(final_norm, nn.Module):
+            trainable.append(final_norm)
+        for module in trainable:
+            for param in module.parameters():
+                param.requires_grad = True
+        n_train = sum(p.numel() for p in self._model.parameters() if p.requires_grad)
+        n_total = sum(p.numel() for p in self._model.parameters())
+        logging.info(
+            f"VLM backbone: training last {num_layers}/{len(layers)} language-model layers "
+            f"({n_train / 1e6:.0f}M of {n_total / 1e6:.0f}M parameters)."
+        )
 
     def get_conditioning_embeddings_dim(self) -> int:
         """Return dimension for condition embeddings (with layers concatenated)."""

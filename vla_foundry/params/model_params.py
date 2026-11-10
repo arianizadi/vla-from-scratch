@@ -236,6 +236,10 @@ class CLIPBackboneParams(BackboneParams, CLIPHFParams):
 class VLMBackboneParams(BackboneParams, VLMHFParams):
     # Number of last VLM layers to extract hidden states from for diffusion
     num_vlm_layers_to_use: int = field(default=4)
+    # If set, freeze the VLM except its last N language-model layers (and the final norm).
+    # None trains the whole VLM. Lets a multi-billion-parameter backbone be fine-tuned on a
+    # single 24 GB GPU, where gradients + optimizer state for every weight do not fit.
+    num_trainable_vlm_layers: int | None = field(default=None)
 
 
 @register_model_params("vlm_foundry_backbone")
