@@ -39,6 +39,9 @@ class GraspProbe:
             close_xy_err_nearest=dist[nearest],
             close_z_above_grasp=float(tcp[2] - max(env.object_pos(env.target)[2], 0.018)),
             close_yaw_err_target=yaw_err,
+            # Table-plane positions (metres), enough to draw a top-down map of the attempt.
+            close_tcp_xy=[float(tcp[0]), float(tcp[1])],
+            close_object_xy={n: [float(v) for v in env.object_pos(n)[:2]] for n in env.active},
         )
 
     def result(self):
@@ -51,6 +54,8 @@ class GraspProbe:
             close_xy_err_nearest=None,
             close_z_above_grasp=None,
             close_yaw_err_target=None,
+            close_tcp_xy=None,
+            close_object_xy=None,
         )
 
 
