@@ -41,6 +41,11 @@ Closed-loop success on layouts the policy never saw.
 
 Details and the open questions are in the [field notes](tutorial/notes.md).
 
+## Website
+
+The chapters and their animated explanations are being built as a site in a separate repository:
+[vla-from-scratch-site](https://github.com/arianizadi/vla-from-scratch-site).
+
 ## Getting started
 
 The pick-up sim has its own [README](sim/pickup/README.md) with the commands to collect
