@@ -4,7 +4,7 @@ Uses the held-out captions that list objects "from left to right:"; the VLM is p
 caption up to the colon and must complete it (greedy decoding). Exact match needs every object
 identified and ordered correctly. Runs in the Foundry environment:
 
-    vla-foundry python -m sim.pickup.vlm_check --exp experiments/pickup/custom_vlm \
+    .venv/bin/python -m sim.pickup.vlm_check --exp experiments/pickup/custom_vlm \
         --shards data/custom/sim_captions_heldout
 """
 

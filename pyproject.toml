@@ -57,6 +57,11 @@ preprocessing = [
     "imageio[ffmpeg]>=2.37.0",
 ]
 
+# Add `--group sim` (together with `--group preprocessing`) for the MuJoCo pick-up sim in sim/pickup.
+sim = [
+    "mujoco>=3.3",
+]
+
 # Add `--group tutorials` to install tutorial deps (PushT sim, Jupyter kernel, etc.)
 tutorials = [
     "gym-pusht",

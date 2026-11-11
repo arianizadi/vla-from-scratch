@@ -146,7 +146,11 @@ class RoboticsProcessor:
 
         if proprioception_fields:
             proprioception_data = []
-            num_past_steps = self.data_params.lowdim_past_timesteps or self.normalizer.lowdim_past_timesteps
+            # `is None`, not `or`: 0 past steps is a valid setting. Treating it as unset would fall back
+            # to the statistics' past steps and hand the policy the state one step into the future.
+            num_past_steps = self.data_params.lowdim_past_timesteps
+            if num_past_steps is None:
+                num_past_steps = self.normalizer.lowdim_past_timesteps
             for key in proprioception_fields:
                 proprioception_data.append(batch["lowdim"][key][:, : num_past_steps + 1])
             batch["proprioception"] = torch.cat(proprioception_data, dim=-1)

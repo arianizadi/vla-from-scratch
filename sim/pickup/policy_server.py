@@ -66,7 +66,7 @@ class Policy:
     @torch.no_grad()
     def infer(self, images: dict, state, prev_action, instruction: str, num_flow_steps: int = 10):
         """images: {"<camera>_t<idx>": jpeg bytes}; state: [past+1, D]; prev_action: [D] last executed command."""
-        state = np.asarray(state, dtype=np.float32)
+        state = np.asarray(state, dtype=np.float32)[-(self.past + 1) :]  # no-history policies take only the last
         prev_action = np.asarray(prev_action, dtype=np.float32)
         action_seq = np.zeros((self.total, prev_action.shape[-1]), dtype=np.float32)
         action_seq[: self.past] = prev_action

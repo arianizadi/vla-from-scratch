@@ -1,0 +1,62 @@
+# dp_vit_lang.yaml without history: the policy sees one frame per camera and the current joint state,
+# and is not given its previous action (lowdim_past_timesteps: 0, image_indices: [0]).
+# Why: with the previous action as an input, "keep doing what I was doing" predicts the expert almost
+# perfectly from the second step on, so only the first window of each demonstration needs the image or
+# the instruction. Without it every window has to find the named object.
+save_path: experiments/pickup
+wandb: false
+db_logging: false
+
+model:
+  <<: !include ../../../vla_foundry/config_presets/models/diffusion_policy.yaml
+  vision_language_backbone:
+    type: vit_backbone
+    img_size: 224
+    patch_size: 16
+    hidden_dim: 256
+    inter_dim: 1024
+    n_heads: 4
+    n_layers: 6
+    text_tokens: 32
+    text_vocab_size: 49280
+  transformer:
+    type: transformer
+    hidden_dim: 256
+    n_heads: 4
+    n_layers: 6
+    max_seq_len: 2048
+    is_causal: false
+
+data:
+  <<: !include ../../../vla_foundry/config_presets/data/diffusion_policy.yaml
+  processor: simple_vlm
+  processor_kwargs: {}
+  image_size: 224
+  img_num_tokens: 1
+  seq_len: 64
+  dataset_modality:
+    - robotics
+  dataset_weighting:
+    - 1.0
+  camera_names:
+    - front
+    - wrist
+  image_indices:
+    - 0
+  lowdim_past_timesteps: 0
+  action_fields:
+    - action
+  proprioception_fields:
+    - state
+  language_instruction_types:
+    - original
+  num_workers: 8
+  prefetch_factor: 4
+
+distributed:
+  fsdp: false
+
+hparams:
+  <<: !include ../../../vla_foundry/config_presets/hparams/diffusion_policy.yaml
+  per_gpu_batch_size: 64
+  global_batch_size: 64

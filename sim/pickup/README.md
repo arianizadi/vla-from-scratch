@@ -33,32 +33,44 @@ sim/pickup/
   env.py             PickupEnv: scene construction (MjSpec), reset/step, cameras, success test
   expert.py          scripted top-down grasp expert (Cartesian plan + damped-least-squares IK)
   collect.py         run the expert, write a LeRobot v2.0 dataset (inline JPEG parquet)
-  policy_server.py   serve action chunks from a Foundry checkpoint (runs in the Foundry env)
-  eval.py            closed-loop evaluation client (runs in the simulator env)
+  policy_server.py   serve action chunks from a checkpoint over a local socket
+  eval.py            closed-loop evaluation client; also runs the scripted expert (--expert)
+  diagnostics.py     where the gripper was, relative to the objects, when it first closed
+  grasp_tolerance.py grasp success against a controlled placement error, per object
   open_loop_check.py compare predicted chunks with expert actions on recorded samples
+  caption_data.py    captioned scene renders for vision-language pretraining
+  vlm_check.py       held-out captioning check for a trained VLM
   smoke_test.py      expert-only sanity check
   configs/           preprocessing + training configs
   scripts/           fetch_assets.sh, make_dataset.sh, train.sh, train_resilient.sh (auto-resume), eval.sh
   assets/            Blender source, exported meshes; third_party/ (Panda model, fetched, not committed)
 ```
 
-Two Python environments are involved and never need to be merged:
+## Setup
 
-- the **simulator** side (`env.py`, `expert.py`, `collect.py`, `eval.py`) needs only
-  `mujoco numpy pillow pyarrow av`; for example a small separate virtual environment.
-- the **Foundry** side (`policy_server.py`, preprocessing, training) runs in the Foundry
-  environment; for example a container launcher.
+One environment runs everything (simulator, preprocessing, training, policy server):
 
-Set `PICKUP_SIM_PYTHON` to point the scripts at a different simulator interpreter.
+```bash
+uv sync --group preprocessing --group sim
+sim/pickup/scripts/fetch_assets.sh          # once: Panda model from MuJoCo Menagerie
+```
+
+Rendering is headless through EGL (`MUJOCO_GL=egl`, set by the scripts), so no display is needed.
+
+The scripts read a few environment variables, documented in `scripts/_common.sh`:
+
+| Variable | Use |
+|---|---|
+| `PICKUP_GPU` | GPU index (as `nvidia-smi` shows it) for compute and rendering. Lets several jobs run side by side on a multi-GPU machine |
+| `PICKUP_WORKERS` | simulator processes and preprocessing CPUs for `make_dataset.sh` (default 8) |
+| `PICKUP_FOUNDRY_PYTHON`, `PICKUP_SIM_PYTHON`, `PICKUP_ROOT` | run the training side or the simulator side with a different interpreter, for example inside a container |
 
 ## Quickstart
 
 All commands run from the repository root.
 
 ```bash
-sim/pickup/scripts/fetch_assets.sh                      # once: Panda model from MuJoCo Menagerie
-
-# 1. demonstrations -> shards   (1000 episodes: ~40 s to simulate, ~4 min to shard)
+# 1. demonstrations -> shards   (1000 episodes)
 sim/pickup/scripts/make_dataset.sh pick_cube 1000 pick_cube_1k
 
 # 2. train                      (config, dataset, run name, total training samples)
@@ -68,15 +80,27 @@ sim/pickup/scripts/train.sh dp_vit pick_cube_1k dp_vit_pick_cube_1k 1500000
 sim/pickup/scripts/eval.sh experiments/pickup/dp_vit_pick_cube_1k pick_cube 50
 ```
 
-`eval.sh` writes `results/pickup/<run>/<task>/results.json` (success rate with a Wilson 95%
-interval, per-object breakdown, wrong-object rate, inference latency) and a few rollout videos.
-Useful knobs: `--exec_horizon` (actions executed per predicted chunk, default 8), `--flow_steps`
-(denoising steps, default 10), `--seed_start`, `--videos`.
+`train_resilient.sh` takes the same arguments as `train.sh` and restarts the run from its newest
+checkpoint if it dies or stops making progress. Use it for anything longer than a few minutes.
 
-To check a checkpoint without the simulator:
+`eval.sh` writes `results/pickup/<run>/<task>/results.json` and a few rollout videos. The results
+hold the success rate with a Wilson 95% interval, a per-object breakdown, and grasp diagnostics:
+whether the gripper closed, which object it was nearest to when it did, and how far it missed by.
+Useful knobs: `--exec_horizon` (actions executed per predicted chunk, default 8), `--flow_steps`
+(denoising steps, default 10), `--seed_start`, `--videos`. `PICKUP_WEIGHTS=raw|ema` picks the
+trained or the averaged weights of a run trained with `--ema.enabled True`.
+
+Three checks that do not need a trained policy, or do not need the simulator:
 
 ```bash
-vla-foundry python -m sim.pickup.open_loop_check \
+# the scripted expert through the same evaluation loop: is the task itself sound?
+.venv/bin/python -m sim.pickup.eval --task pick_target --episodes 100 --expert --out results/pickup/expert/pick_target
+
+# how much placement error does a grasp tolerate, per object?
+.venv/bin/python -m sim.pickup.grasp_tolerance --out results/pickup/grasp_tolerance.json
+
+# does a checkpoint reproduce recorded expert actions? (no simulator involved)
+.venv/bin/python -m sim.pickup.open_loop_check \
     --checkpoint_dir experiments/pickup/<run> --shards data/preprocessed/<dataset>/shards
 ```
 
@@ -92,9 +116,10 @@ vla-foundry python -m sim.pickup.open_loop_check \
   `add_action_and_proprioception_fields` calls as the training dataloader, then denormalizes the
   predicted chunk with the run's saved normalizer. It reads everything from the experiment
   directory (`config.yaml`, `config_processor.yaml`, `stats.json`, latest checkpoint or EMA).
-- A container launcher may give the container only 2 GB of shared memory. With the passthrough
-  processor a batch of 64 is ~150 MB, so keep `data.num_workers` at 8; 16 workers overflows it and
-  the run dies without a traceback.
+- Data-loader workers hand batches to the trainer through shared memory (`/dev/shm`). With the
+  passthrough processor a batch of 64 is ~150 MB. If shared memory is small (containers often get
+  64 MB to 2 GB), too many workers or too much prefetch overflows it and the run dies without a
+  traceback; lower `data.num_workers` and `data.prefetch_factor`.
 
 ## Results
 
