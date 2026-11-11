@@ -10,6 +10,7 @@
 #   PICKUP_SIM_PYTHON      interpreter for the simulator side (default: same as above).
 #   PICKUP_ROOT            repository path as PICKUP_FOUNDRY_PYTHON sees it (default: the repository
 #                          root; set it when that interpreter runs in a container).
+#   PICKUP_CPU_THREADS     CPU threads per process (default 4), see below.
 #   PICKUP_GPU             GPU index, as nvidia-smi numbers them, for both compute and rendering.
 #                          Use it on multi-GPU machines to run several jobs side by side, or to keep
 #                          a job off GPU 0. It sets CUDA_VISIBLE_DEVICES (with PCI bus ordering, so
@@ -35,6 +36,14 @@ fi
 root=${PICKUP_ROOT:-$PWD}
 
 export MUJOCO_GL=${MUJOCO_GL:-egl}
+
+# CPU threads per process (PICKUP_CPU_THREADS, default 4). Numerical libraries start one thread per
+# core by default. On a many-core machine that is hundreds of mostly spinning threads per process,
+# and a dozen policy servers are enough to saturate it. The work here is GPU-bound or
+# single-threaded, so a few threads lose nothing.
+threads=${PICKUP_CPU_THREADS:-4}
+export OMP_NUM_THREADS=${OMP_NUM_THREADS:-$threads} MKL_NUM_THREADS=${MKL_NUM_THREADS:-$threads}
+export OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS:-$threads} NUMEXPR_NUM_THREADS=${NUMEXPR_NUM_THREADS:-$threads}
 if [ -n "${PICKUP_GPU:-}" ]; then
   export CUDA_DEVICE_ORDER=PCI_BUS_ID
   export CUDA_VISIBLE_DEVICES=$PICKUP_GPU

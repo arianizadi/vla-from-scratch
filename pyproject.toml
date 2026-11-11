@@ -60,6 +60,7 @@ preprocessing = [
 # Add `--group sim` (together with `--group preprocessing`) for the MuJoCo pick-up sim in sim/pickup.
 sim = [
     "mujoco>=3.3",
+    "rich>=13.7",  # terminal dashboard (sim/pickup/monitor.py)
 ]
 
 # Add `--group tutorials` to install tutorial deps (PushT sim, Jupyter kernel, etc.)

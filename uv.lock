@@ -4183,6 +4183,7 @@ sagemaker = [
 ]
 sim = [
     { name = "mujoco" },
+    { name = "rich" },
 ]
 tutorials = [
     { name = "anywidget" },
@@ -4265,7 +4266,10 @@ preprocessing = [
     { name = "pyyaml", specifier = ">=6.0.1" },
 ]
 sagemaker = [{ name = "sagemaker", specifier = ">=2.251.0,<3.0.0" }]
-sim = [{ name = "mujoco", specifier = ">=3.3" }]
+sim = [
+    { name = "mujoco", specifier = ">=3.3" },
+    { name = "rich", specifier = ">=13.7" },
+]
 tutorials = [
     { name = "anywidget" },
     { name = "av", specifier = ">=14.0.0" },
