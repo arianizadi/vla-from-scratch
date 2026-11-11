@@ -1,0 +1,64 @@
+# dp_vit.yaml plus language: the same small from-scratch ViT whose 16x16 patches are conditioning
+# tokens for the flow-matching action transformer, with the instruction's tokens added as learned
+# embeddings (vit_backbone text_tokens). The action head therefore sees both where things are
+# (784 patch tokens) and which object was asked for (32 text slots). Compare with the VLA configs,
+# whose action head receives one pooled vector from the VLM.
+# The simple_vlm processor supplies the tokenizer and scales images to [-1, 1]; img_num_tokens: 1
+# keeps a single <image> placeholder per image in the prompt (the ViT takes the pixels directly).
+save_path: experiments/pickup
+wandb: false
+db_logging: false
+
+model:
+  <<: !include ../../../vla_foundry/config_presets/models/diffusion_policy.yaml
+  vision_language_backbone:
+    type: vit_backbone
+    img_size: 224
+    patch_size: 16
+    hidden_dim: 256
+    inter_dim: 1024
+    n_heads: 4
+    n_layers: 6
+    text_tokens: 32
+    text_vocab_size: 49280
+  transformer:
+    type: transformer
+    hidden_dim: 256
+    n_heads: 4
+    n_layers: 6
+    max_seq_len: 2048
+    is_causal: false
+
+data:
+  <<: !include ../../../vla_foundry/config_presets/data/diffusion_policy.yaml
+  processor: simple_vlm
+  processor_kwargs: {}
+  image_size: 224
+  img_num_tokens: 1
+  seq_len: 64
+  dataset_modality:
+    - robotics
+  dataset_weighting:
+    - 1.0
+  camera_names:
+    - front
+    - wrist
+  image_indices:
+    - -1
+    - 0
+  action_fields:
+    - action
+  proprioception_fields:
+    - state
+  language_instruction_types:
+    - original
+  num_workers: 8
+  prefetch_factor: 4
+
+distributed:
+  fsdp: false
+
+hparams:
+  <<: !include ../../../vla_foundry/config_presets/hparams/diffusion_policy.yaml
+  per_gpu_batch_size: 64
+  global_batch_size: 64

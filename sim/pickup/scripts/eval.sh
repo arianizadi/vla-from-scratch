@@ -10,8 +10,9 @@ sim_python=${PICKUP_SIM_PYTHON:-python3}
 out=${PICKUP_OUT:-results/pickup/$(basename "$exp")/$task}
 mkdir -p "$out"
 # PICKUP_CHECKPOINT=<path to .pt> evaluates a specific checkpoint instead of the latest one.
+# PICKUP_WEIGHTS=raw|ema picks the trained or the averaged weights of a run trained with EMA (default: EMA).
 vla-foundry python -m sim.pickup.policy_server --checkpoint_dir "$exp" --port "$port" \
-  ${PICKUP_CHECKPOINT:+--checkpoint "$PICKUP_CHECKPOINT"} \
+  ${PICKUP_CHECKPOINT:+--checkpoint "$PICKUP_CHECKPOINT"} ${PICKUP_WEIGHTS:+--weights "$PICKUP_WEIGHTS"} \
   </dev/null >"$out/policy_server.log" 2>&1 &
 server=$!
 trap 'kill $server 2>/dev/null || true' EXIT

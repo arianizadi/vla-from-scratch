@@ -1,0 +1,67 @@
+# vla_custom.yaml with one change: the action head is conditioned on the hidden states of every image
+# and text token of the VLM (conditioning: all_tokens) instead of on a single action-token vector.
+# With one vector the from-scratch VLAs never localised anything on pick_target (they closed the
+# gripper ~9 cm from the nearest object and reached the named object at chance, see RESULTS.md).
+# Pass the VLM with --model.vision_language_backbone.resume_from_checkpoint <.../checkpoint_N.pt>.
+save_path: experiments/pickup
+wandb: false
+db_logging: false
+
+model:
+  type: diffusion_policy
+  vision_language_backbone:
+    type: vlm_foundry_backbone
+    num_vlm_layers_to_use: 4
+    conditioning: all_tokens
+    # 3 prompt tokens + 4 images x 256 + the instruction (<= 8 tokens here); fixed so that the
+    # sequence the action head sees has the same length in training batches and when served.
+    conditioning_len: 1040
+  transformer:
+    type: transformer
+    hidden_dim: 256
+    n_heads: 4
+    n_layers: 6
+    max_seq_len: 2048
+    is_causal: false
+  noise_scheduler:
+    num_timesteps: 1000
+    beta_start: 0.0001
+    beta_end: 0.02
+    clamp_range: [-3, 3]
+  use_flow_matching_scheduler: true
+
+data:
+  <<: !include ../../../vla_foundry/config_presets/data/vla_diffusion.yaml
+  processor: simple_vlm
+  processor_kwargs: {}
+  image_size: 224
+  img_num_tokens: 256
+  # 4 images x 256 tokens + the instruction; inputs are padded to this length.
+  seq_len: 1088
+  dataset_modality:
+    - robotics
+  dataset_weighting:
+    - 1.0
+  camera_names:
+    - front
+    - wrist
+  image_indices:
+    - -1
+    - 0
+  action_fields:
+    - action
+  proprioception_fields:
+    - state
+  language_instruction_types:
+    - original
+  num_workers: 8
+  prefetch_factor: 2
+
+distributed:
+  fsdp: false
+
+hparams:
+  <<: !include ../../../vla_foundry/config_presets/hparams/diffusion_policy.yaml
+  lr: 3e-4
+  per_gpu_batch_size: 32
+  global_batch_size: 32

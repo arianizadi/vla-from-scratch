@@ -38,11 +38,16 @@ def latest_checkpoint(checkpoint_dir: str, prefix: str) -> str:
 
 
 class Policy:
-    def __init__(self, checkpoint_dir: str, checkpoint: str | None, device: str):
+    def __init__(self, checkpoint_dir: str, checkpoint: str | None, device: str, weights: str = "auto"):
         self.cfg = load_experiment_params_from_yaml(os.path.join(checkpoint_dir, "config.yaml"), localize_params=True)
         self.device = torch.device(device)
         self.model = create_model(self.cfg.model, load_pretrained=False)
-        use_ema = bool(self.cfg.ema.enabled)
+        # weights: "ema" / "raw" pick the averaged or the directly trained weights of a run trained with
+        # --ema.enabled True (both are saved, as ema_N.pt and checkpoint_N.pt); "auto" = EMA when available.
+        use_ema = bool(self.cfg.ema.enabled) if weights == "auto" else weights == "ema"
+        if checkpoint is not None:  # accept either file of a pair and serve the requested kind
+            name = re.sub(r"^(ema|checkpoint)_", "ema_" if use_ema else "checkpoint_", os.path.basename(checkpoint))
+            checkpoint = os.path.join(os.path.dirname(checkpoint), name)
         path = checkpoint or latest_checkpoint(checkpoint_dir, "ema" if use_ema else "checkpoint")
         (load_ema_checkpoint if use_ema else load_model_checkpoint)(self.model, path)
         self.checkpoint_path = path
@@ -94,9 +99,10 @@ def main():
     ap.add_argument("--checkpoint", default=None, help="explicit .pt path; default = latest (EMA if enabled)")
     ap.add_argument("--port", type=int, default=6200)
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--weights", default="auto", choices=["auto", "ema", "raw"])
     args = ap.parse_args()
 
-    policy = Policy(args.checkpoint_dir, args.checkpoint, args.device)
+    policy = Policy(args.checkpoint_dir, args.checkpoint, args.device, args.weights)
     n_params = sum(p.numel() for p in policy.model.parameters())
     print(f"[policy_server] loaded {policy.checkpoint_path} ({n_params / 1e6:.1f}M params)", flush=True)
     with Listener(("127.0.0.1", args.port), authkey=AUTHKEY) as listener:

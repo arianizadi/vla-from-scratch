@@ -66,8 +66,10 @@ def caption(env, camera, rng):
         return f"{where} with {join([labels[i] for i in order])}. the {seen[0][2]} is leftmost."
     i, j = sorted(rng.choice(len(seen), size=2, replace=False))
     a, b = (seen[i][2], seen[j][2])
-    return f"{where}. the {a} is to the left of the {b}." if rng.random() < 0.5 else (
-        f"{where}. the {b} is to the right of the {a}."
+    return (
+        f"{where}. the {a} is to the left of the {b}."
+        if rng.random() < 0.5
+        else (f"{where}. the {b} is to the right of the {a}.")
     )
 
 

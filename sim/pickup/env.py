@@ -268,6 +268,11 @@ class PickupEnv:
     def tcp_pos(self):
         return self.data.site_xpos[self.tcp_id].copy()
 
+    def tcp_yaw(self):
+        """World yaw of the finger closing axis (the tcp site's y axis)."""
+        R = self.data.site_xmat[self.tcp_id].reshape(3, 3)
+        return float(np.arctan2(R[1, 1], R[0, 1]))
+
     def state(self):
         d = self.data
         return np.concatenate([d.qpos[:7], [(d.qpos[7] + d.qpos[8]) / 0.08]]).astype(np.float32)

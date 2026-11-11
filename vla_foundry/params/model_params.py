@@ -249,12 +249,25 @@ class VLMFoundryBackboneParams(BackboneParams):
     num_vlm_layers_to_use: int = field(default=4)
     # Training-time pointer to source VLM experiment (unused at inference)
     vlm_experiment_dir: str | None = field(default=None)
+    # What the action head is conditioned on:
+    #   "action_token": one vector, the hidden states of an action token appended to the prompt.
+    #   "all_tokens":   the hidden states of every image and text token, so the action head can
+    #                   attend to individual image patches (no action token is added).
+    conditioning: str = field(default="action_token")
+    # all_tokens only: pad the conditioning sequence (in front, with zeros) to this many tokens so that
+    # its length does not depend on what else is in the batch. 0 = use the batch's own length.
+    conditioning_len: int = field(default=0)
 
 
 @register_model_params("vit_backbone")
 @dataclass(frozen=True)
 class ViTBackboneParams(BackboneParams, ViTParams):
-    pass
+    # Language conditioning. 0 keeps the backbone image-only. With text_tokens > 0 the instruction's
+    # tokens get learned embeddings and are prepended to the image patch tokens, always as exactly
+    # `text_tokens` conditioning tokens (padded / truncated), so the action head sees both where
+    # things are (patches) and what was asked (text). Needs a tokenizing processor, e.g. simple_vlm.
+    text_tokens: int = field(default=0)
+    text_vocab_size: int = field(default=0)
 
 
 @register_model_params("stable_diffusion")

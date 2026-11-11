@@ -17,6 +17,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from .diagnostics import GraspProbe, summarize
 from .env import PickupEnv
 
 AUTHKEY = b"pickup-sim"  # must match policy_server.AUTHKEY (not imported: that module needs torch)
@@ -65,14 +66,22 @@ def main():
     ap.add_argument("--videos", type=int, default=5, help="number of rollouts to save as mp4")
     ap.add_argument("--out", required=True)
     ap.add_argument("--shutdown_server", action="store_true")
+    ap.add_argument("--expert", action="store_true", help="run the scripted expert instead of a served policy")
     args = ap.parse_args()
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     env = PickupEnv(args.task, max_steps=args.max_steps)
-    conn = connect(args.port)
-    conn.send({"cmd": "info"})
-    server_info = conn.recv()
+    expert = conn = None
+    if args.expert:
+        from .expert import ScriptedExpert
+
+        expert = ScriptedExpert(env, seed=0)
+        server_info = dict(policy="scripted expert")
+    else:
+        conn = connect(args.port)
+        conn.send({"cmd": "info"})
+        server_info = conn.recv()
     cams = env.camera_names
 
     episodes, latencies = [], []
@@ -83,9 +92,14 @@ def main():
         obs = env.reset(seed=seed)
         prev_obs, queue, frames = obs, [], []
         wrong_object = False  # a non-target object was lifted at any point in the episode
+        probe = GraspProbe(env)
+        if expert is not None:
+            expert.reset()
         done, info = False, {}
         while not done:
-            if not queue:
+            if expert is not None:
+                queue = [expert.act()]
+            elif not queue:
                 images = {}
                 for cam in cams:
                     images[f"{cam}_t-1"] = _jpeg(prev_obs[cam])
@@ -106,7 +120,9 @@ def main():
             if ep < args.videos:
                 frames.append(np.concatenate([obs["front"], obs["wrist"]], axis=1))
             prev_obs = obs
-            obs, done, info = env.step(queue.pop(0))
+            action = queue.pop(0)
+            probe.update(action)
+            obs, done, info = env.step(action)
             wrong_object = wrong_object or bool(info["wrong_object"])
         episodes.append(
             dict(
@@ -116,6 +132,7 @@ def main():
                 success=bool(info["success"]),
                 steps=env.steps,
                 wrong_object=wrong_object,
+                **probe.result(),
             )
         )
         per_target[env.target][0] += int(info["success"])
@@ -144,11 +161,14 @@ def main():
         mean_steps_success=float(np.mean([e["steps"] for e in episodes if e["success"]])) if k else None,
         wrong_object_rate=sum(e["wrong_object"] for e in episodes) / n,
         per_target={t: dict(successes=s, episodes=m, success_rate=s / m) for t, (s, m) in sorted(per_target.items())},
+        grasp=summarize(episodes),
         inference_latency_ms=dict(
             mean=1000 * float(np.mean(latencies)),
             p50=1000 * float(np.percentile(latencies, 50)),
             p95=1000 * float(np.percentile(latencies, 95)),
-        ),
+        )
+        if latencies
+        else None,
         exec_horizon=args.exec_horizon,
         flow_steps=args.flow_steps,
         seed_start=args.seed_start,
@@ -158,15 +178,23 @@ def main():
     )
     with open(out / "results.json", "w") as f:
         json.dump(results, f, indent=2)
+    g = results["grasp"]
     print(
         f"[eval] {args.task}: {k}/{n} = {p:.1%} "
-        f"(95% CI {results['success_ci95'][0]:.1%}-{results['success_ci95'][1]:.1%}), "
-        f"latency p50 {results['inference_latency_ms']['p50']:.0f} ms -> {out / 'results.json'}"
+        f"(95% CI {results['success_ci95'][0]:.1%}-{results['success_ci95'][1]:.1%}) -> {out / 'results.json'}"
     )
-    if args.shutdown_server:
-        conn.send({"cmd": "shutdown"})
-        conn.recv()
-    conn.close()
+    if g["median_xy_err_target_mm"] is not None:
+        print(
+            f"[eval] gripper closed in {g['closed_gripper_rate']:.0%} of episodes, "
+            f"nearest object was the named one in {g['closed_nearest_is_target_rate']:.0%}; "
+            f"median miss {g['median_xy_err_target_mm']:.0f} mm to the named object, "
+            f"{g['median_xy_err_nearest_mm']:.0f} mm to the nearest object"
+        )
+    if conn is not None:
+        if args.shutdown_server:
+            conn.send({"cmd": "shutdown"})
+            conn.recv()
+        conn.close()
     env.close()
 
 
