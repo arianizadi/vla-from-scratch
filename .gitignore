@@ -9,6 +9,7 @@ outputs
 results
 data/lerobot/
 data/preprocessed/
+data/custom/
 tutorials/data/
 tutorials/checkpoints/
 tutorials/rollouts/

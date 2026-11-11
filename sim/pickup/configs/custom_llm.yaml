@@ -1,0 +1,35 @@
+# Stage 1 of the from-scratch path (tutorials/training_llm_vlm_vla.ipynb): a 100M-class causal
+# transformer trained on DCLM-baseline text. vocab_size matches the SmolVLM2 tokenizer that the
+# simple_vlm processor uses in stages 2 and 3, so the weights can initialise the VLM's language model.
+save_path: experiments/pickup
+wandb: false
+db_logging: false
+
+model:
+  <<: !include ../../../vla_foundry/config_presets/models/transformer_100m.yaml
+  vocab_size: 49280
+  cast_output_to_float32: true
+
+data:
+  type: text_untokenized
+  dataset_manifest:
+    - data/custom/dclm/manifest.jsonl
+  dataset_modality:
+    - text_untokenized
+  dataset_weighting:
+    - 1.0
+  tokenizer: HuggingFaceTB/SmolVLM2-256M-Video-Instruct
+  seq_len: 256
+  num_workers: 8
+  allow_multiple_epochs: true
+
+distributed:
+  fsdp: false
+
+hparams:
+  per_gpu_batch_size: 32
+  global_batch_size: 32
+  lr: 3e-4
+  warmup: 200
+  precision: amp_bf16
+  grad_clip_norm: 1.0

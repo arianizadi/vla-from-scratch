@@ -49,7 +49,9 @@ class SimpleVLMProcessor:
             if img.ndim == 3 and img.shape[-1] in (1, 3, 4):
                 img = img.permute(2, 0, 1)  # HWC -> CHW
         elif isinstance(img, torch.Tensor):
-            img = img.float()
+            # The training pipelines decode images to uint8 tensors; scale them like PIL / numpy
+            # inputs so training and inference see the same value range.
+            img = img.float() / 255.0 if img.dtype == torch.uint8 else img.float()
             if img.ndim == 3 and img.shape[-1] in (1, 3, 4):
                 img = img.permute(2, 0, 1)
         # Resize

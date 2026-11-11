@@ -4,8 +4,9 @@ All numbers are closed-loop success rates on layouts the policy never saw (evalu
 `1_000_000+`), single RTX 4090, one training seed per row. Intervals are Wilson 95%.
 Defaults: execute 8 actions per predicted chunk, 10 flow steps.
 
-> **Hardware caveat.** The machine these runs used was unreliable. One training run died and was resumed
-> from its checkpoint. Treat these numbers as first measurements to be re-run once the memory is
+> **Hardware caveat.** The machine these runs used was unreliable. Several training runs died or hung (a dead dataloader worker leaves the
+> trainer waiting forever) and were resumed from checkpoints; `scripts/train_resilient.sh` now does
+> that automatically. Treat these numbers as first measurements to be re-run once the memory is
 > fixed, not as final benchmarks.
 
 ## pick_cube ("pick up the red cube")
@@ -44,6 +45,30 @@ Inference latency per chunk was 20-65 ms for the 36M policy and ~190 ms for the 
 | same run | 1500 | 200k (2) | 0.066 | 1/50 = 2% | 0-10% |
 | same run | 1500 | 300k (3) | 0.039 | 6/50 = 12% | 6-24% |
 | same run, final | 1500 | 400k (4) | 0.03-0.04 | 6/100 = 6% | 3-12% |
+| Custom path: 91M LLM -> 96M VLM -> 130M VLA, all trained here, all weights trainable | 1500 | 1.0M (10) | ~0.03 | 0/100 = 0% | 0-4% |
+| Same VLA architecture, VLM randomly initialised (no stage 1 or 2) | 1500 | 1.0M (10) | ~0.03 | 1/100 = 1% | 0-5% |
+
+## Custom LLM -> VLM -> VLA path
+
+The three stages of `tutorials/training_llm_vlm_vla.ipynb`, each trained from random weights:
+
+| Stage | Config | Data | Samples, time | Result |
+|---|---|---|---|---|
+| 1. LLM (12 layers, 512 wide, 91M) | `custom_llm` | 61k DCLM web documents | 500k, 15 min | loss 6.3 -> 4.1, grammatical English |
+| 2. VLM (LLM + 6-layer ViT, 96M) | `custom_vlm` | 40k captioned sim renders (`caption_data.py`) | 400k, 15 min | on 300 held-out scenes names the objects in left-to-right order 85%, leftmost object 95% (`vlm_check.py`) |
+| 3. VLA (VLM + flow-matching action head, 130M) | `vla_custom` | 1500 pick_target demos | 1.0M, 1.7 h | 0/100 |
+
+- **Pretraining did not help.** With the VLM randomly initialised the same VLA scores 1/100; 0 vs 1
+  is no difference. A VLM that can name and order the objects did not turn into better grasps.
+- **How it fails.** The arm performs reach-descend-close-lift, closes beside the object and lifts
+  empty. In some rollouts it heads for the wrong object. 3-4% of episodes end with a wrong object
+  lifted (0% for Qwen and the ViT baseline).
+- **Stage 2 used sim renders only.** The tutorial's web image-caption set was not downloaded, so
+  this VLM has never seen a real image.
+- **Bug fixed on the way.** `SimpleVLMProcessor` did not divide uint8 tensor images by 255, while
+  PIL / numpy inputs were scaled, so a VLM trained through the data pipeline ignored images at
+  inference (the captioning check scored 0%). Fixed, with a test in
+  `tests/essential/models/test_simple_vlm_processor_scaling.py`.
 
 ## What the runs show
 
@@ -77,4 +102,3 @@ Inference latency per chunk was 20-65 ms for the 36M policy and ~190 ms for the 
   stays the bottleneck.
 - EMA weights (`--ema.enabled True`) and image augmentation are untested here and are standard for
   diffusion policies.
-- Not yet done: the from-scratch LLM -> VLM -> VLA path from `tutorials/training_llm_vlm_vla.ipynb`.

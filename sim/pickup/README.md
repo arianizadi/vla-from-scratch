@@ -38,7 +38,7 @@ sim/pickup/
   open_loop_check.py compare predicted chunks with expert actions on recorded samples
   smoke_test.py      expert-only sanity check
   configs/           preprocessing + training configs
-  scripts/           fetch_assets.sh, make_dataset.sh, train.sh, eval.sh
+  scripts/           fetch_assets.sh, make_dataset.sh, train.sh, train_resilient.sh (auto-resume), eval.sh
   assets/            Blender source, exported meshes; third_party/ (Panda model, fetched, not committed)
 ```
 

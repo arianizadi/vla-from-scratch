@@ -1,0 +1,63 @@
+# Stage 3 of the from-scratch path: the stage-2 VLM (custom_vlm.yaml) as the backbone of a
+# flow-matching action policy, the Foundry "vlm_foundry_backbone" recipe. As with the Qwen VLA, an
+# action token is appended to the prompt and its hidden states from the last 4 VLM layers condition
+# the action head. The whole VLM is trained (it is only ~100M parameters).
+# Pass the VLM with --model.vision_language_backbone.resume_from_checkpoint <.../checkpoint_N.pt>.
+save_path: experiments/pickup
+wandb: false
+db_logging: false
+
+model:
+  type: diffusion_policy
+  vision_language_backbone:
+    type: vlm_foundry_backbone
+    num_vlm_layers_to_use: 4
+  transformer:
+    type: transformer
+    hidden_dim: 256
+    n_heads: 4
+    n_layers: 6
+    max_seq_len: 2048
+    is_causal: false
+  noise_scheduler:
+    num_timesteps: 1000
+    beta_start: 0.0001
+    beta_end: 0.02
+    clamp_range: [-3, 3]
+  use_flow_matching_scheduler: true
+
+data:
+  <<: !include ../../../vla_foundry/config_presets/data/vla_diffusion.yaml
+  processor: simple_vlm
+  processor_kwargs: {}
+  image_size: 224
+  img_num_tokens: 256
+  # 4 images x 256 tokens + the instruction; inputs are padded to this length.
+  seq_len: 1088
+  dataset_modality:
+    - robotics
+  dataset_weighting:
+    - 1.0
+  camera_names:
+    - front
+    - wrist
+  image_indices:
+    - -1
+    - 0
+  action_fields:
+    - action
+  proprioception_fields:
+    - state
+  language_instruction_types:
+    - original
+  num_workers: 8
+  prefetch_factor: 2
+
+distributed:
+  fsdp: false
+
+hparams:
+  <<: !include ../../../vla_foundry/config_presets/hparams/diffusion_policy.yaml
+  lr: 3e-4
+  per_gpu_batch_size: 32
+  global_batch_size: 32

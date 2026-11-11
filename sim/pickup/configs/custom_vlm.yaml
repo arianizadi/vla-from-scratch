@@ -1,0 +1,48 @@
+# Stage 2 of the from-scratch path: the stage-1 language model plus a small ViT trained from scratch,
+# taught to caption rendered pickup scenes (sim/pickup/caption_data.py). Pass the stage-1 checkpoint
+# with --model.transformer.resume_from_checkpoint <experiments/pickup/custom_llm/checkpoints/checkpoint_N.pt>.
+# The ViT is the same size as the one in dp_vit.yaml (the tutorial's vit_tiny is 64-d, too small to
+# localise objects); patch 14 at 224 px gives 256 tokens per image.
+save_path: experiments/pickup
+wandb: false
+db_logging: false
+
+model:
+  type: vlm
+  transformer:
+    <<: !include ../../../vla_foundry/config_presets/models/transformer_100m.yaml
+  vit:
+    type: vit
+    img_size: 224
+    patch_size: 14
+    hidden_dim: 256
+    inter_dim: 1024
+    n_heads: 4
+    n_layers: 6
+    projector_pixel_shuffle_factor: 1
+
+data:
+  type: image_caption
+  processor: simple_vlm
+  dataset_manifest:
+    - data/custom/sim_captions/manifest.jsonl
+  dataset_modality:
+    - image_caption
+  dataset_weighting:
+    - 1.0
+  image_size: 224
+  img_num_tokens: 256
+  seq_len: 320
+  num_workers: 8
+  allow_multiple_epochs: true
+
+distributed:
+  fsdp: false
+
+hparams:
+  per_gpu_batch_size: 32
+  global_batch_size: 32
+  lr: 3e-4
+  warmup: 200
+  precision: amp_bf16
+  grad_clip_norm: 1.0
