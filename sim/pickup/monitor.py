@@ -258,10 +258,10 @@ def gpu_table(rows, width):
         table.add_column(ratio=1)
     cells = []
     for index, name, util, used, total, temp in rows:
-        style = "green" if util < 50 else ("yellow" if util < 90 else "red")
+        style = "green" if util >= 50 else ("yellow" if util >= 5 else "grey50")  # busy is the good state
         cell = Text(f"GPU {index} ", style="bold") + bar(util / 100, 14, style) + Text(f" {util:3.0f}%  ")
         cell += bar(used / total if total else 0, 10, "blue") + Text(f" {used / 1024:4.1f}/{total / 1024:.0f} GB  ")
-        cell += Text(f"{temp:.0f}°C  ", style="red" if temp >= 80 else "dim") + Text(
+        cell += Text(f"{temp:.0f}°C  ", style="red" if temp >= 85 else "dim") + Text(
             name.replace("NVIDIA ", ""), style="dim"
         )
         cells.append(cell)

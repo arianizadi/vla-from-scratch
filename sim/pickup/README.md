@@ -40,9 +40,13 @@ sim/pickup/
   open_loop_check.py compare predicted chunks with expert actions on recorded samples
   caption_data.py    captioned scene renders for vision-language pretraining
   vlm_check.py       held-out captioning check for a trained VLM
+  monitor.py         terminal dashboard: runs, loss, closed-loop success per checkpoint, GPUs
+  summarize.py       all closed-loop results as one table (or JSON)
+  text_data.py       web text for the language-model stage of the from-scratch path
   smoke_test.py      expert-only sanity check
   configs/           preprocessing + training configs
-  scripts/           fetch_assets.sh, make_dataset.sh, train.sh, train_resilient.sh (auto-resume), eval.sh
+  scripts/           fetch_assets.sh, make_dataset.sh, train.sh, train_resilient.sh (auto-resume), eval.sh,
+                     eval_checkpoints.sh (every checkpoint), custom_path.sh (LLM -> VLM -> VLA stages)
   assets/            Blender source, exported meshes; third_party/ (Panda model, fetched, not committed)
 ```
 
@@ -63,6 +67,7 @@ The scripts read a few environment variables, documented in `scripts/_common.sh`
 |---|---|
 | `PICKUP_GPU` | GPU index (as `nvidia-smi` shows it) for compute and rendering. Lets several jobs run side by side on a multi-GPU machine |
 | `PICKUP_WORKERS` | simulator processes and preprocessing CPUs for `make_dataset.sh` (default 8) |
+| `PICKUP_CPU_THREADS` | CPU threads per process (default 4). Without a cap, numerical libraries start one thread per core, which saturates a many-core machine |
 | `PICKUP_FOUNDRY_PYTHON`, `PICKUP_SIM_PYTHON`, `PICKUP_ROOT` | run the training side or the simulator side with a different interpreter, for example inside a container |
 
 ## Quickstart
@@ -89,6 +94,31 @@ whether the gripper closed, which object it was nearest to when it did, and how 
 Useful knobs: `--exec_horizon` (actions executed per predicted chunk, default 8), `--flow_steps`
 (denoising steps, default 10), `--seed_start`, `--videos`. `PICKUP_WEIGHTS=raw|ema` picks the
 trained or the averaged weights of a run trained with `--ema.enabled True`.
+
+### Watching runs
+
+`eval_checkpoints.sh` evaluates every checkpoint of a run (newest first, several at a time with
+`PICKUP_EVAL_JOBS`), and with `PICKUP_WATCH=1` it follows a run that is still training. Started
+next to `train_resilient.sh`, it turns a run into a curve of closed-loop success against training:
+
+```bash
+sim/pickup/scripts/train_resilient.sh dp_vit_lang pick_target_1500 my_run 1000000 --ema.enabled True &
+PICKUP_WATCH=1 PICKUP_EVAL_JOBS=2 sim/pickup/scripts/eval_checkpoints.sh experiments/pickup/my_run pick_target 100 &
+```
+
+`monitor.py` is a terminal dashboard over all runs. It shows progress, the loss with its history,
+throughput, time left and restarts, and next to them what the loss does not tell you: the
+closed-loop success of each checkpoint, how often the gripper closed at the named object, and the
+median miss. GPU load is underneath. It only reads logs and results, so it can be opened and closed
+at any time, in another terminal or over ssh.
+
+```bash
+.venv/bin/python -m sim.pickup.monitor                         # live, Ctrl-C quits
+.venv/bin/python -m sim.pickup.monitor --once --svg runs.svg   # one frame, saved as an image
+.venv/bin/python -m sim.pickup.summarize --task pick_target    # the same results as one table
+```
+
+### Checks that need no trained policy
 
 Three checks that do not need a trained policy, or do not need the simulator:
 
