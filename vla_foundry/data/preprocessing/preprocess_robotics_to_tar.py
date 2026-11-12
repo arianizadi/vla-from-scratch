@@ -62,48 +62,34 @@ def main():
     if uses_s3:
         runtime_env["env_vars"].update(get_aws_credentials_env())
 
-    if cfg.ray_address:
+    local_env = runtime_env | {
+        "excludes": [
+            ".git",
+            "*.pt",
+            "*.pyc",
+            "__pycache__",
+            ".pytest_cache",
+            "/data/",
+            "/gitui",
+            "/tests/essential/test_assets/",
+            "/worktrees/",
+        ]
+    }
+    if cfg.ray_address == "local":
+        # A Ray instance of this job's own, even if another one is running on the machine. Two jobs
+        # that share an instance fail together: the one that started it takes it down when it ends.
+        ray.init(address="local", num_cpus=cfg.ray_num_cpus, runtime_env=local_env)
+        print(f"Started a Ray instance for this job with num_cpus={cfg.ray_num_cpus}")
+    elif cfg.ray_address:
         ray.init(address=cfg.ray_address, runtime_env=runtime_env)
         print(f"Connected to Ray cluster at {cfg.ray_address}")
     else:
         try:
-            ray.init(
-                address="auto",
-                num_cpus=cfg.ray_num_cpus,
-                runtime_env=runtime_env
-                | {
-                    "excludes": [
-                        ".git",
-                        "*.pt",
-                        "*.pyc",
-                        "__pycache__",
-                        ".pytest_cache",
-                        "/data/",
-                        "/gitui",
-                        "/tests/essential/test_assets/",
-                        "/worktrees/",
-                    ]
-                },
-            )
+            # num_cpus must not be passed when joining a cluster that is already running.
+            ray.init(address="auto", runtime_env=local_env)
             print("Connected to existing Ray cluster (address='auto')")
         except ConnectionError:
-            ray.init(
-                num_cpus=cfg.ray_num_cpus,
-                runtime_env=runtime_env
-                | {
-                    "excludes": [
-                        ".git",
-                        "*.pt",
-                        "*.pyc",
-                        "__pycache__",
-                        ".pytest_cache",
-                        "/data/",
-                        "/gitui",
-                        "/tests/essential/test_assets/",
-                        "/worktrees/",
-                    ]
-                },
-            )
+            ray.init(num_cpus=cfg.ray_num_cpus, runtime_env=local_env)
             print(f"Started new local Ray cluster with num_cpus={cfg.ray_num_cpus}")
 
     # Create converter

@@ -20,5 +20,6 @@ rm -rf "data/lerobot/$name" "data/preprocessed/$name"
   --action_keys "['action']" \
   --samples_per_shard 256 \
   --ray_num_cpus "$workers" \
+  --ray_address local \
   --config_path sim/pickup/configs/preprocess.yaml </dev/null 2>&1 | grep -vE "raylet|pid=" | tail -4
 echo "dataset ready: data/preprocessed/$name/shards ($(wc -l < "data/preprocessed/$name/shards/manifest.jsonl") shards)"
