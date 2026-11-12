@@ -90,6 +90,12 @@ def main():
     ap.add_argument("--port", type=int, default=6200)
     ap.add_argument("--exec_horizon", type=int, default=8, help="actions executed per predicted chunk")
     ap.add_argument("--flow_steps", type=int, default=10)
+    ap.add_argument(
+        "--noise",
+        choices=["fresh", "episode"],
+        default="fresh",
+        help="noise the sampler starts each chunk from: fresh every time, or the same for a whole episode",
+    )
     ap.add_argument("--max_steps", type=int, default=200)
     ap.add_argument("--videos", type=int, default=5, help="number of rollouts to save as mp4")
     ap.add_argument("--out", required=True)
@@ -197,6 +203,7 @@ def main():
                         prev_action=np.asarray(prev_action).tolist(),
                         instruction=env.instruction,
                         num_flow_steps=args.flow_steps,
+                        noise_seed=seed if args.noise == "episode" else None,
                     )
                 )
                 reply = conn.recv()
@@ -259,6 +266,7 @@ def main():
         else None,
         exec_horizon=args.exec_horizon,
         flow_steps=args.flow_steps,
+        noise=args.noise,
         interventions=dict(
             expert_prefix=args.expert_prefix,
             prefix_target=args.prefix_target if args.expert_prefix else None,

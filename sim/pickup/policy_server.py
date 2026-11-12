@@ -64,8 +64,15 @@ class Policy:
         self.autocast = get_autocast(self.cfg.hparams.precision)
 
     @torch.no_grad()
-    def infer(self, images: dict, state, prev_action, instruction: str, num_flow_steps: int = 10):
-        """images: {"<camera>_t<idx>": jpeg bytes}; state: [past+1, D]; prev_action: [D] last executed command."""
+    def infer(self, images: dict, state, prev_action, instruction: str, num_flow_steps: int = 10, noise_seed=None):
+        """images: {"<camera>_t<idx>": jpeg bytes}; state: [past+1, D]; prev_action: [D] last executed command.
+
+        noise_seed: seed of the noise the sampler starts from. None draws fresh noise for every chunk.
+        Sending the same seed with every query of an episode starts every chunk from the same noise, so
+        that where the data offers several ways to act, successive chunks keep choosing the same one.
+        """
+        if noise_seed is not None:
+            torch.manual_seed(int(noise_seed))
         state = np.asarray(state, dtype=np.float32)[-(self.past + 1) :]  # no-history policies take only the last
         prev_action = np.asarray(prev_action, dtype=np.float32)
         action_seq = np.zeros((self.total, prev_action.shape[-1]), dtype=np.float32)
@@ -137,6 +144,7 @@ def main():
                         msg["prev_action"],
                         msg["instruction"],
                         msg.get("num_flow_steps", 10),
+                        msg.get("noise_seed"),
                     )
                     if policy.device.type == "cuda":
                         torch.cuda.synchronize()
