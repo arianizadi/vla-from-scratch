@@ -55,17 +55,21 @@ themselves when they die and checkpoints that are evaluated while training conti
 
 ```bash
 uv sync --group preprocessing --group sim && sim/pickup/scripts/fetch_assets.sh
-sim/pickup/scripts/make_dataset.sh pick_target 4000 pick_target_4k
+sim/pickup/scripts/make_dataset.sh pick_target 4000 pick_target_4k --random_start --disturb_prob 0.5
 sim/pickup/scripts/train_resilient.sh dp_vit_lang_reactive pick_target_4k my_run 5000000
 sim/pickup/scripts/eval_checkpoints.sh experiments/pickup/my_run pick_target
 ```
 
-That is the recipe that reached 85% here (about an hour and a half on one 46 GB GPU). The same
-policy looked broken at a fifth of that budget; the table below says why.
+That is the recipe that reached 94% here (about an hour and a half on one 46 GB GPU) and that still
+succeeds about nine times in ten when the object is moved while the robot reaches for it, or as its
+gripper closes. Without the two options on the first line the same policy reaches 93% and fails
+every one of those tests, and at a fifth of the budget either one looks broken. The table below
+says why.
 
 **Tests that a success rate cannot give you.** Move the object while the robot is reaching for it,
 hand the policy over after the expert has started toward the wrong object, freeze the cameras on
-their first frame: each is one flag of the evaluation, and each told us something the 85% did not.
+their first frame: each is one flag of the evaluation, and each told us something the success rate
+did not.
 
 ```bash
 sim/pickup/scripts/eval.sh experiments/pickup/my_run pick_target 100 --disturb reach
@@ -77,7 +81,6 @@ sim/pickup/scripts/eval.sh experiments/pickup/my_run pick_target 100 --stale_ima
 | | |
 |---|---|
 | [sim/pickup](sim/pickup/README.md) | MuJoCo tabletop pick-up task (Franka Panda), scripted expert, data collection, training and closed-loop evaluation |
-| [sim/pickup/RESULTS.md](sim/pickup/RESULTS.md) | Every result so far, with confidence intervals |
 | [tutorial/notes.md](tutorial/notes.md) | Field notes: what worked, what didn't, and how each was measured |
 | [tutorial/lab-notebook.md](tutorial/lab-notebook.md) | Every number measured here, by run and checkpoint |
 | [tutorial/roadmap.md](tutorial/roadmap.md) | The experiments queued, the chapter outline, and the list of framework fixes |
@@ -96,9 +99,9 @@ Closed-loop success on layouts the policy never saw.
 | The previous action as an input lets the policy stop looking | With history 2% after 3M samples, without it 75-81%. The history policy is not blind: told the expert's first action it finds the named object 97% of the time |
 | A policy that succeeds may look only once | The 85% policy, shown only its first camera frame for the whole episode, still reaches the named object in 99% of episodes. Move the object 8 cm mid-reach and it closes where the object was: 0/96 |
 | A policy looks where its demonstrations make looking necessary | Same policy, same 4000 episodes, different content: clean passes from one start pose 93%; random start poses 98%, and 97% from poses where the first scores 9% |
-| Self-correction has to be in the data | Trained on demonstrations in which the object is moved and the expert recovers, the policy follows a moved object (79-88%) and retries a missed grasp (78 of 99). Every policy trained on clean demonstrations: 0-12% |
+| Self-correction has to be in the data | Trained on demonstrations in which the object is moved and the expert recovers, the policy follows a moved object (79-88%) and retries a missed grasp (78 of 99). With random start poses in the same demonstrations it does so at 89-94%, from any start pose, and keeps 94% on the unchanged task. Every policy trained on clean demonstrations: 0-18% |
 | Averaged weights lead during the transition | 36% against 4% at 2.0M samples; equal before and after |
-| Two sampling steps are usually enough | 1 flow step 61%, 2 steps 89-90%, 10 steps 83-85%; on four later policies 2 steps matched 10, on one they cost 19 points |
+| Two sampling steps are usually enough | 1 flow step 61%, 2 steps 89-90%, 10 steps 83-85%; on six later policies 2 steps matched 10 on four and cost 12 and 19 points on the other two |
 | Know the tolerance of the task | Cube and T block forgive a 2 cm offset. At 1 cm the round objects lose 40% on one simulator build and under 6% on another: measure it where you evaluate |
 | Train/inference mismatches hide in preprocessing | Five so far, none raised an error: a pixel-range bug (captioning 0% -> 85%), a position table computed in half precision (641 distinct positions out of 2048; fixing it took the same run from 83% to 93%), a previous-action slot that holds the answer in training and nothing when served, and two more |
 

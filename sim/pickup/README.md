@@ -81,8 +81,9 @@ The scripts read a few environment variables, documented in `scripts/_common.sh`
 All commands run from the repository root.
 
 ```bash
-# 1. demonstrations -> shards   (4000 episodes of the three-object task)
-sim/pickup/scripts/make_dataset.sh pick_target 4000 pick_target_4k
+# 1. demonstrations -> shards   (4000 episodes of the three-object task, from random start poses,
+#                                half of them with the object moved once and the expert recovering)
+sim/pickup/scripts/make_dataset.sh pick_target 4000 pick_target_4k --random_start --disturb_prob 0.5
 
 # 2. train                      (config, dataset, run name, total training samples)
 sim/pickup/scripts/train_resilient.sh dp_vit_lang_reactive pick_target_4k my_run 5000000
@@ -91,8 +92,10 @@ sim/pickup/scripts/train_resilient.sh dp_vit_lang_reactive pick_target_4k my_run
 sim/pickup/scripts/eval.sh experiments/pickup/my_run pick_target 100
 ```
 
-This is the recipe that reached 85% on `pick_target` (about an hour and a half of training on one
-46 GB GPU). For a first run that finishes sooner, use the single-object task: `pick_cube` with 1000
+This is the recipe that reached 94% on `pick_target` (about an hour and a half of training on one
+46 GB GPU) and about 90% when the object is moved while the arm reaches for it; without the two
+options of step 1 the result is 93%, and 0% once the object moves ("What the demonstrations
+contain", below). For a first run that finishes sooner, use the single-object task: `pick_cube` with 1000
 demonstrations and 1.5M samples reached 91-97% with the same config. Evaluate checkpoints while the
 run trains (next section): the same policy scores 0% for the first million samples.
 
@@ -201,6 +204,19 @@ field notes). The options change what the data can teach:
 | `--random_start` | Every episode starts from a random gripper pose above the table, so the arm's own position no longer gives the goal away |
 | `--hold_steps 1` | Every episode begins with a frame of the robot at rest, for policies that are given their previous action (the first training window then holds what serving will provide) |
 
+What each gave here, on 4000 episodes and 5M samples (final checkpoint, lab notebook):
+
+| Demonstrations | Unchanged task | Object moved at step 20 of the reach | Random start pose |
+|---|---|---|---|
+| default | 93% | 0 of 97 | 9% |
+| `--targets_per_layout 3` | 91% / 89% | 0 of 96 | 10% |
+| `--random_start` | 98% / 98% | 50 of 98 | 97% |
+| `--disturb_prob 0.5` | 89% / 84% | 79 of 96 | 68% |
+| `--random_start --disturb_prob 0.5` | 94% / 94% | 89 of 98 | 91% |
+
+Unchanged task: trained / averaged weights. The other two columns use the averaged weights where the
+run saved them (the default run did not).
+
 `boost_early_windows.py` builds a copy of a preprocessed dataset in which the windows that start in
 the first frames of each demonstration, the ones that need the instruction, appear several times:
 
@@ -252,5 +268,4 @@ Three checks that do not need a trained policy, or do not need the simulator:
 ## Results
 
 Every number measured with this environment is in the [lab notebook](../../tutorial/lab-notebook.md);
-what the numbers mean is in the [field notes](../../tutorial/notes.md). `RESULTS.md` holds the first
-round only.
+what the numbers mean is in the [field notes](../../tutorial/notes.md).
