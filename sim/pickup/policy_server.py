@@ -102,10 +102,12 @@ def main():
     ap.add_argument("--weights", default="auto", choices=["auto", "ema", "raw"])
     args = ap.parse_args()
 
-    policy = Policy(args.checkpoint_dir, args.checkpoint, args.device, args.weights)
-    n_params = sum(p.numel() for p in policy.model.parameters())
-    print(f"[policy_server] loaded {policy.checkpoint_path} ({n_params / 1e6:.1f}M params)", flush=True)
+    # Bind before loading the model: if the port is taken this fails at once, instead of after the
+    # client has already connected to whoever holds the port.
     with Listener(("127.0.0.1", args.port), authkey=AUTHKEY) as listener:
+        policy = Policy(args.checkpoint_dir, args.checkpoint, args.device, args.weights)
+        n_params = sum(p.numel() for p in policy.model.parameters())
+        print(f"[policy_server] loaded {policy.checkpoint_path} ({n_params / 1e6:.1f}M params)", flush=True)
         print(f"[policy_server] listening on 127.0.0.1:{args.port}", flush=True)
         while True:
             with listener.accept() as conn:

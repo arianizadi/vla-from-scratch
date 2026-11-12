@@ -16,7 +16,23 @@ import glob
 import json
 import os
 import re
+import sys
 from pathlib import Path
+
+
+
+def served_checkpoint_matches(results, run, checkpoint, weights):
+    """Was this evaluation served by the checkpoint its directory says (run, number, raw or ema)?
+
+    False means the evaluation reached another run's policy server (two evaluations on one port).
+    Results written before the server recorded its checkpoint count as matching.
+    """
+    served = str((results.get("server") or {}).get("checkpoint", "")).replace("\\", "/")
+    if not served:
+        return True
+    parts = served.split("/")
+    want = f"{'ema' if weights == 'ema' else 'checkpoint'}_{checkpoint}.pt"
+    return len(parts) >= 3 and parts[-3] == run and parts[-1] == want
 
 
 def checkpoint_samples(experiments: Path, run: str) -> dict[int, int]:
@@ -37,7 +53,7 @@ def checkpoint_samples(experiments: Path, run: str) -> dict[int, int]:
 
 
 def load_rows(results: Path, experiments: Path, task: str | None, runs: list[str] | None):
-    rows = []
+    rows, mismatched = [], []
     for path in sorted(results.glob("*/*/**/results.json")):
         run, run_task = path.relative_to(results).parts[:2]
         variant = "/".join(path.relative_to(results).parts[2:-1])
@@ -47,6 +63,9 @@ def load_rows(results: Path, experiments: Path, task: str | None, runs: list[str
             r = json.load(f)
         m = re.fullmatch(r"ckpt_(\d+)_(raw|ema)", variant)
         checkpoint, weights = (int(m.group(1)), m.group(2)) if m else (None, None)
+        if m and not served_checkpoint_matches(r, run, checkpoint, weights):
+            mismatched.append(str(path))
+            continue
         grasp = r.get("grasp") or {}
         rows.append(
             dict(
@@ -71,6 +90,12 @@ def load_rows(results: Path, experiments: Path, task: str | None, runs: list[str
             )
         )
     rows.sort(key=lambda x: (x["task"], x["run"], x["checkpoint"] or 0, x["weights"] or "", x["variant"]))
+    if mismatched:
+        print(
+            f"left out {len(mismatched)} evaluations that were served by another checkpoint than their directory "
+            f"names (two evaluations on one port); delete and redo them: {' '.join(mismatched)}",
+            file=sys.stderr,
+        )
     return rows
 
 

@@ -47,10 +47,13 @@ class RotaryEmbedding(torch.nn.Module):
         (it does not create the embedding dimension) and will likely be picked up (imported) on a ad-hoc basis
     """
 
-    def __init__(self, dim_model: int, seq_len: int, *_, **__):
+    def __init__(self, dim_model: int, seq_len: int, *_, legacy_autocast_table: bool = False, **__):
         super().__init__()
         # Generate and save the inverse frequency buffer (non trainable)
         self.dim_model = dim_model
+        # True reproduces the table of checkpoints trained before the table was computed in float32
+        # (see _update_cos_sin_tables). Never use it for a new run.
+        self.legacy_autocast_table = legacy_autocast_table
         self.register_buffer("inv_freq", torch.zeros(self.dim_model // 2))
 
         self._cos_cached = None
@@ -74,10 +77,25 @@ class RotaryEmbedding(torch.nn.Module):
         # or if we're on a new device (possibly due to tracing for instance)
         if seq_len > self._seq_len_cached or self._cos_cached.device != device or self._cos_cached.dtype != dtype:
             self._seq_len_cached = seq_len
-            with torch.no_grad():
+            if self.legacy_autocast_table:
+                with torch.no_grad():
+                    t = torch.arange(seq_len, device=device, dtype=torch.float32)
+                    freqs = torch.einsum("i,j->ij", t, self.inv_freq.to(dtype))
+                    emb = torch.cat((freqs, freqs), dim=-1).to(device)
+                    self._cos_cached = emb.cos().to(dtype)[None, :, None, :]
+                    self._sin_cached = emb.sin().to(dtype)[None, :, None, :]
+                return
+            # The angles are computed in float32 with autocast switched off, and only the finished
+            # cos / sin values are cast to the working dtype. Under bfloat16 autocast the product
+            # position x frequency would otherwise be formed in bfloat16, which keeps 8 significant bits:
+            # every position above 256 collapses onto an even one and above 512 onto a multiple of 4, so
+            # neighbouring tokens get the same rotation and the transformer cannot tell them apart
+            # (641 distinct positions out of 2048).
+            device_type = device.type if isinstance(device, torch.device) else "cpu"
+            with torch.no_grad(), torch.autocast(device_type=device_type, enabled=False):
                 t = torch.arange(seq_len, device=device, dtype=torch.float32)
-                freqs = torch.einsum("i,j->ij", t, self.inv_freq.to(dtype))
-                emb = torch.cat((freqs, freqs), dim=-1).to(device)
+                freqs = torch.outer(t, self.inv_freq.to(device=device, dtype=torch.float32))
+                emb = torch.cat((freqs, freqs), dim=-1)
 
                 # Create fresh tensors to avoid aliasing and ensure assignment happens outside compiled graphs
                 self._cos_cached = emb.cos().to(dtype)[None, :, None, :]
@@ -101,6 +119,9 @@ def get_pos_embed(model_params):
     head_dim = model_params.hidden_dim // model_params.n_heads
     if model_params.positional_embedding_type == "rotary":
         return RotaryWithCast(head_dim, model_params.max_seq_len)
+    elif model_params.positional_embedding_type == "rotary_legacy_autocast":
+        # Only for evaluating checkpoints trained before the rotary table was computed in float32.
+        return RotaryWithCast(head_dim, model_params.max_seq_len, legacy_autocast_table=True)
     elif model_params.positional_embedding_type == "rotary_float32":
         # TODO: Currently results in some slowdowns. Need to investigate.
         return Float32Module(RotaryWithCast(head_dim, model_params.max_seq_len), cast_outputs_back=True)

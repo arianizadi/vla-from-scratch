@@ -7,8 +7,8 @@
 # be re-run at any time; summarize.py turns the results into one table.
 #
 # Environment variables (plus those of eval.sh and _common.sh):
-#   PICKUP_EVAL_JOBS=<n>  evaluate n checkpoints at a time (default 1). Each uses its own port,
-#                         starting at PICKUP_PORT, and mostly CPU: one simulator process each.
+#   PICKUP_EVAL_JOBS=<n>  evaluate n checkpoints at a time (default 1). Each takes a free port and
+#                         mostly CPU: one simulator process each.
 #   PICKUP_WATCH=1        keep polling for new checkpoints until the training log reports the end of
 #                         the run. Start it next to train_resilient.sh to evaluate while training.
 #   PICKUP_VIDEOS=<n>     rollout videos to save per checkpoint (default 0)
@@ -17,12 +17,12 @@ exp=${1:?experiment dir}; task=${2:?task}; episodes=${3:-100}
 cd "$(dirname "$0")/../../.."
 name=$(basename "$exp")
 log=experiments/pickup/$name.train.log
-port=${PICKUP_PORT:-6200}
+unset PICKUP_PORT  # every evaluation takes its own free port (see eval.sh)
 
 if [ "${PICKUP_EVAL_JOBS:-1}" -gt 1 ] && [ -z "${PICKUP_EVAL_WORKER:-}" ]; then
   # Fan out: every worker runs this script; they share the work through the claim below.
-  for slot in $(seq 0 $(( PICKUP_EVAL_JOBS - 1 ))); do
-    PICKUP_EVAL_WORKER=1 PICKUP_PORT=$(( port + slot )) "$0" "$exp" "$task" "$episodes" &
+  for slot in $(seq 1 "$PICKUP_EVAL_JOBS"); do
+    PICKUP_EVAL_WORKER=1 "$0" "$exp" "$task" "$episodes" &
   done
   wait
   exit 0
@@ -49,8 +49,11 @@ while true; do
         touch "$out"
       fi
       echo "== $name checkpoint $n ($weights)"
-      PICKUP_CHECKPOINT=$ckpt PICKUP_WEIGHTS=$weights PICKUP_OUT=$out PICKUP_PORT=$port \
-        sim/pickup/scripts/eval.sh "$exp" "$task" "$episodes" --videos "${PICKUP_VIDEOS:-0}" 2>&1 | tail -2
+      if ! PICKUP_CHECKPOINT=$ckpt PICKUP_WEIGHTS=$weights PICKUP_OUT=$out \
+        sim/pickup/scripts/eval.sh "$exp" "$task" "$episodes" --videos "${PICKUP_VIDEOS:-0}" 2>&1 | tail -3; then
+        rm -rf "$out"  # give the claim back so the evaluation is tried again
+        sleep 20
+      fi
       evaluated=$((evaluated + 1))
       break 2  # start over from the newest checkpoint
     done

@@ -59,6 +59,15 @@ class GraspProbe:
         )
 
 
+def _fit(x, y):
+    """Least-squares slope of y on x and the fraction of variance explained."""
+    x, y = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
+    if len(x) < 3 or x.std() < 1e-9 or y.std() < 1e-9:
+        return None, None
+    slope = float(np.polyfit(x, y, 1)[0])
+    return slope, float(np.corrcoef(x, y)[0, 1] ** 2)
+
+
 def summarize(episodes):
     """Aggregate GraspProbe records (dicts merged into the per-episode results)."""
     n = len(episodes)
@@ -72,6 +81,24 @@ def summarize(episodes):
     def frac_within(rows, limit):
         return sum(r["close_xy_err_target"] <= limit for r in rows) / n if n else None
 
+    # Does the place where the gripper closed depend on where the named object was? Slope 1 and R2 near
+    # 1: it goes to the object. Slope and R2 near 0: its position is independent of the scene.
+    placed = [e for e in closed if e.get("close_tcp_xy") and e.get("close_object_xy")]
+    fits = [
+        _fit([e["close_object_xy"][e["target"]][axis] for e in placed], [e["close_tcp_xy"][axis] for e in placed])
+        for axis in (0, 1)
+    ]
+    by_target = {}
+    for target in sorted({e["target"] for e in closed}):
+        rows = [e for e in closed if e["target"] == target]
+        yaw = med("close_yaw_err_target", rows)
+        by_target[target] = dict(
+            episodes=len(rows),
+            median_xy_err_mm=1000 * med("close_xy_err_target", rows),
+            median_yaw_err_deg=None if yaw is None else float(np.degrees(yaw)),
+            median_z_above_grasp_mm=1000 * med("close_z_above_grasp", rows),
+        )
+
     return dict(
         closed_gripper_rate=len(closed) / n if n else None,
         closed_nearest_is_target_rate=len(at_target) / n if n else None,
@@ -84,4 +111,8 @@ def summarize(episodes):
         else float(np.degrees(med("close_yaw_err_target", at_target))),
         within_10mm_of_target_rate=frac_within(closed, 0.010),
         within_20mm_of_target_rate=frac_within(closed, 0.020),
+        within_30mm_of_target_rate=frac_within(closed, 0.030),
+        close_vs_target_slope=[f[0] for f in fits],
+        close_vs_target_r2=[f[1] for f in fits],
+        by_target=by_target,
     )

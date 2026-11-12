@@ -9,6 +9,9 @@ evaluated layout is unseen. Writes results.json (+ rollout videos) to --out.
 import argparse
 import io
 import json
+import os
+import re
+import sys
 import time
 from collections import defaultdict
 from multiprocessing.connection import Client
@@ -54,6 +57,31 @@ def write_video(path, frames, fps=20):
             container.mux(packet)
 
 
+def check_server(info, port, run, number, weights):
+    """Stop if the server on `port` is not serving the checkpoint this evaluation is for.
+
+    Two evaluations started on the same port both reach whichever server bound it first. Without this
+    check the second one silently evaluates the other run's policy and files the result under its own
+    name.
+    """
+    served = str(info.get("checkpoint", "")).replace("\\", "/")
+    parts = served.split("/")
+    m = re.fullmatch(r"(ema|checkpoint)_(\d+)\.pt", parts[-1])
+    problems = []
+    if run is not None and (len(parts) < 3 or parts[-3] != run):
+        problems.append(f"run '{run}'")
+    if number is not None and (m is None or int(m.group(2)) != number):
+        problems.append(f"checkpoint {number}")
+    if weights is not None and (m is None or (m.group(1) == "ema") != (weights == "ema")):
+        problems.append(f"{weights} weights")
+    if problems:
+        sys.exit(
+            f"[eval] the policy server on port {port} is serving {served}, not {', '.join(problems)}. "
+            "Another evaluation is using this port; give each one its own (eval.sh picks a free port "
+            "unless PICKUP_PORT is set)."
+        )
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--task", default="pick_cube")
@@ -67,6 +95,25 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--shutdown_server", action="store_true")
     ap.add_argument("--expert", action="store_true", help="run the scripted expert instead of a served policy")
+    ap.add_argument("--expect_run", default=None, help="stop unless the server serves a checkpoint of this run")
+    ap.add_argument("--expect_number", type=int, default=None, help="... and this checkpoint number")
+    ap.add_argument("--expect_weights", choices=["raw", "ema"], default=None, help="... and this kind of weights")
+    # Interventions for finding out what a policy's choices depend on.
+    ap.add_argument("--expert_prefix", type=int, default=0, help="the scripted expert drives the first K steps")
+    ap.add_argument(
+        "--prefix_target",
+        choices=["named", "distractor"],
+        default="named",
+        help="which object the expert prefix heads for: the named one, or another object in the layout",
+    )
+    ap.add_argument("--stale_images", action="store_true", help="keep sending the first frame's images")
+    ap.add_argument(
+        "--first_prev_action",
+        choices=["hold", "expert"],
+        default="hold",
+        help="previous action sent with the first query: the hold command the robot is really under, or the "
+        "expert's first command (what a training window padded by copying contains)",
+    )
     args = ap.parse_args()
 
     out = Path(args.out)
@@ -82,6 +129,12 @@ def main():
         conn = connect(args.port)
         conn.send({"cmd": "info"})
         server_info = conn.recv()
+        check_server(server_info, args.port, args.expect_run, args.expect_number, args.expect_weights)
+    pilot = None
+    if expert is None and (args.expert_prefix > 0 or args.first_prev_action == "expert"):
+        from .expert import ScriptedExpert
+
+        pilot = ScriptedExpert(env, seed=0)
     cams = env.camera_names
 
     episodes, latencies = [], []
@@ -95,21 +148,37 @@ def main():
         probe = GraspProbe(env)
         if expert is not None:
             expert.reset()
+        prefix_goal = None
+        if pilot is not None:  # plan the prefix toward the chosen object; the instruction is unchanged
+            named = env.target
+            if args.prefix_target == "distractor":
+                env.target = next(n for n in env.active if n != named)
+            prefix_goal = env.target
+            pilot.reset()
+            env.target = named
+        first_obs, first_query = obs, True
         done, info = False, {}
         while not done:
             if expert is not None:
                 queue = [expert.act()]
+            elif pilot is not None and env.steps < args.expert_prefix:
+                queue = [pilot.act()]
             elif not queue:
+                shown_prev, shown = (first_obs, first_obs) if args.stale_images else (prev_obs, obs)
                 images = {}
                 for cam in cams:
-                    images[f"{cam}_t-1"] = _jpeg(prev_obs[cam])
-                    images[f"{cam}_t0"] = _jpeg(obs[cam])
+                    images[f"{cam}_t-1"] = _jpeg(shown_prev[cam])
+                    images[f"{cam}_t0"] = _jpeg(shown[cam])
+                prev_action = env.last_action
+                if first_query and args.first_prev_action == "expert":
+                    prev_action = pilot.act()
+                first_query = False
                 conn.send(
                     dict(
                         cmd="infer",
                         images=images,
                         state=[prev_obs["state"].tolist(), obs["state"].tolist()],
-                        prev_action=env.last_action.tolist(),
+                        prev_action=np.asarray(prev_action).tolist(),
                         instruction=env.instruction,
                         num_flow_steps=args.flow_steps,
                     )
@@ -132,6 +201,7 @@ def main():
                 success=bool(info["success"]),
                 steps=env.steps,
                 wrong_object=wrong_object,
+                prefix_goal=prefix_goal,
                 **probe.result(),
             )
         )
@@ -171,6 +241,12 @@ def main():
         else None,
         exec_horizon=args.exec_horizon,
         flow_steps=args.flow_steps,
+        interventions=dict(
+            expert_prefix=args.expert_prefix,
+            prefix_target=args.prefix_target if args.expert_prefix else None,
+            stale_images=args.stale_images,
+            first_prev_action=args.first_prev_action,
+        ),
         seed_start=args.seed_start,
         wall_time_s=time.time() - t_start,
         server=server_info,
