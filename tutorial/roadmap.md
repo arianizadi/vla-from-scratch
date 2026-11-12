@@ -75,6 +75,9 @@ pretrained Hugging Face backbones (`vla_qwen_tokens_reactive.yaml`) and is train
 - [ ] A cluttered scene with look-alike distractors and partial occlusion.
 - [ ] Pretrained vision encoder with patch tokens, higher resolution at the wrist.
 - [ ] A cutting action in place of a grasp, with a success test that penalises cutting the wrong stem.
+- [ ] A task that goes on after the grasp. The demonstrations end at the lift, and a policy knows
+      nothing of what comes after: left running for another 0.8 s in a recording, it opened the
+      gripper again in three of six episodes.
 
 ## Phase 5: the tutorial (chapters and docs)
 
@@ -119,6 +122,38 @@ Three.js for the arm. Animated explanations, driven by real data from the runs w
 - the "keep going" shortcut: what the policy can predict without looking
 - a top-down map of where each policy closed the gripper; the tolerance curve with an offset slider
 - 3D replay of rollouts from logged joint angles
+
+## Phase 7: what the policy intends, and reasoning in words  (planned, not started)
+
+The policies here go from pixels and joint angles to joint targets in one pass. They do not reason
+in words, and the instruction has one job: to say which object. Two kinds of work would open them up.
+
+**Showing what a policy intends** (no retraining)
+
+- [ ] The plan. Draw the 15 actions of every predicted chunk as the path the gripper is about to
+      take, with the step at which it means to close, in the rollout videos and on the site. When
+      the object is moved, the next plan should bend to the new place.
+- [ ] The uncertainty. Several draws for the same observation as a fan of paths, and one plan forming
+      from noise over the flow steps.
+- [ ] What it reads. Attention from the action-step tokens to the image patches and the instruction
+      tokens, as a heat map over the two camera images. To be checked against the probes that change
+      the input (frozen cameras, expert handover): an attention map is not evidence by itself.
+
+**Reasoning in words** (retraining)
+
+- [ ] Text in the demonstrations. The scripted expert knows its phase (reach, descend, close, lift,
+      plan again) and where every object is, so `collect.py` can write a line of text per frame.
+- [ ] Reason, then act. The backbone writes a short text before each chunk (the object, where it is,
+      the phase) and the action head reads those tokens with the rest: the every-token conditioning
+      of the VLM backbones already hands it the whole sequence. Background, to be checked when the
+      chapter is written: embodied chain-of-thought (Zawalski et al., 2024).
+- [ ] Two levels. A vision-language model names the next sub-task at a low rate and the reactive
+      policy carries it out. This is the form that fits trimming: choosing what to cut is the
+      reasoning, following a stem that moves is the control.
+- [ ] The test that the text matters. Swap in the text of another object or phase and measure
+      whether the action follows it, as `--prefix_target distractor` does for motion. A text the
+      action ignores is a narration.
+- [ ] The cost: latency per chunk with and without the text, and success at the same budget.
 
 ## Framework fixes ledger
 
