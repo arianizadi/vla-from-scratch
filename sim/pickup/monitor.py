@@ -233,7 +233,9 @@ def runs_table(runs, evals, width):
                 curve += Text(f"{kind} ", style="dim")
                 curve += Text(spark([0.0, 1.0] + rates, 99)[2:], style="green") + Text("  ")
             n, kind, top = max(rows, key=lambda r: (r[2]["success_rate"], r[0]))
-            best = Text(f"{100 * top['success_rate']:.0f}%", style="bold green" if top["success_rate"] >= 0.5 else "bold")
+            best = Text(
+                f"{100 * top['success_rate']:.0f}%", style="bold green" if top["success_rate"] >= 0.5 else "bold"
+            )
             best += Text(f" #{n} {kind}", style="dim")
             grasp = top.get("grasp") or {}
             if grasp.get("closed_nearest_is_target_rate") is not None:

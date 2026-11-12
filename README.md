@@ -16,6 +16,39 @@ can reach a low training loss, reproduce recorded actions almost exactly, and st
 the time, and nothing in the logs says why. This repo records the route, with the measurements that
 separate one cause from another.
 
+## What you get
+
+**A dashboard that shows what the loss hides.** Every run with its progress, loss and speed, next
+to the closed-loop success of each of its checkpoints, how often the gripper closed at the object
+the instruction named, and how far it missed.
+
+![Terminal dashboard of training runs](tutorial/img/monitor.svg)
+
+```bash
+.venv/bin/python -m sim.pickup.monitor
+```
+
+**A picture of how a policy fails.** Each dot is where the gripper closed in one evaluation
+episode, relative to the object. The scripted expert (top) lands inside the 1 cm ring every time.
+The policy below it scores 2%, and the map shows why: it is not narrowly missing, it closes
+anywhere within 30 cm of the object it was asked for.
+
+![Top-down map of where the gripper closed](tutorial/img/grasp_map.svg)
+
+```bash
+.venv/bin/python -m sim.pickup.grasp_map results/pickup/<run>/<task>/results.json
+```
+
+**One command per step**, from demonstrations to a closed-loop number, with runs that restart
+themselves when they die and checkpoints that are evaluated while training continues:
+
+```bash
+uv sync --group preprocessing --group sim && sim/pickup/scripts/fetch_assets.sh
+sim/pickup/scripts/make_dataset.sh pick_target 1500 pick_target_1500
+sim/pickup/scripts/train_resilient.sh dp_vit_lang pick_target_1500 my_run 1000000
+sim/pickup/scripts/eval_checkpoints.sh experiments/pickup/my_run pick_target
+```
+
 ## What is here today
 
 | | |
