@@ -145,8 +145,8 @@ Problems found in VLA Foundry (or in our own code) while doing this, and their s
 | 17 | Install notes said `uv sync` then `uv pip install -e .` | The second command re-resolves outside the lockfile | Fixed in the docs; `uv sync` alone installs the project |
 | 18 | Tests used `/nonexistent` as a missing path | That directory exists, unreadable, on some systems (PermissionError) | Fixed: they use pytest's `tmp_path` |
 | 19 | Windows are shuffled by shard, not by sample | Not measured | To test |
-| 20 | A queue or wrapper that reuses a run name starts a second trainer in a live run's directory | Two trainers write the same checkpoints | To do: `train_resilient.sh` should refuse a run whose log is being written |
-| 21 | `eval.py` writes `results.json` in place | A reader can see half a file | To do: write to a temporary file and rename |
+| 20 | A queue or wrapper that reuses a run name starts a second trainer in a live run's directory | Two trainers write the same checkpoints | Fixed, tested: `train_resilient.sh` holds `<run>.pid` while it runs and a second copy with the same name exits |
+| 21 | `eval.py` wrote `results.json` and the trace files in place | A monitor reading them could see half a file | Fixed: written to a temporary file and renamed |
 
 ## Caveats
 

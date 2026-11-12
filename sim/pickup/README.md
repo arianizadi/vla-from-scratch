@@ -97,7 +97,9 @@ demonstrations and 1.5M samples reached 91-97% with the same config. Evaluate ch
 run trains (next section): the same policy scores 0% for the first million samples.
 
 `train_resilient.sh` takes the same arguments as `train.sh` and restarts the run from its newest
-checkpoint if it dies or stops making progress. Use it for anything longer than a few minutes.
+checkpoint if it dies or stops making progress. Use it for anything longer than a few minutes. It
+keeps one trainer per run name: a second copy started with the name of a run that is still training
+exits instead of writing into the same directory.
 
 `eval.sh` writes `results/pickup/<run>/<task>/results.json` and a few rollout videos. The results
 hold the success rate with a Wilson 95% interval, a per-object breakdown, and grasp diagnostics:

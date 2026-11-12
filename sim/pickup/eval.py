@@ -27,6 +27,14 @@ AUTHKEY = b"pickup-sim"  # must match policy_server.AUTHKEY (not imported: that 
 EVAL_SEED_START = 1_000_000
 
 
+def write_json(path, data, **kwargs):
+    """Write through a temporary file, so that a monitor reading `path` never sees half of it."""
+    partial = path.with_name(path.name + ".partial")
+    with open(partial, "w") as f:
+        json.dump(data, f, **kwargs)
+    partial.replace(path)
+
+
 def _jpeg(img, quality=95):
     buf = io.BytesIO()
     Image.fromarray(img).save(buf, format="JPEG", quality=quality)
@@ -272,21 +280,20 @@ def main():
         if ep < args.videos:
             write_video(out / f"rollout_{ep:03d}_{env.target}_{'ok' if info['success'] else 'fail'}.mp4", frames)
         if ep < args.traces:
-            with open(out / f"trace_{ep:03d}_{env.target}_{'ok' if info['success'] else 'fail'}.json", "w") as f:
-                json.dump(
-                    dict(
-                        seed=seed,
-                        target=env.target,
-                        instruction=env.instruction,
-                        objects=list(env.active),
-                        control_hz=CONTROL_HZ,
-                        success=bool(info["success"]),
-                        close_step=episodes[-1]["close_step"],
-                        disturbed=disturbance.record,
-                        steps=trace,
-                    ),
-                    f,
-                )
+            write_json(
+                out / f"trace_{ep:03d}_{env.target}_{'ok' if info['success'] else 'fail'}.json",
+                dict(
+                    seed=seed,
+                    target=env.target,
+                    instruction=env.instruction,
+                    objects=list(env.active),
+                    control_hz=CONTROL_HZ,
+                    success=bool(info["success"]),
+                    close_step=episodes[-1]["close_step"],
+                    disturbed=disturbance.record,
+                    steps=trace,
+                ),
+            )
         done_n = len(episodes)
         print(
             f"[eval] {done_n}/{args.episodes} seed={seed} target={env.target} success={info['success']} "
@@ -336,8 +343,7 @@ def main():
         server=server_info,
         per_episode=episodes,
     )
-    with open(out / "results.json", "w") as f:
-        json.dump(results, f, indent=2)
+    write_json(out / "results.json", results, indent=2)
     g = results["grasp"]
     print(
         f"[eval] {args.task}: {k}/{n} = {p:.1%} "

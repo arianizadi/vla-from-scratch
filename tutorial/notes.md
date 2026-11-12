@@ -442,8 +442,8 @@ Things that cost time here and have nothing to do with models:
   that way before one of them looked too good. `eval.sh` now takes a free port, and the client stops
   unless the server reports the run and checkpoint it asked for.
 - **One trainer per run directory.** A queue script that reused a name started a second trainer in
-  the directory of a live run. It was caught before it wrote a checkpoint. Launch scripts should
-  refuse a run name whose training log is being written.
+  the directory of a live run. It was caught before it wrote a checkpoint. `train_resilient.sh` now
+  holds `<run>.pid` while it runs, and a second copy started with the same name exits.
 - **Switch averaged weights on in the config, not on the command line.** Runs relaunched by hand
   came up without them, and a run cannot gain them later unless resuming allows it (it does now).
 - **Give every dataset build its own Ray instance.** Two builds started together shared one, and the
