@@ -361,8 +361,8 @@ occurs in the demonstrations does not appear in the policy, whatever its success
 **Averaged weights.** Runs keep a running average of their weights (EMA) next to the trained ones.
 During the transition the average is far ahead: 36% against 4% at 2.0M samples, 70% against 56% at
 2.5M. Before it and after it the two are equal within noise. It is not a rule: in the 3M-sample run on
-1500 demonstrations the two stay within 9 points of each other and the trained weights are ahead as
-often as not. Saving both costs one extra copy of the
+1500 demonstrations the two stay within 9 points of each other and the trained weights are the ones
+ahead, at 9 of its 11 checkpoints. Saving both costs one extra copy of the
 model.
 
 **Flow steps.** The sampler turns noise into an action chunk in a number of steps. On the 85%

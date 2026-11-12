@@ -151,6 +151,7 @@ Problems found in VLA Foundry (or in our own code) while doing this, and their s
 | 23 | `vlm_foundry_backbone` read `vit.img_size`, which a pretrained vision tower (`vit_hf`) does not have | AttributeError as soon as such a VLM is used as a policy backbone | Fixed, tested: the images are passed on as the tower's processor made them. The rest of that route has not been run here |
 | 24 | The stage-1 tokenizer truncates on the left (its published configuration) | The language model is trained on the last 257 tokens of every longer document, not the first | Recorded, not changed; effect not measured |
 | 25 | A Hugging Face backbone's rotary frequencies are a non-persistent buffer: training casts it to bfloat16 with the model, the policy server builds the model in float32 | The backbone may see slightly different position angles in training and when served | To test (read from the code, not measured) |
+| 26 | `open_loop_check.py` assumed the policy takes as many past steps as the shards store | For a policy without history it skipped every window and ended in a TypeError | Fixed, tested: the rows are taken from the window's masks, for either kind of policy |
 
 ## Caveats
 
