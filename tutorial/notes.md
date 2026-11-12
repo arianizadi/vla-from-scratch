@@ -33,10 +33,11 @@ Status legend: **confirmed** (measured here), **open** (hypothesis, experiment q
 | One pooled image vector for the action head | 4% on the single cube | 5 |
 | One vector read from a VLM (the framework's VLA recipe), from-scratch or Qwen | 0-6% | 5 |
 | The previous action as an input | 2% after 3M samples: the policy reads its goal there instead of in the image | 8 |
-| A hold frame at the start of every demonstration, as the cure for that | 1-2% after 2.5M samples (still training) | 8 |
+| A hold frame at the start of every demonstration, as the cure for that | 0% / 4% after 5M samples, with the position table fixed: where it closes still does not depend on the scene | 8 |
 | Judging by the training loss | The loss is flat while success goes from 0% to 80% | 2, 7 |
 | Stopping at 1M samples | 3-5% for a recipe that reaches 64% at 3M on the same data | 7 |
 | Naming every object of a layout in turn | 0-1% with 1500 demonstrations and 1M samples. With 4000 and 5M it starts to look early and ends at 91% / 89%, no better than one instruction per layout, and as blind to a moved object | 10, 11 |
+| Repeating the early windows on top of random starts and recoveries | 87% / 86% against 94% / 94% without, and lower under every disturbance | 10, 11 |
 | Planning again more often | 76% when 2 actions of each chunk are executed, 85% with 8 | 12 |
 | The same starting noise for every chunk of an episode | 39-80%, worse at every setting | 12 |
 | Trusting a policy outside the conditions of its demonstrations | Policies at 89-96% score 0% when the object is moved late in the reach and 9-10% from another start pose | 9, 11 |
@@ -240,10 +241,11 @@ The history policy is not blind. The same checkpoint (2.5M samples):
 One expert action is enough for it to find the named object 97% of the time. It learned to read the
 target from the previous action, and never needed the instruction or the image for that.
 
-The three-object runs with history were trained before the position fix, which hit them harder than
-the runs without (16 action-step tokens on 4 positions against 15 on 8). The fix does not rescue them:
-the history policy trained after it, on demonstrations that begin with a hold frame, is as blind (see
-below). A history run on the plain demonstrations has not been repeated after the fix.
+The three-object runs with history in the table above were trained before the position fix, which hit
+them harder than the runs without (16 action-step tokens on 4 positions against 15 on 8). The fix
+does not rescue them: the history policy trained after it, on demonstrations that begin with a hold
+frame, is as blind (below). A history run on the plain demonstrations has not been repeated after
+the fix.
 
 **Why.** From the second step of a demonstration on, the previous action is the best predictor of
 the next one. And in the windows that start at the first frame, where there is no previous action,
@@ -255,9 +257,11 @@ served, the slot holds what the robot is really doing before it moves, which is 
 (`eval.py --first_prev_action expert`, `--expert_prefix 10`): a policy that scores far better with
 them than without is leaning on its own past. `collect.py --hold_steps 1` begins every demonstration
 with a frame of the robot at rest, so that the first windows contain what serving will provide. It
-has not helped so far: a history policy trained on such demonstrations is at 1-2% after 2.5M samples
-(still training). The leak at the first frame is then closed, but from the second step on the
-previous action still predicts the next one, and that was enough to keep the policy from looking.
+did not help: a history policy trained on such demonstrations, with the position table fixed, ends at
+0% / 4% after 5M samples, and at no checkpoint does the place where it closes depend on the scene
+(slope between -0.11 and 0.12). The leak at the first frame is then closed, but from the second step
+on the previous action still predicts the next one, and that was enough to keep the policy from
+looking.
 
 ## 9. Success is not the same as looking  (confirmed)
 
@@ -300,6 +304,7 @@ or trained / averaged where a run saved both:
 | every episode starts from a random gripper pose | 56% / 76% | 94% / 98% | 98% / 98% |
 | in 1505 of 4000 episodes the object is moved once and the expert recovers | 38% / 79% | 83% / 85% | 89% / 84% |
 | random start poses, and the object is moved once in 1456 episodes | 68% / 86% | 90% / 93% | 94% / 94% |
+| the same, windows of the first 8 frames repeated 5 extra times | 58% / 60% | 80% / 83% | 87% / 86% |
 
 After one million samples the plain run closes at the named object 65% of the time. With the early
 windows repeated it is 99%, with every object named 98%, with random starts 91%, with recoveries 81%,
@@ -311,7 +316,11 @@ Naming every object of a layout in turn shows the policy that the instruction ma
 start to look early. It ends no higher than one instruction per layout (the T block at 64%), and it
 is a third as many layouts for the same number of episodes.
 
-The run that adds repeated early windows to random starts and recoveries is in progress.
+Repeating the early windows helped the clean demonstrations (96% against 93%) and hurt the
+demonstrations with random starts and recoveries (87% / 86% against 94% / 94%, the can at 68%). In the
+first, the early windows are the only ones that need the scene, so more of them means more reasons to
+look. In the second, every window needs the scene already, and the copies only take training away
+from the later windows, where the corrections are. One seed each.
 
 **What to do.** Before collecting more demonstrations, ask which of them can be imitated without
 looking at the scene. From one fixed start pose with nothing ever moving, almost all of them can.
@@ -330,6 +339,7 @@ not have contained. 100 layouts per cell; the object is moved 80 mm:
 | random start poses | 98% | 97% | 94% / 51% / 0% | 0% |
 | recoveries | 84% | 68% | 88% / 82% / 85% | 79%, a second attempt in 99 of 99 |
 | random start poses and recoveries | 94% | 91% | 92% / 91% / 94% | 89%, a second attempt in 100 of 100 |
+| the same, early windows repeated | 86% | 85% | 74% / 78% / 81% | 77%, a second attempt in 99 of 100 |
 | scripted expert that plans again | 100% | 100% | 100% / 100% / 100% | 100% |
 
 Each ingredient buys exactly what it shows. Random start poses make the policy watch the scene while
@@ -485,11 +495,15 @@ Things that cost time here and have nothing to do with models:
 
 ## Open questions being tested
 
-- Does repeating the early windows add anything to random start poses and recoveries together?
 - How much does one run vary? The plain recipe is being repeated with another seed, with and
   without the position fix.
 - How far does the from-scratch VLA get on its pretrained VLM, against the same model without
   pretraining and against the Qwen backbone with every token?
-- Can a policy with history be made to look? The hold frame alone was not enough.
+- Can a policy with history be made to look? The hold frame alone was not enough. What is left to try
+  is in the model: drop the previous action from the inputs and keep the previous frame, or hide the
+  previous action at random during training.
+- What does a policy do once the task is done? Its demonstrations end at the lift. In a recording
+  that kept the policy running for another 0.8 s, it opened the gripper again in three of six
+  episodes. A task that continues after the grasp needs demonstrations that continue too.
 - Disturbances here are a single jump of the object. Does the recovery policy cope with an object
   that keeps moving, and with look-alike objects next to the named one?
