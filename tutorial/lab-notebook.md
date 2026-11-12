@@ -686,8 +686,9 @@ poses and recoveries (`--random_start --disturb_prob 0.5`), 5M samples, 100 unse
 evaluation, final checkpoint, trained / averaged weights where both are given. "Closed at the named
 object" is the share of first closes nearest the named object.
 
-**In progress:** the pruning tasks (steps 6-8 of the roadmap) with the new physics:
-`dp_vit_lang_reactive_prune_one4k_rs_tail10`, `..._prune_turn4k_rs_tail10_10m`, `..._prune2k_rs_tail10_10m`.
+**In progress:** the pruning tasks with turning and with several shoots, two seeds each
+(`..._prune_turn4k_rs_tail10_10m`, `..._prune2k_rs_tail10_10m`, and `..._seed43` of each), and the full task for a
+20M-sample budget (`..._prune2k_rs_tail10_20m`).
 
 **Physics change (after the runs of steps 1-5 above).** An audit of every contact found the arm sinking
 into solid things: with MuJoCo's default soft contacts (time constant 0.02 s) the position-controlled arm
@@ -921,6 +922,26 @@ stem cut in 1-6%; the third climbs slowly and ends at 36. From 16000 demonstrati
 within 10M samples: four times the demonstrations at the same number of samples means each one is seen a
 quarter as often. As with the look-alike cubes, a run that has not switched looks the same as one that
 cannot; other seeds tell them apart.
+
+### Step 6: one side shoot (`prune_one`), new physics
+
+The pruning scene of the roadmap: a potted plant (main stem with a flower on top) on a motorised stand that
+turns while one of its two push buttons is held down. In `prune_one` the plant has one side shoot, already
+facing the robot; holding it with shut jaws 2-5 cm out from the main stem for 3 control steps cuts it off.
+Touching the flower, pushing the main stem with more than 5 N, or cutting the main stem is damage and fails
+the episode. The scripted expert succeeds in 100/100 with no damage. The demonstrations: 4000, random start
+poses, the jaws held shut 10 frames past the cut (`--random_start --tail_steps 10`); 5M samples.
+
+| Run | Pruned (trained / averaged) | Flower damaged | Damage: flower touched / main stem pushed (averaged) |
+|---|---|---|---|
+| seed 42 (`dp_vit_lang_reactive_prune_one4k_rs_tail10`) | 80/100 / 77/100 | 12 / 9 | 6 / 3 |
+| seed 43 (`..._seed43`) | 89/100 / 84/100 | 6 / 6 | 6 / 0 |
+
+Averaged weights per checkpoint (damage in brackets): seed 42: 14 (76), 19 (76), 37 (62), 45 (54), 61 (30),
+69 (24), 78 (14), 78 (11), 74 (16), 81 (12), 77 (9); seed 43: 38 (36), 44 (29), 48 (31), 58 (20), 69 (14), 82 (4),
+88 (7), 88 (7), 90 (5), 92 (5), 84 (6). Early on the policy damages the flower in most episodes (up to 76%);
+damage falls as success rises, and what is left is mostly a touch of the flower head. A successful episode
+takes about 120 control steps (6 s).
 
 ## Throughput
 
