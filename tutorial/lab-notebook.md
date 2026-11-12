@@ -890,9 +890,11 @@ episodes, which is chance with three flowers, and another stem is cut in 31-50%.
 word is not used at all, the step-2 problem in a scene where it did not solve itself (red, orange and pink
 heads are look-alikes; purple is the only colour far from the others).
 
-A video of the one-flower policy, final checkpoint, averaged weights, 22 episodes recorded, 22 cut, 5
-shown: `flower-step5a-cut-one-stem.mp4` (after each cut a script opens the jaws and draws the arm back so
-that the top can be seen to fall).
+Videos, recorded with the new physics (see "Physics change" above), final checkpoint, averaged weights:
+the one-flower policy, 15 episodes recorded, 14 cut, 5 shown (`flower-step5a-cut-one-stem.mp4`; with
+the new physics it cuts 93/100); the three-flower 10M-budget policy, 43 episodes recorded, 33 cut, 5
+shown (`flower-step5-cut-the-named-stem.mp4`; 79/100 with the new physics, another stem cut in 8). After
+each cut a script opens the jaws and draws the arm back so that the top can be seen to fall.
 
 **Choosing the stem: twice the training budget.** The same 4000 demonstrations with the tail, trained for 10M
 samples (`dp_vit_lang_reactive_cut4k_rs_recover_outer_tail10_10m`; checkpoints about 0.9M samples apart),
