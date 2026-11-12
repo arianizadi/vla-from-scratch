@@ -142,6 +142,9 @@ SPAWN_X = (0.38, 0.62)
 SPAWN_Y = (-0.22, 0.22)
 LIFT_HEIGHT = 0.08  # metres above rest height that counts as "lifted"
 HOLD_STEPS = 10  # consecutive lifted control steps required for success
+CONTACT_SOLREF = [0.004, 1.0]
+CONTACT_SOLIMP = [0.95, 0.99, 0.001, 0.5, 2.0]
+CUT_GAP = 0.0015  # cut_stem: half the gap a cut leaves between the ends (rounded caps included) of the two stem pieces
 CUT_STEPS = 3  # cut_stem: consecutive control steps of env.holds_stem that cut a stem
 SPLIT_Z = 0.09  # cut_stem: where a flower's top part meets its base until a cut (metres above the base frame)
 
@@ -182,6 +185,12 @@ def build_model(cut_stems: bool = False) -> mujoco.MjModel:
     spec.option.timestep = TIMESTEP
     spec.option.impratio = 10
     spec.option.cone = mujoco.mjtCone.mjCONE_ELLIPTIC
+    # Stiff contacts: with MuJoCo's default soft contacts (time constant 0.02 s) the arm's position actuators
+    # pressed the hand 11 mm into the table and a finger 24 mm into a flower. 0.004 s is the stiffest the 2 ms
+    # step allows (at least two steps).
+    spec.option.enableflags |= mujoco.mjtEnableBit.mjENBL_OVERRIDE
+    spec.option.o_solref = CONTACT_SOLREF
+    spec.option.o_solimp = CONTACT_SOLIMP
     spec.visual.global_.offwidth = 640
     spec.visual.global_.offheight = 480
     spec.visual.headlight.ambient = [0.35, 0.35, 0.35]
@@ -353,6 +362,14 @@ class PickupEnv:
             for n in self.stems
         }
         self._geom_defaults = (m.geom_size.copy(), m.geom_pos.copy(), m.geom_rbound.copy(), m.geom_aabb.copy())
+        # While a flower is whole its two stem pieces overlap and must not collide (an exclusion); once cut they
+        # are apart and do collide, so the top cannot slide down through the base.
+        self._exclude_defaults = m.exclude_signature.copy()
+        self.exclude_index = {
+            n: int(np.flatnonzero(m.exclude_signature == (min(b, t) << 16) + max(b, t))[0])
+            for n in self.stems
+            for b, t in [(self.obj_body[n], self.top_body[n])]
+        }
         self.cut: set[str] = set()
         self.hold_counts: dict[str, int] = {}
         self.leaves: list[list[float]] = []  # [x, y, yaw] of each leaf in use
@@ -399,6 +416,7 @@ class PickupEnv:
         self._place_leaves(rng, placed, cfg.get("leaves", 0))  # draws only for tasks with leaves
         if self.cut_task:  # whole flowers again: stem pieces back to their first length, welds on, tops in place
             m.geom_size[:], m.geom_pos[:], m.geom_rbound[:], m.geom_aabb[:] = self._geom_defaults
+            m.exclude_signature[:] = self._exclude_defaults
             for n in self.stems:
                 d.eq_active[self.weld[n]] = 1
                 self._sync_top(n)
@@ -546,15 +564,22 @@ class PickupEnv:
         z = float(np.clip(self.tcp_pos()[2], lo, hi) - self.object_pos(name)[2])  # in the flower's frame
         for g in self.stem_pieces[name]:
             radius, half, centre = m.geom_size[g][0], m.geom_size[g][1], m.geom_pos[g][2]
+            # collision capsules end CUT_GAP from the cut including their rounded caps, so the pieces never overlap;
+            # the visible stem keeps a thin gap
+            end = CUT_GAP + radius if m.geom_contype[g] or m.geom_conaffinity[g] else 0.002
             if m.geom_bodyid[g] == self.obj_body[name]:
-                bottom, top = centre - half, z - 0.002
+                bottom, top = centre - half, z - end
             else:
-                bottom, top = z + 0.002, centre + half
+                bottom, top = z + end, centre + half
             half = max((top - bottom) / 2, 0.001)
             m.geom_size[g][1], m.geom_pos[g][2] = half, (top + bottom) / 2
             m.geom_rbound[g] = radius + half
             m.geom_aabb[g] = [0, 0, 0, radius, radius, half + radius]
         self.data.eq_active[self.weld[name]] = 0
+        # the pieces collide from now on: point the exclusion at a body pair that does not exist (body 65535),
+        # keeping the list sorted for MuJoCo's lookup
+        i = self.exclude_index[name]
+        m.exclude_signature[i] = (m.exclude_signature[i] >> 16 << 16) + 0xFFFF
         self.cut.add(name)
         mujoco.mj_forward(m, self.data)
 

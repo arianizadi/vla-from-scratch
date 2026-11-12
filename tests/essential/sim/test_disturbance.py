@@ -245,6 +245,11 @@ def test_the_expert_cuts_the_named_stem_and_the_top_comes_free(task):
             if info["success"]:
                 assert info["cut"] == [env.target]
                 assert not env.data.eq_active[env.weld[env.target]], "the weld still holds the top"
+                piece = env.top_body[env.target]
+                z_cut = env.data.xipos[piece][2]
+                for _ in range(10):  # jaws still shut: the top rests on the stub, it does not slide down through it
+                    env.step(env.last_action.copy())
+                assert env.data.xipos[piece][2] > z_cut - 0.01, "the top slid down through the base"
                 for _ in range(40):  # open the jaws and back off: the top part is free and falls
                     env.step(np.concatenate([env.last_action[:7], [1.0]]))
                 piece = env.top_body[env.target]

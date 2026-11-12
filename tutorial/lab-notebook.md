@@ -690,6 +690,17 @@ object" is the share of first closes nearest the named object.
 (`..._cut16k_rs_recover_outer_tail10_10m`), and the 4000-demonstration 10M run with other seeds
 (`..._cut4k_rs_recover_outer_tail10_10m_seed43`, `..._seed44`).
 
+**Physics change (after the runs of steps 1-5 above).** An audit of every contact found the arm sinking
+into solid things: with MuJoCo's default soft contacts (time constant 0.02 s) the position-controlled arm
+pressed the hand 11 mm into the table and a finger 24 mm into a flower, and after a cut the top part slid
+down through its own base stem (the two stem pieces were excluded from colliding with each other so that
+they could overlap while whole). Now contacts are stiff (`o_solref` 0.004 s, the stiffest the 2 ms step
+allows), a cut leaves the two pieces apart and colliding, and a test checks that a cut top rests on the stub
+instead of sliding through it. The deepest contact is now 2-7 mm (fingers squeezing the cut pieces with the
+jaws shut). The scripted expert, 100 layouts each: `pick_target` 100, `pick_clutter` 99, `grasp_stem` 91,
+`cut_stem` 91, `cut_one` 100 (before: 100, 100, 88, 92, 100). The policy results above were measured with
+the old physics.
+
 ### Step 1: a target that keeps moving (`--disturb drift`)
 
 The named object slides on a winding path at a fixed speed whenever the gripper is open (it turns away
@@ -884,13 +895,16 @@ A video of the one-flower policy, final checkpoint, averaged weights, 22 episode
 shown: `flower-step5a-cut-one-stem.mp4` (after each cut a script opens the jaws and draws the arm back so
 that the top can be seen to fall).
 
-**Choosing the stem: twice the samples.** The same 4000 demonstrations with the tail, trained for 10M
+**Choosing the stem: twice the training budget.** The same 4000 demonstrations with the tail, trained for 10M
 samples (`dp_vit_lang_reactive_cut4k_rs_recover_outer_tail10_10m`; checkpoints about 0.9M samples apart),
 cut the named stem in 89/100 / 87/100, another stem in 3/100 / 6/100, and its first close is nearest the
 named stem in 90% (the scripted expert cuts 92/100). Averaged weights per checkpoint (another stem cut in
 brackets): 21 (32), 19 (50), 26 (43), 65 (23), 76 (9), 80 (3), 79 (3), 84 (4), 84 (8), 82 (8), 87 (6). Up to
 about 2.7M samples it is the 5M run again; by about 3.6M it has started to use the colour word, all at once,
-the same late and sudden switch as the look-alike cubes of step 2. By flower: red 23/24, pink 23/25,
+the same late and sudden switch as the look-alike cubes of step 2. That is before the 5M run ended,
+so the difference is not simply more samples: the learning rate follows a cosine over the planned budget
+(`lr_scheduler: cosine`, peak 5e-4), and at 3.6M samples this run still had about 71% of its peak rate, the
+5M run about 18%. One seed of each so far. By flower: red 23/24, pink 23/25,
 orange 22/28, purple 19/23 (averaged weights). From 16000 demonstrations
 (`..._cut16k_rs_recover_outer_tail10_10m`) the switch has not come after 8 of 11 checkpoints (averaged
 weights 16, 23, 19, 22, 20, 21, 34, 29; another stem cut in 30-64%): four times the demonstrations, at the
