@@ -686,8 +686,9 @@ poses and recoveries (`--random_start --disturb_prob 0.5`), 5M samples, 100 unse
 evaluation, final checkpoint, trained / averaged weights where both are given. "Closed at the named
 object" is the share of first closes nearest the named object.
 
-**In progress:** the three-flower cut with the jaws held shut after the cut, for 10M samples, from 4000 and
-from 16000 demonstrations (`..._cut4k_rs_recover_outer_tail10_10m`, `..._cut16k_rs_recover_outer_tail10_10m`).
+**In progress:** the three-flower cut for 10M samples from 16000 demonstrations
+(`..._cut16k_rs_recover_outer_tail10_10m`), and the 4000-demonstration 10M run with other seeds
+(`..._cut4k_rs_recover_outer_tail10_10m_seed43`, `..._seed44`).
 
 ### Step 1: a target that keeps moving (`--disturb drift`)
 
@@ -882,6 +883,18 @@ heads are look-alikes; purple is the only colour far from the others).
 A video of the one-flower policy, final checkpoint, averaged weights, 22 episodes recorded, 22 cut, 5
 shown: `flower-step5a-cut-one-stem.mp4` (after each cut a script opens the jaws and draws the arm back so
 that the top can be seen to fall).
+
+**Choosing the stem: twice the samples.** The same 4000 demonstrations with the tail, trained for 10M
+samples (`dp_vit_lang_reactive_cut4k_rs_recover_outer_tail10_10m`; checkpoints about 0.9M samples apart),
+cut the named stem in 89/100 / 87/100, another stem in 3/100 / 6/100, and its first close is nearest the
+named stem in 90% (the scripted expert cuts 92/100). Averaged weights per checkpoint (another stem cut in
+brackets): 21 (32), 19 (50), 26 (43), 65 (23), 76 (9), 80 (3), 79 (3), 84 (4), 84 (8), 82 (8), 87 (6). Up to
+about 2.7M samples it is the 5M run again; by about 3.6M it has started to use the colour word, all at once,
+the same late and sudden switch as the look-alike cubes of step 2. By flower: red 23/24, pink 23/25,
+orange 22/28, purple 19/23 (averaged weights). From 16000 demonstrations
+(`..._cut16k_rs_recover_outer_tail10_10m`) the switch has not come after 8 of 11 checkpoints (averaged
+weights 16, 23, 19, 22, 20, 21, 34, 29; another stem cut in 30-64%): four times the demonstrations, at the
+same number of samples, means each one is seen a quarter as often.
 
 ## Throughput
 
