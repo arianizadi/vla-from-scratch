@@ -9,8 +9,7 @@ status: draft
 # Training a VLM
 
 A vision-language model (VLM) is trained like a language model, by predicting the next token,
-except that part of its input sequence is an image, and only text positions are scored: the image
-positions and the padding are left out of the loss. Here that is stage 2 of the from-scratch path:
+except that part of its input sequence is an image, and only text positions are scored. Here that is stage 2 of the from-scratch path:
 the stage-1 language model gains a vision transformer (ViT) and a projector and learns to caption
 renders of the pick-up scene. Stage 3 turns the result into a robot policy, so what the captions
 teach is what the policy's backbone knows about the scene before it sees an action.
@@ -87,8 +86,8 @@ image; padding because it is not text.
 A **checkpoint** is the training state saved at one point: weights, optimiser state and position
 in the data. Stage 2 takes only the weights of the last stage-1 checkpoint, and only into the
 language model (91.4M parameters). The ViT (4,955,392 parameters) and the projector (one linear
-layer 256 -> 512 without bias, 131,072) start random; those two counts are arithmetic on the
-config's layer sizes, and the three sum to the lab notebook's 96.5M. At optimiser step 0 the
+layer 256 -> 512 without bias, 131,072) start random; those two counts follow from the
+config's layer sizes, and the three sum to the notebook's 96.5M. At optimiser step 0 the
 language model therefore receives three prompt tokens, then 256 vectors that are a random function
 of the image, then text: the image information is there, in no form it can use yet.
 
@@ -99,7 +98,7 @@ neighbour for a while, or warming up its learning rate slowly, avoids it.
 | Starting point | Choice | Reason |
 |---|---|---|
 | Pretrained encoder and language model. Background: LLaVA (Liu, 2023) | vision encoder frozen throughout; train only the projector, then the projector and the language model | the projector becomes a visual tokenizer for an already good language model |
-| The same. Background: PaliGemma (Beyer, 2024) | nothing frozen, the image encoder's learning rate warmed up slowly; in its ablation, freezing the language model was significantly worse, and freezing only the image encoder changed nothing after transfer but worsened validation perplexity on spatial tasks | a captioning loss can teach the encoder spatial skills |
+| The same. Background: PaliGemma (Beyer, 2024) | nothing frozen, the image encoder's learning rate warmed up slowly; in its ablation, freezing the language model was worse, and freezing the image encoder worsened perplexity on spatial tasks | a captioning loss can teach the encoder spatial skills |
 | Stage 2 here: random ViT and projector, a language model trained for about 15 minutes | nothing frozen | a frozen random ViT cannot learn to see, and the language model must learn a new kind of text |
 
 Freezing the language model was not run here; exercise 2 shows the switch.
@@ -107,8 +106,7 @@ Freezing the language model was not run here; exercise 2 shows the switch.
 ### Captions from a scene you control
 
 A simulator knows the 3-D position of every object, so a caption that says where things are can
-be computed. Background: CLEVR (Johnson, 2016) generated its questions the same way, from the
-renderer's record of each scene.
+be computed. Background: CLEVR (Johnson, 2016) generated its questions the same way.
 [`sim/pickup/caption_data.py`](../../sim/pickup/caption_data.py) does it in three steps.
 
 1. **Make a scene.** For each seed from 2,000,000 the script picks `pick_target` with probability
@@ -150,7 +148,7 @@ They cannot teach what they never state: depth, distance in metres, orientation,
 gripper is relative to an object, or which object an instruction means (a policy learns that from
 demonstrations, [Language conditioning](51-language-conditioning.md)). Position is given to a
 third of the image, about 75 pixels. By arithmetic on the front camera's pose in
-`sim/pickup/env.py` (1.05 m from the point it looks at, `fovy=45`), the image spans about 0.87 m
+`sim/pickup/env.py` (1.05 m from the point it looks at), the image spans about 0.87 m
 at that distance and one band about 0.29 m: about thirty times the 10 mm grasp-point error that
 cuts the can's success from 94% to 60% on machine A (one RTX 4090, 24 GB; the notebook's
 grasp-tolerance table).
@@ -196,8 +194,8 @@ sim/pickup/scripts/custom_path.sh check   # held-out captioning check
 ```
 
 The `vlm` stage of [`custom_path.sh`](../../sim/pickup/scripts/custom_path.sh) passes the
-highest-numbered `checkpoint_N.pt` in `experiments/pickup/custom_llm/checkpoints`, the file that
-holds a checkpoint's weights, to `vla_foundry/main.py` as
+highest-numbered weights file, `checkpoint_N.pt` in `experiments/pickup/custom_llm/checkpoints`, to
+`vla_foundry/main.py` as
 `--model.transformer.resume_from_checkpoint`. Checkpoints go to
 `experiments/pickup/custom_vlm/checkpoints`. Budgets: `PICKUP_VLM_SAMPLES` (default 400000) and
 `PICKUP_CAPTION_SCENES` (default 20000), which the `data` stage ignores once
@@ -205,12 +203,11 @@ holds a checkpoint's weights, to `vla_foundry/main.py` as
 
 In [`custom_vlm.yaml`](../../sim/pickup/configs/custom_vlm.yaml),
 `data.allow_multiple_epochs: true` permits the 10 passes that 400,000 samples make over 40,000
-pairs, and `data.img_num_tokens` has to match the ViT's 256 patch tokens
-([Joining vision and language](30-joining-vision-and-language.md)).
+pairs, and `data.img_num_tokens` must equal the ViT's 256 patch tokens.
 
 ## What we measured
 
-From the lab notebook: the 96.5M model after 400k samples on 40,000 captioned sim renders,
+The 96.5M model after 400k samples on 40,000 captioned sim renders,
 checked on 300 held-out scenes (seeds the training set never used).
 
 | | Final loss | Objects listed in left-to-right order | Leftmost object named |
@@ -230,42 +227,44 @@ processor scaled inference images to [0, 1] but left the uint8 tensors of traini
 ([train/inference skew](93-train-inference-skew.md)).
 
 **Positions.** The first two rows were trained before a second fix. Stage 2 runs in mixed
-precision (`hparams.precision: amp_bf16`), and the table of rotary position angles, which tells attention
-where each token is ([Telling tokens where they are](12-positions.md)), was computed in its
-16-bit format, bfloat16. That holds every whole number up to 256, only the even ones up to 512
-and fewer beyond: 641 distinct positions remained out of 2048. Stage 1's 256-token sequences were
-not affected; the VLM's 320 were. By arithmetic, the first three caption tokens (positions 259 to
-261) all got the angles of position 260, and the example's 24 caption tokens stood on 12
-positions. Trained again with the table fixed, the same VLM scores 89% and 95% against 83% and
-93% (the machine B rows, one seed each, so a few points may be noise). What the old table cost
-a policy built on the VLM was not measured on its own.
+precision (`hparams.precision: amp_bf16`), and the table of rotary position angles was computed in
+bfloat16, which keeps every whole number up to 256 but only the even ones up to 512 (641 distinct
+positions out of 2048; [Telling tokens where they are](12-positions.md) has the mechanism). Stage 1's 256-token sequences were not affected; the VLM's 320 were, and in
+the worst place: every caption token sits above position 258. By arithmetic, the first three
+caption tokens (positions 259 to 261) all got the angles of position 260, and the example's 24
+caption tokens stood on 12 positions. Trained again with the table fixed, the same VLM scores 89%
+and 95% against 83% and 93% (machine B, one seed each: a few points may be noise). What the old
+table cost a policy built on the VLM was not measured on its own.
 
 **The policy.** The captioning scores alone do not show that a policy benefits. In the first
 round (machine A) the stage-3 policy built on this VLM scored 0/100 on `pick_target`, where the
-instruction names one of three objects, and 1/100 with a randomly initialised VLM. Both closed at
-the named object at chance (33% and 29%); neither could have found it, whatever its backbone
-knew. Each had one conditioning vector reaching the action head
-([What the action head sees](50-what-the-action-head-sees.md)); history (the previous frame, state
-and action), from which another policy here read its target without looking
-([History and shortcuts](52-history-and-shortcuts.md)); and 1M samples on 1500 demonstrations. At
-that budget `dp_vit_lang_reactive`, a patch-token policy with no VLM, scored 3% / 5% (trained /
-averaged weights); with 4000 demonstrations and 5M samples it reached 83% / 85% before the position fix and 93% (trained weights) after it (machine B,
-[How much data and training](71-how-much-data-and-training.md)). Trained again with every token
-passed to the action head, no history, 4000 demonstrations and 3M samples (machine B, after the
-fix), the pair ends at 86% / 87% with the VLM pretrained on these captions and 75% / 85% with a
-randomly initialised one. The pretrained one starts to look after 0.25M samples, the other after
-about 1.0M: what the captions buy is mainly an earlier start
-([The from-scratch path](62-the-from-scratch-path.md); notes: 'Pretraining a backbone: mainly an
-earlier start').
+instruction names one of three objects, and closed at the named object (the object nearest the
+gripper when it first closed was the named one) about as often as the same policy
+on a randomly initialised VLM: 33% and 29%, where chance is 33%
+([Measuring how a policy fails](92-measuring-failure.md)). That run had three handicaps, none of
+them the captions: one conditioning vector reached the action head
+([What the action head sees](50-what-the-action-head-sees.md)), the policy had history (the
+previous frame, state and action as inputs; [History and shortcuts](52-history-and-shortcuts.md)),
+and it had 1M samples on 1500 demonstrations, too few even for a patch-token policy with no VLM
+([How much data and training](71-how-much-data-and-training.md)). With all three changed (every
+token passed to the action head, no history, 4000 demonstrations, 3M samples; machine B, after the
+fix), the policy on this VLM starts to look (closes at the named object far above chance) after
+0.25M samples (81% / 97%, trained / averaged weights), the one on a randomly initialised VLM only
+after about 1.0M (84% / 68%; 33% / 28% at 0.25M): what the captions buy is mainly an earlier start
+([A backbone from scratch against a pretrained one](102-case-pretrained-backbones.md)).
+
+That fits what the captions can teach (an interpretation, not isolated by a run): they tie names
+to bands about 0.29 m wide, so the pretrained backbone tells the objects apart from the start, and the
+factor of thirty down to a 10 mm grasp has to come from the demonstrations either way.
 
 ## Where it goes wrong
 
 | What you see | Why | How to check, what to do |
 |---|---|---|
-| `AssertionError` in `VLM.forward` on the first batch | the start-up check, `TrainExperimentParams.check_asserts` in `vla_foundry/params/train_experiment_params.py`, only requires `seq_len >= img_num_tokens`. A row is 3 + 256 + c + 2 ids and truncation is from the left: the three prompt tokens go first, without an error, then placeholders | keep `seq_len + 1 >= 3 + img_num_tokens + c + 2`; exercise 3, run on the longest caption, must print `<\|im_start\|>` |
+| `AssertionError` in `VLM.forward` on the first batch | the start-up check, `TrainExperimentParams.check_asserts`, only requires `seq_len >= img_num_tokens`. A row is 3 + 256 + c + 2 ids and truncation is from the left: the three prompt tokens go first, without an error, then placeholders | keep `seq_len + 1 >= 3 + img_num_tokens + c + 2`; exercise 3, run on the longest caption, must print `<\|im_start\|>` |
 | Low loss, wrong objects in the check | the scored tokens were predictable without position or without the image; or the check feeds the model other tensors than training did, as with the pixel range | compare the ordering score with chance and the loss with a mismatched image ([Testing a VLM](32-testing-a-vlm.md)); add forms that state position |
 | Nothing: the loss falls and the check passes | until the position table was fixed, tokens above position 256 shared angles ("What we measured"); training and the check built the same table | `RotaryEmbedding._update_cos_sin_tables` in [`vla_foundry/positional_embedding.py`](../../vla_foundry/positional_embedding.py) now computes the angles in float32. A VLM trained before that was fitted to the old table: train it again, or run it with `positional_embedding_type: rotary_legacy_autocast` under `transformer` in its `config_model.yaml` |
-| A caption can name an object the image does not show | `caption` tests only the projected centre: an object behind the arm is named, and one centred past 0.92 is not, though part of it shows | print a caption with `tar -xOf data/custom/sim_captions/shard-000000.tar 02000000_front.txt` and view the `.jpg` of the same key; accept such captions as label noise, or test visibility with a segmentation render (an object id per pixel) |
+| A caption can name an object the image does not show | `caption` tests only the projected centre: an object behind the arm is named, and one centred past 0.92 is not, though part of it shows | compare a caption (`tar -xOf data/custom/sim_captions/shard-000000.tar 02000000_front.txt`) with the `.jpg` of the same key; accept the label noise, or test visibility with a segmentation render (an object id per pixel) |
 
 ## Background and further reading
 

@@ -64,9 +64,11 @@ closing a median 5 mm from the object.
 where the gripper and every object are at the first command to close.
 
 **Measured.** `dp_vit` and both `vla_custom` closed the gripper in every episode, at the right
-height (within about 3 mm), around control steps 34-44, as the expert does. They ran the whole
-motion, but a median 174-185 mm from the named object and 89-110 mm from the nearest, and closed at
-the named one 29-33% of the time: chance.
+height, around control steps 34-44, as the expert does: they ran the whole motion, but closed at
+the named object only at chance and 89-110 mm from the nearest object. That distance, from where
+the gripper first closed to an object, is the **miss** (the notebook's "median miss" columns; the
+per-policy table:
+[Measuring failure](92-measuring-failure.md)).
 
 <!-- interactive: grasp-map -->
 *Figure: where the gripper first closed, one dot per episode, around the named object, for the
@@ -88,18 +90,21 @@ evaluations of a run pooled (notebook, "Does the closing position depend on the 
 | language, no history (starting to move, section 6) | 0.03 / 0.15 | 0.001 / 0.021 |
 
 **Changed.** Closing at the mean of three independently placed objects would give a slope of about
-1/3 against the named one (arithmetic, not a measurement). These are at most 0.15, and R² (the
-share of the closing position's variation the object's position explains) at most 0.021. The
-miss is the same against another episode's objects, and the closing positions fill the area where
-objects are placed (field notes, "A failing policy ignores the scene; it does not average"). The
-question became "why does it not look" ([Measuring failure](92-measuring-failure.md)).
+1/3 against the named one. On one axis the mean is $\bar x = (x_1 + x_2 + x_3)/3$ with $x_1$ the
+named object; the other two do not move with it, so
+$\mathrm{cov}(\bar x, x_1)/\mathrm{var}(x_1) = 1/3$ (arithmetic, not a measurement; Check yourself
+2 simulates it). These are at most 0.15, and R² (the share of the closing position's variation the
+object's position explains) at most 0.021. The miss is the same against another episode's objects,
+and the closing positions fill the area where objects are placed (field notes, "A failing policy
+ignores the scene; it does not average"). The question became "why does it not look"
+([Measuring failure](92-measuring-failure.md)).
 
 ### 4. Four candidate causes
 
 | Candidate | How it was tested |
 |---|---|
 | No language input (`dp_vit.yaml` has no `text_tokens`) | needed by construction: without it, one object in three at best; section 5 adds it |
-| One conditioning vector (the VLAs) | tested after the position fix with every token handed over (`conditioning: all_tokens`), no history, 4000 demonstrations: from-scratch VLA 86% / 87%, Qwen 70% / 72%; history, data, budget (3M and 0.5M samples) and the position table changed too (field notes, "One pooled vector is not enough for grasping"). `dp_vit` had patch tokens, so not its cause |
+| One conditioning vector (the VLAs) | tested after the position fix (section 7) with every token handed over (`conditioning: all_tokens`): [Case study: pretrained backbones](102-case-pretrained-backbones.md). `dp_vit` had patch tokens, so not its cause |
 | History: "keep going" predicts most actions | with and without, sections 5-6 |
 | Budget and data: 1M samples on 1500 demonstrations | longer runs, more demonstrations, section 6 |
 
@@ -125,139 +130,107 @@ longer.
 ### 6. Training long enough
 
 **Ran.** `dp_vit_lang_reactive` on 4000 demonstrations for 5M samples (19.0 epochs) and on the
-same 1500 for 3M (30.4 epochs), every checkpoint evaluated.
+same 1500 for 3M (30.4 epochs), every checkpoint evaluated (`eval_checkpoints.sh`).
 
-**Measured.** Notebook, "4000 demonstrations, no history":
+**Measured.** The 4000-demonstration run was at 0% / 1% after 1.0M samples; at 2.0M its slope was
+already 0.81 / 0.96 while success was 4% / 36%; it ended at 83% / 85% (notebook, "4000
+demonstrations, no history"; the whole curve and the 1500-demonstration run:
+[How much data and training](71-how-much-data-and-training.md)). It went from not using the scene
+(slope 0.11 / 0.14 at 1.0M samples) to using it (0.94 / 0.98 at 2.5M), mostly between 1.5M and
+2.5M; that stretch is the **transition**. That order is what to watch for
+in a run of your own: the slope rises first, then the miss shrinks, then success follows.
 
-| Samples | Success (raw / EMA) | Closed at the named object | Slope | Median miss |
-|---|---|---|---|---|
-| 1.0M | 0% / 1% | 35% / 32% | 0.11 / 0.14 | 138 / 154 mm |
-| 1.5M | 4% / 2% | 61% / 49% | 0.47 / 0.37 | 102 / 104 mm |
-| 2.0M | 4% / 36% | 95% / 98% | 0.81 / 0.96 | 32 / 18 mm |
-| 5.0M (final) | 83% / 85% | 100% / 100% | 0.98 / 0.98 | 7 / 7 mm |
+**Why the 1M runs of section 5 could not show it.** The learning rate follows `cosine_lr` in
+[`vla_foundry/scheduler.py`](../../vla_foundry/scheduler.py): 1000 warm-up optimiser steps (the
+`warmup` default in `vla_foundry/params/hyper_params.py`), then a cosine from 5e-4 down to 1e-5
+(`lr` and `lr_cooldown_end` in `vla_foundry/config_presets/hparams/diffusion_policy.yaml`).
+`create_scheduler` stretches it over the run's own budget, `total_train_samples` divided by the
+batch of 64. The same sample count therefore means a different learning rate in runs of different
+length. Computed from that code (Check yourself 3), not measured:
 
-Between 1.5M and 2.5M comes the **transition**, the stretch of training in which the slope goes
-from near 0 to near 1: slope first, then miss, then success. The 1500-demonstration run did the
-same, earlier: 21% / 18% at 1.5M. The learning-rate schedule (a cosine from 5e-4 down to
-1e-5) is stretched over each run's own budget, so the 1M run of section 5 reached the transition
-with its learning rate already near zero. Choose the budget before starting; resuming a finished
-short run does not give the long one ([How much data and training](71-how-much-data-and-training.md)).
-
-History was tested with the twin `dp_vit_lang` on the same 4000 demonstrations: 2% / 2% after
-3.0M samples (81% / 75% without history). Its 2.5M checkpoint (EMA) is not blind; the **hold
-command** keeps the arm where it is, and the robot is under it before it moves
-(notebook, "What the history policy depends on"):
-
-| At the start of the episode | Success | Closed at the named object |
+| Samples seen | Learning rate, 1M-sample run | Learning rate, 5M-sample run |
 |---|---|---|
-| as served: the previous action is the hold command | 1/100 | 30% |
-| the previous action is the expert's first command | 22/100 | 97% |
-| the expert drives the first 10 control steps | 77/100 | 100% |
+| 0.5M | 2.8e-4 | 4.9e-4 |
+| 1.0M | 1.0e-5 | 4.6e-4 |
 
-It reads the target from its previous action. A window that starts at a demonstration's first frame
-fills that slot with a copy of the expert's first command; served, it holds the hold command: a
-train/inference skew ([History and shortcuts](52-history-and-shortcuts.md),
-[Train/inference skew](93-train-inference-skew.md)).
+The 1500-demonstration 1M run's last checkpoints sit at the start of the transition (notebook), with
+the learning rate at its floor. Choose the budget before starting; resuming a finished short run
+does not give the long one.
 
-These runs predate the position fix of section 7, which hit the history policy harder (16
-action-step tokens on 4 positions); on the single cube, history costs nothing once the table is
-fixed (96% / 98%). After the fix, a history policy trained on demonstrations that begin with one
-frame of the robot at rest (`collect.py --hold_steps 1`, closing the first-frame leak) ends at
-0% / 4% after 5M samples; where it closes never depends on the scene (slope -0.11 to 0.12), since
-from the second step on the previous action still predicts the next one (field notes, "The previous
-action as an input"). A history run on the plain demonstrations was not repeated after the fix.
+**History.** The twin with history, `dp_vit_lang`, on the same 4000 demonstrations ended at 2% / 2%
+after 3.0M samples, against 81% / 75% without history at that point, and where it closed never
+depended on the scene (pooled slope 0.08 / 0.04, R² 0.004 / 0.002; notebook, "Does the closing
+position depend on the scene?"). It is not blind: it reads the target from its previous action, a
+train/inference skew that two probes expose and a hold frame at the start of each demonstration did
+not cure ([History and shortcuts](52-history-and-shortcuts.md), which also has what stands after
+the position fix of section 7). History left the recipe.
 
 <!-- interactive: onset -->
 *Figure: success, closed at the named object and slope against training samples for these runs;
 the history run stays flat.*
 
-**Changed.** The recipe became 4000 demonstrations and 5M samples: 83% / 85% against 64% / 62%
-with 1500 and 3M. Data and budget both differ: this ranks the recipes, not the effect of data.
+**Changed.** The recipe became 4000 demonstrations and 5M samples, against 64% / 62% for 1500
+and 3M. Data and budget both differ: this ranks the recipes, not the effect of data.
 
 ### 7. Two detours
 
 **Results under the wrong name.** Two evaluations sharing a local port both reached the policy
 server bound to it first, filing about 40 results under the wrong run; they were redone. `eval.sh`
 now takes a free port and passes `eval.py --expect_run`, which stops unless the server serves the
-run (and checkpoint) asked for.
+run (and checkpoint) asked for. Results written before that check are caught afterwards:
+`served_checkpoint_matches` in [`sim/pickup/summarize.py`](../../sim/pickup/summarize.py) compares
+the checkpoint the server recorded in `results.json` with the run, number and weights the
+directory names, and `summarize` leaves out every evaluation where they differ.
 
 **The position table in half precision.** The position table holds the rotary angles precomputed
-for each token position ([Positions](12-positions.md)). `RotaryEmbedding._update_cos_sin_tables` in
+for each token position. `RotaryEmbedding._update_cos_sin_tables` in
 [`vla_foundry/positional_embedding.py`](../../vla_foundry/positional_embedding.py) computed it in
-bfloat16 under autocast. With 8 significant bits, integers above 256 round to even
-numbers, above 512 to multiples of 4 and above 1024 to multiples of 8: 641 distinct positions of 2048. Without history the 15
-**action-step tokens** (one per predicted action) sit at positions 426-440, after 1 noise-level
-token, 32 instruction tokens, 392 patch tokens and 1 state token: 8 distinct positions. With history
-about 820 tokens come first and a 16th action-step token holds the previous action: 16 on 4
-positions. Training and serving shared the table, so nothing looked wrong; every run in sections
-1-6 used it, except the every-token VLAs (section 4) and the hold-frame and single-cube history
-runs (section 6). It is now computed in float32; `positional_embedding_type: rotary_legacy_autocast`
-reproduces the old one.
-
-After the fix, same recipe, trained weights, before in brackets (notebook, "The same run before
-and after the fix"): 8% at 1.0M samples (0%); 58% at 1.5M (4%); 93% at
-5.0M (83%; T block 20/23 against 15/23). What sections 3-6 concluded still holds, but the
-transition comes earlier, mostly between 1.0M and 1.5M instead of 1.5M and 2.5M. A second pair with
-other seeds, differing in the table alone, agrees: closed at the named object after 1.0M samples 83%
-against 44% (trained weights), and 96% / 96% at the end against 90% / 89% (notebook, "A second seed,
-with and without the fix"). Final gaps (trained weights): 10 and 6 points.
+bfloat16 under autocast, which merged neighbouring positions, the action-step tokens among them
+([Positions](12-positions.md) has the mechanism and the count). Training and serving shared the
+table, so nothing looked wrong. It is now computed in float32;
+`positional_embedding_type: rotary_legacy_autocast` reproduces the old one (command 8). With the
+fix the same recipe ends at 93% (trained weights) against 83%, and starts to look earlier, mostly
+between 1.0M and 1.5M samples instead of 1.5M and 2.5M; a second pair of seeds, differing in the
+table alone, agrees. What sections 3-6 concluded still holds. Every run in sections 1-6 used the old
+table, except the every-token VLAs (section 4) and the hold-frame history run (section 6).
 
 ### 8. What the probes showed: it looks once
 
 **Believed.** That the 85% policy, without history, watches the scene.
 
-**Measured.** Probes of the 85% checkpoint (before the fix, EMA)
-([What a policy looks at](95-what-a-policy-looks-at.md); notebook, "What the no-history policy
-depends on", "Disturbances"). Objects are moved 80 mm; the expert closes around control step 40:
-
-| Probe | Success | Where it closed |
-|---|---|---|
-| cameras frozen on the first frame | 1/100 | at the named object in 99%, 17 mm off |
-| expert drives 25 control steps toward another object | 0/100 | at that object in 100/100 |
-| object moved at control step 20 | 0/96 | 8 mm from the old place, 78 mm from the new |
+**Measured.** Three probes of that checkpoint (EMA, before the fix) said otherwise
+([What a policy looks at](95-what-a-policy-looks-at.md) has them probe by probe). With the cameras
+frozen on the first frame it still closed at the named object, a little further off, and almost
+never succeeded. When the expert drove the first 25 control steps toward another object, it closed
+at that object. When the named object was moved 80 mm at control step 20, it closed at the old
+place.
 
 <!-- interactive: disturbance -->
 *Figure: a top-down replay of a reach during which the named object is moved; the gripper closes
 at the old place.*
 
-With frozen cameras it misses by 17 mm instead of 7: later images only refine the last
-centimetres. It decides from its first look, then follows its own arm, whose straight reach
-from one home pose gives the end away. The policy trained after the fix does the same (frozen
-cameras 1/100; the "clean" row of section 9).
+It decides from its first look, then follows its own arm, whose straight reach from one home pose
+gives the end away; later images only refine the last centimetres. The policy trained after the fix
+does the same.
 
 ### 9. What changed that: the demonstrations
 
-After the fix, same policy, 4000 demonstrations, 5M samples, only the data changed (notebook, "What
-the demonstrations contain"). Repeating the windows of the first 8 frames 6 times (the frames where
-the scene alone says where to go) ends at 96%. Two changes add what plain demonstrations lack:
+After the fix, same policy, 4000 demonstrations, 5M samples, only the data changed. Two collection
+options add what plain demonstrations lack:
 
 - **Random start poses** (`collect.py --random_start`): the arm's position no longer gives the goal
-  away: 98% / 98%, within noise of the 96%.
-- **Recoveries** (`collect.py --disturb_prob 0.5`): in 1505 of 4000 episodes the object is moved
-  5-10 cm once, during the reach (control steps 5-29) or as the gripper closes (`Disturbance`), and
-  the expert plans again. 89% / 84%.
-- **Both** (`collect.py --random_start --disturb_prob 0.5`; the object is moved once in 1456
-  episodes): 94% / 94%.
+  away. Alone they reach 98% / 98%, the title's 98, but the policy watches only early in the reach.
+- **Recoveries** (`collect.py --disturb_prob 0.5`): in 1505 of 4000 episodes the object is
+  moved 5-10 cm once, during the reach or as the gripper closes (`Disturbance`), and the expert
+  plans again. Alone they make the policy follow a late move and try again, at a cost on the
+  unchanged task.
+- **Both** end at 94% / 94% and hold 89-94% under every disturbance, also from a random start
+  pose: the recipe `README.md` recommends.
 
-Final checkpoints, averaged weights where saved (notebook, "How each policy copes outside the
-conditions it was trained in"):
-
-| Trained on | Standard | Random start | Moved at control step 10 | 20 | 30 | Moved at the grasp |
-|---|---|---|---|---|---|---|
-| clean | 93/100 | 9/100 | 12/100 | 0/97 | 0/100 | 0/100 (8 retried) |
-| random starts | 98/100 | 97/100 | 94/100 | 50/98 | 0/100 | 0/100 (2 retried) |
-| recoveries | 84/100 | 68/100 | 88/100 | 79/96 | 85/100 | 78/99 (99 retried) |
-| random starts and recoveries | 94/100 | 91/100 | 92/100 | 89/98 | 94/100 | 89/100 (100 retried) |
-
-With one plan per episode the scripted expert fails every moved-object column; planning again, it
-succeeds in all. Random starts make the policy watch early in the reach only; only recoveries in
-the data make it follow a late move and try again.
-Recoveries alone cost something on the unchanged task (84/100 here, 93/100 on a second set of
-layouts, the can at 77% against 90% clean). With random start poses as well, 94/100 on the first set, as
-high as clean; on the second set 87/100, below recoveries alone (93/100) and clean (96/100). It
-holds 89-94% under every disturbance, also from a random start pose (field notes,
-"Self-correction has to be in the data"): the recipe `README.md` recommends. One seed each; why
-each helps: [What a policy looks at](95-what-a-policy-looks-at.md).
+One seed each. What each option does over training:
+[Which demonstrations teach what](72-which-demonstrations-teach.md). The policies under every
+disturbance, with the scripted expert as the reference:
+[Case study: self-correction](103-case-self-correction.md).
 
 ## In this repository
 
@@ -289,7 +262,7 @@ PICKUP_OUT=$out/handover sim/pickup/scripts/eval.sh $run pick_target 100 --exper
 PICKUP_OUT=$out/reach20  sim/pickup/scripts/eval.sh $run pick_target 100 --disturb reach --disturb_step 20
 PICKUP_OUT=$out/grasp    sim/pickup/scripts/eval.sh $run pick_target 100 --disturb grasp
 PICKUP_OUT=$out/random   sim/pickup/scripts/eval.sh $run pick_target 100 --random_start
-# the other columns of section 9: --disturb_step 10 and --disturb_step 30 in place of 20
+# other moments of the move: --disturb_step 10 and --disturb_step 30 in place of 20
 # with history, also: --first_prev_action expert, and --expert_prefix 10
 
 # 5. the reference: an expert that plans again, under the same disturbance
@@ -308,6 +281,10 @@ PICKUP_NUM_CHECKPOINTS=10 sim/pickup/scripts/train_resilient.sh dp_vit_lang_reac
 # 7. the history policy after the fix (section 6), on demonstrations that begin with a hold frame
 sim/pickup/scripts/make_dataset.sh pick_target 4000 pick_target_4k_hold --hold_steps 1
 PICKUP_NUM_CHECKPOINTS=10 sim/pickup/scripts/train_resilient.sh dp_vit_lang pick_target_4k_hold pt4k_hold 5000000
+
+# 8. the detour of section 7: the plain run again on the old half-precision position table
+PICKUP_NUM_CHECKPOINTS=10 sim/pickup/scripts/train_resilient.sh dp_vit_lang_reactive pick_target_4k pt4k_legacy 5000000 \
+    --model.transformer.positional_embedding_type rotary_legacy_autocast
 ```
 
 ## Where it goes wrong
@@ -315,8 +292,11 @@ PICKUP_NUM_CHECKPOINTS=10 sim/pickup/scripts/train_resilient.sh dp_vit_lang pick
 | What you see | Why | What to do |
 |---|---|---|
 | 0% after 1M samples | the flat stretch before the transition | read the slope by checkpoint; judge only after a comparable run's transition |
+| A short run and a long one disagree at the same sample count | the cosine is stretched over each run's own budget: at 1.0M samples the 1M run is at its floor, the 5M run near its peak | compare runs at the same share of their budget; choose the budget before starting |
 | Low success, slope near 1, miss 1-3 cm | it looks but is imprecise | compare the miss with the grasp tolerance per object; train longer |
+| Slope well below 1/3, R² near 0 | it is not averaging the objects, it is not looking | look for what it reads instead (section 6, section 8) |
 | A history policy jumps with `--first_prev_action expert` | it reads the goal from its previous action | drop history |
+| A result that matches another run's too well | two evaluations reached one policy server | evaluate through `eval.sh`; rerun what `summarize` leaves out |
 | High success, 0% when the object moves | it looks once | random starts and recoveries; evaluate with `--disturb` |
 
 ## Next time, in this order
@@ -328,7 +308,8 @@ PICKUP_NUM_CHECKPOINTS=10 sim/pickup/scripts/train_resilient.sh dp_vit_lang pick
    previous-action skew).
 4. The position table checked directly (`tests/essential/models/test_rotary_precision.py`); item 3
    cannot see it, since both paths share it.
-5. Every checkpoint evaluated, raw and EMA; slope and miss read before success.
+5. The budget chosen before the run, from a comparable run's transition; every checkpoint
+   evaluated, raw and EMA; slope and miss read before success.
 6. With history, the two probes of the previous action.
 7. Once it works, the probes and disturbances with the expert alongside; then the wanted behaviour
    put into the demonstrations.
@@ -356,8 +337,49 @@ Background, not measured here:
    .venv/bin/python -c "import json; from sim.pickup.summarize import close_slope; print(close_slope(json.load(open('results/pickup/expert/pick_target/results.json'))))"
    ```
 
-2. After command 2, find the first checkpoints whose slope exceeds 0.5 and whose success exceeds
-   50%. How far apart are they, against sections 6 and 7?
+2. Simulate the three readings of section 3 on one table axis: a gripper that closes at the named
+   object, one that closes at the mean of the three objects, and one that ignores the scene. Which
+   slope does each give, and which did the first-round policies show?
 
-3. Run the probes of command 4 on your final checkpoint. Closing at the named object with frozen
+   ```bash
+   .venv/bin/python -c "
+   import numpy as np
+   rng = np.random.default_rng(0)
+   x = rng.uniform(-0.1, 0.1, size=(10000, 3))  # three objects on one table axis; the first is named
+   for how, close in [('at the named object', x[:, 0]), ('at the mean of the three', x.mean(1)), ('ignoring the scene', rng.uniform(-0.1, 0.1, 10000))]:
+       print(f'{how}: slope {np.polyfit(x[:, 0], close, 1)[0]:.2f}')
+   "
+   ```
+
+3. Reproduce the learning-rate table of section 6 from `cosine_lr`, then add a 3M-sample budget.
+   At what learning rate does each run reach 1.5M samples?
+
+   ```bash
+   .venv/bin/python -c "
+   import torch
+   from vla_foundry.scheduler import cosine_lr
+   opt = torch.optim.SGD([torch.zeros(1, requires_grad=True)], lr=0)
+   for budget in (1_000_000, 5_000_000):
+       lr = cosine_lr(opt, 5e-4, 1000, budget // 64, 1e-5, 0.0)
+       print(budget, [f'{lr(s // 64):.1e}' for s in (500_000, 1_000_000, 1_500_000, 2_000_000) if s <= budget])
+   "
+   ```
+
+4. After command 2, find the first checkpoints whose slope exceeds 0.5 and whose success exceeds
+   50%. How far apart are they, against the notebook's "The same run before and after the fix"?
+   Then fit each axis separately over all of the run's checkpoint evaluations pooled, as section 3
+   does, with `_fit` from `sim/pickup/diagnostics.py`:
+
+   ```bash
+   .venv/bin/python -c "
+   import glob, json
+   from sim.pickup.diagnostics import _fit
+   eps = [e for f in glob.glob('results/pickup/pt4k/pick_target/ckpt_*/results.json')
+          for e in json.load(open(f))['per_episode'] if e.get('close_tcp_xy') and e.get('close_object_xy')]
+   for axis in (0, 1):
+       print('xy'[axis], _fit([e['close_object_xy'][e['target']][axis] for e in eps], [e['close_tcp_xy'][axis] for e in eps]))
+   "
+   ```
+
+5. Run the probes of command 4 on your final checkpoint. Closing at the named object with frozen
    cameras, and near the old place after a move at control step 20, means it looks once.

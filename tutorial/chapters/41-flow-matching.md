@@ -200,20 +200,22 @@ configs with history (`dp_vit.yaml`, `dp_vit_lang.yaml`) keep the data preset's
 `forward` leaves it clean (`mask=future_mask`, then `torch.where`), `vla_foundry/train.py` passes
 the same mask to the loss, and `generate_actions` restores the row after every flow step.
 
-A clean previous action is also a shortcut: on 4000 `pick_target` demonstrations the policy with
-history was at 2% after 3M samples where the one without was at 75-81%, both trained before the
-position fix; after it, a history policy trained on demonstrations that begin with a hold frame
-still ends at 0% / 4% after 5M samples ([field notes](../notes.md), "The previous action as an
-input"). Probes show the first reads its target from that row ([52-history-and-shortcuts.md](52-history-and-shortcuts.md)).
+For the sampler that row must never move. The action head outputs a direction for all 16 rows, but
+the loss mask drops the past one, so that output is never trained. Stepped like the others, the
+action just executed would be pushed ten times along an untrained direction, and every later flow
+step would condition on a past the network never saw in training; question 2 of
+[Check yourself](#check-yourself) asks for the line that prevents it. Whether to give a policy
+that row at all is another matter: a clean previous action is also a shortcut it can take instead
+of looking ([52-history-and-shortcuts.md](52-history-and-shortcuts.md)).
 
 ## What we measured
 
 All numbers are from the [lab notebook](../lab-notebook.md), on machine B (L40S GPUs, 128 CPU
-cores) unless machine A is named. Success is closed-loop, on unseen layouts; pairs are raw / EMA
-(the trained weights / their running average).
+cores). Success is closed-loop, on unseen layouts.
 
 **Flow steps.** `dp_vit_lang_reactive` after 5M samples on 4000 plain `pick_target` demonstrations,
-trained before the position-table fix ([12-positions.md](12-positions.md)), EMA weights, 8 actions
+trained before the position-table fix ([12-positions.md](12-positions.md)), EMA weights (the
+running average of the trained weights), 8 actions
 executed per chunk. Each cell is 100 layouts; a second number is a second set of 100.
 
 | Flow steps | Success | Median latency per chunk |
@@ -241,38 +243,27 @@ the instruction and the images fix the object, the chunks that fit one observati
 together, so few flow steps suffice. The policies that lost 12 to 19 points with 2 show that this
 does not hold for every policy.
 
-**What a policy that ignores the scene draws.** On machine A (one RTX 4090, 24 GB) two first-round
-`pick_target` policies, `dp_vit` and `vla_custom` (1500 demonstrations, 1.0M samples, 100 episodes
-each), closed the gripper in every episode on empty table, a median of 110 mm and 89 mm from the
-nearest object. That looked like a draw between the objects. The per-episode records say otherwise
-([field notes](../notes.md), "A failing policy ignores the scene; it does not average"): the
-closing positions fill the area where objects can spawn and do not gather between the objects of
-their own scene.
+**What a policy that ignores the scene draws.** The `pick_target` policies trained on 1500
+demonstrations for 1M samples (`dp_vit`, `dp_vit_lang`, `dp_vit_reactive`) closed the gripper on
+empty table, which looked like a draw between the objects. It was not: where they closed did not
+depend on where the named object was. The slope (the least-squares slope of where the gripper first
+closed against where the named object was; 1 when it closes at the object, 0 when the place does
+not depend on the scene) was near 0
+([92-measuring-failure.md](92-measuring-failure.md); [field notes](../notes.md), "A failing
+policy ignores the scene; it does not average"). For the sampler this is the network that ignores
+the images, from [Why averaging directions does not average actions](#why-averaging-directions-does-not-average-actions):
+the targets inside $\hat a$ are every reach in the training data from that arm pose, and each draw
+is one clean reach from that pool, right for some scene and not for this one. The same objective
+and sampler, unchanged, succeed once the network has learned to use the scene, which for
+`dp_vit_lang_reactive` happens late in training ([71-how-much-data-and-training.md](71-how-much-data-and-training.md)).
 
-The notebook's **slope** puts that in one number: the least-squares slope of where the gripper
-first closed against where the named object was, 1 when it closes where the object is and 0 when
-the place does not depend on the scene (100 layouts each):
-
-| Policy, demonstrations, samples | Success | Slope |
-|---|---|---|
-| `dp_vit` (no language, history), 1500, 1.0M | 0% / 0% | 0.11 / 0.17 |
-| `dp_vit_lang_reactive` (language, no history), 1500, 1.0M | 3% / 5% | 0.29 / 0.18 |
-| same, 1500, 3.0M | 64% / 62% | 0.96 / 0.97 |
-| same, 4000, 5.0M | 83% / 85% | 0.98 / 0.98 |
-
-In the first row the sampler did what the objective says: the first chunk is a draw from all the
-reaches in the training data. The other three share objective and sampler and differ only in
-demonstrations and training samples; what changed is what the network had learned to use
-([71-how-much-data-and-training.md](71-how-much-data-and-training.md)).
-
-**The first chunk under two instructions.** In an open-loop test (the first chunk is compared with
-the recorded expert's and never executed; 60 layouts per column) of `dp_vit_lang_reactive` (1500
-demonstrations, the 1M-sample run) at 0.9M samples, trained weights, the chunk's end points under
-the named object's instruction and under another object's instruction, one draw each, were 10.9 cm
-apart on training layouts and 10.8 cm on unseen ones (medians), and 12.1 / 11.2 cm from the
-expert's; the expert moves the gripper 30 cm. The chunk headed for the named object 35% / 48% of
-the time: the instruction did not yet decide where it went. The test did not compare two draws for
-one input.
+**Two draws for one input were not measured.** The open-loop test of the first action chunk
+(the chunk is compared with the recorded expert's and never executed;
+[91-loss-is-not-success.md](91-loss-is-not-success.md)) compared the chunk under two
+instructions, one draw each: how far the instruction moved it, not how far apart two draws for the
+same input land, the signature from [The sampler](#the-sampler). Measure that spread before blaming
+the sampler ([Where it goes wrong](#where-it-goes-wrong) says how; question 4 asks what it tells
+you).
 
 ## Where it goes wrong
 
@@ -295,6 +286,13 @@ of draws, call `Policy.infer` twice on one observation without a `noise_seed`.
 **A flow-step count that does not divide 1000.** With 7 flow steps the integer division gives
 `step_size` 142, and the loop makes 8 passes that cover 1.136 of the path, 13.6% past the end.
 The effect on a trained policy was not measured; use a divisor of 1000 (1, 2, 4, 5, 8, 10, 20, 25).
+
+**Starting noise outside the clamp.** `add_noise` clamps every training mixture to `clamp_range`,
+so at $t$ = 999 the network has only seen values within ±3 (the preset). `generate_actions` starts
+from unclamped `torch.randn_like(actions)`; only the first `step` clamps. A standard normal value
+falls outside ±3 with probability 0.27%: about 0.3 of the 120 numbers in a chunk (15 actions of 8),
+on average (arithmetic). With the default `(-1.5, 1.5)` of `NoiseSchedulerParams` it is 13%. The
+effect was not measured; if you narrow the range, clamp the starting noise too and compare sweeps.
 
 **Another scheduler.** `create_noise_scheduler` (`vla_foundry/models/diffusion/__init__.py`) can
 return a DDPM scheduler, but the batch handler's target stays `noise - actions` and

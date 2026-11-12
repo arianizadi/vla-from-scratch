@@ -230,29 +230,28 @@ Three entries of the [lab notebook](../lab-notebook.md) bear on this chapter.
   memory at batch 128 on machine A (one RTX 4090, 24 GB): the float32 logits for 128 x 256 tokens
   over a 49,280-word vocabulary are 6.5 GB per tensor.
 - **Sequence length decided which models a position bug reached.** A token's position is its index
-  in the row. The table attention uses to encode positions ([Positions](12-positions.md)) was
-  computed in 16-bit floats (bfloat16), and positions above 256 collapsed onto even numbers and
-  above 512 onto multiples of 4: 641 distinct positions out of 2048. Stage 1's sequences are 256
-  tokens long and were not affected. Stage 2's are 320 and were: one image's 256 placeholders push
-  every caption token past position 256. The table is now computed in float32. Trained again with
-  the fixed table, the `dp_vit_lang_reactive` run below ends at 93% (trained weights) instead of
-  83%, and a second pair of runs with other seeds, differing in the table alone, ends at 96% / 96%
-  against 90% / 89%; in both pairs the policy starts to look at the scene earlier
-  ([Positions](12-positions.md)).
+  in the row. The table attention uses to encode positions was computed in 16-bit floats
+  (bfloat16), which merged neighbouring positions above 256; it is now computed in float32
+  ([Positions](12-positions.md) has the mechanism and what the fix changed). Which models that
+  reached was a matter of token counts. Stage 1's rows are 256 tokens long, so none of its
+  positions were merged. Stage 2's are 320, and positions above 256 were merged in pairs: one
+  image's 256 placeholders push every caption token past position 256. In the patch-token policy
+  without history, 426 tokens precede the action-step tokens (the 15 tokens of the action head's
+  own sequence that become the 15 predicted actions). The 426 are one for the noise level (how far
+  the flow-matching sampler is from pure noise), 32 instruction slots, 392 patches and one for the
+  joint state, so the action-step tokens sat at positions 426-440, inside the merged range. Every
+  id a config adds to the prompt moves everything after it further along the row.
 - **The instruction's ids select the object, once the policy uses them.** On machine B (L40S GPUs,
   128 CPU cores), the `dp_vit_lang_reactive` policy, trained before the position fix for 5.0M
   samples (training windows drawn by the data loader) on 4000 `pick_target` demonstrations,
-  succeeded on 83% / 85% of 100 unseen layouts (trained weights / averaged weights, a running
-  average of the weights saved by the same run). A layout fixes the objects, their poses, the named
-  object and the arm's start pose. The policy closed at the named object in 100% / 100% of them:
-  the object nearest the gripper when it first closed was the one the instruction named (chance:
-  33%). Having the ids in the input was not enough. At 1.0M samples that run was at 35% / 32% on
-  that measure and 0% / 1% success; with the fixed table, at 65% and 8% (trained weights)
-  ([How much data and training](71-how-much-data-and-training.md)). With history, also on 4000
-  demonstrations and before the fix, the policy was at 30% / 35% on that measure and 2% / 2%
-  success when its run was stopped at 3.0M samples: it read the target from its previous action,
-  not from the instruction. Trained after the fix, on demonstrations that begin with a hold frame
-  (`collect.py --hold_steps 1`), it still ends at 0% / 4% after 5M samples
+  closed at the named object in 100% / 100% of 100 unseen layouts (trained weights / averaged
+  weights, a running average of the weights saved by the same run): the object nearest the
+  gripper when it first closed was the one the instruction named (chance: 33%, one of three).
+  A layout fixes which three of the four objects are on the table, their poses, the named object
+  and the arm's start pose. Having the ids in the input was not enough: at 1.0M samples the same run was at 35% / 32% on that measure, near chance. When a
+  policy starts to use them, and what it then succeeds on, is told in
+  [How much data and training](71-how-much-data-and-training.md). A policy that also receives its
+  previous action can read the target from there instead of from the instruction
   ([History and shortcuts](52-history-and-shortcuts.md)).
 
 ## Where it goes wrong

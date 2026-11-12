@@ -60,13 +60,12 @@ patch token is the vector of one image patch
 after the VLM's prompt;
 [what the action head sees](50-what-the-action-head-sees.md) compares 1 vector with 784.
 
-`dp_vit_lang_reactive` solved `pick_target` here: with its trained weights it succeeds in 93% of
-100 unseen layouts after 5M training samples on 4000 demonstrations (83% before the position table
-was fixed). A layout is the scene a seed fixes: the objects, their poses, the named one and the
-arm's start pose. This config has no VLM: the instruction's tokens get learned embeddings and meet
-the patch tokens only in the action head ([language conditioning](51-language-conditioning.md)).
-`vla_custom_tokens_reactive` gives the from-scratch VLA every token and no history as well: 86%
-after 3M samples.
+Worked example, `dp_vit_lang_reactive`, the policy that solved `pick_target` here
+([the case study](101-case-pick-target.md)): 426 tokens precede its action-step tokens (the noise
+level, 32 instruction tokens, 392 patch tokens of two images, the joint state), so the 15
+action-step tokens sit at positions 426-440 of a 441-token sequence. This config has no VLM: the
+instruction's tokens get learned embeddings and meet the patch tokens only in the action head
+([language conditioning](51-language-conditioning.md)).
 
 ## How it works
 
@@ -216,13 +215,13 @@ loss: 25.8M of the 36M parameters of `dp_vit`. So does the VLM's vocabulary proj
 12.6M) is used. This follows from the code; it was not measured.
 
 ```bash
-# the recommended recipe: random start poses and recoveries, 94% / 94% here
+# the recommended recipe: random start poses and recoveries (103-case-self-correction.md)
 sim/pickup/scripts/make_dataset.sh pick_target 4000 pick_target_4k --random_start --disturb_prob 0.5
 sim/pickup/scripts/train_resilient.sh dp_vit_lang_reactive pick_target_4k my_run 5000000
 sim/pickup/scripts/eval_checkpoints.sh experiments/pickup/my_run pick_target
 grep -E "parameters" experiments/pickup/my_run.train.log   # total and trainable
-# the from-scratch VLA, every token, no history: 86% / 87% after 3M samples, measured on data made
-# without the two options above; needs experiments/pickup/custom_vlm (custom_path.sh data, llm, vlm)
+# the from-scratch VLA, every token, no history (102-case-pretrained-backbones.md);
+# needs experiments/pickup/custom_vlm (custom_path.sh data, llm, vlm)
 sim/pickup/scripts/custom_path.sh vla pick_target_4k my_vla 3000000 pretrained vla_custom_tokens_reactive
 ```
 
@@ -238,66 +237,67 @@ From the [lab notebook](../lab-notebook.md); A is machine A (one RTX 4090, 24 GB
 | `vla_custom` | 130.0M | 165 samples/s (A) | not recorded |
 | `vla_qwen` | 2.2B, 306M trainable | 49 samples/s at batch 16 (A) | about 190 ms (A) |
 
-Success on `pick_target` ([case study](101-case-pick-target.md)), 100 unseen layouts, one
-training seed per run; pairs are raw / EMA weights (the trained weights and their running average).
-The first six rows used the old position table, the last three the fixed one:
+The 130.0M of `vla_custom` include the unused vocabulary tables described above. On machine B
+`dp_vit_lang` (four images, history) trains at about 540 samples/s, half the rate: the ViT
+encodes twice the images, and the head's sequence is 835 tokens, not 441.
 
-| Policy | Head receives | Demos | Samples | Success |
-|---|---|---|---|---|
-| `vla_custom` (A) | one vector, history | 1500 | 1.0M | 0/100; 1/100 with a random-init VLM |
-| `vla_qwen` (A) | one vector, history | 1500 | 400k | 6/100 |
-| `dp_vit_lang` (B) | tokens, history | 4000 | 3.0M (stopped) | 2% / 2% |
-| `dp_vit_lang_reactive` (B) | tokens, no history | 1500 | 1.0M | 3% / 5% |
-| same | same | 1500 | 3.0M | 64% / 62% |
-| same | same | 4000 | 5.0M | 83% / 85% |
-| same | same | 4000 | 5.0M | 93% (raw) |
-| `vla_custom_tokens_reactive` (B) | every token, no history | 4000 | 3.0M | 86% / 87%; 75% / 85% with a random-init VLM |
-| `vla_qwen_tokens_reactive` (B) | every token, no history | 4000 | 0.5M | 70% / 72% |
+Which config reached what on `pick_target`, each on 100 unseen layouts (a layout is the scene a
+seed fixes: the objects, their poses, the named one and the arm's start pose). The runs differ in
+data, budget and position table (the head's rotary table, once computed in bfloat16; see Where it
+goes wrong) as well as in the columns shown, so this maps the chapters that tell each result
+in full; it is not an ablation:
 
-- **The VLM backbones.** With one vector the VLAs reached a final loss of ~0.03 (`vla_custom`) and
-  0.03-0.04 (`vla_qwen`); both `vla_custom` policies closed at the named object in 33% and 29% of
-  episodes (chance 33%). With every token they work, but those runs also dropped history and had
-  more data. Pretraining the from-scratch VLM mainly makes the policy start to look earlier:
-  after 0.25M samples, not about 1.0M. Neither from-scratch VLA beats the patch-token policy, at
-  90% after the same 3M samples (fixed table, raw).
-- **The budget.** The 83% / 85% run stood at 0% / 1% after 1.0M samples and at 4% / 36% after
-  2.0M: looking at the scene arrives late, and in this run the averaged weights lead while it
-  arrives ([how much data and training](71-how-much-data-and-training.md)).
-- **History.** `dp_vit_lang` is not blind. At 2.5M samples (EMA weights) it succeeds in 1/100
-  layouts as served, 22/100 when the first query's previous action is the expert's first
-  command, and 77/100 when the expert drives the first 10 control steps: it reads the target
-  from the previous-action slot. This run used the old table; after the fix history still failed
-  (below; [history and shortcuts](52-history-and-shortcuts.md)).
-- **The 83% / 85% policy** looks once: sent the first frame's images for the whole episode, it
-  still closes at the named object in 99% of episodes and succeeds in 1/100
-  ([what a policy looks at](95-what-a-policy-looks-at.md)). On it two flow steps matched ten: 1
-  gave 61/100, 2 gave 89/100 and 90/100 (two sets of 100 layouts), 10 gave 85/100 and 83/100. On
-  two of seven policies trained later, two steps cost 12 and 19 points: measure it on the policy
-  you will run.
+| Policy | Head receives | Result | Told in full |
+|---|---|---|---|
+| `vla_custom`, `vla_qwen` (A) | one vector, history | 0/100 and 6/100 on 1500 demonstrations | [what the action head sees](50-what-the-action-head-sees.md), [measuring failure](92-measuring-failure.md) |
+| `dp_vit_lang` (B) | patch and text tokens, history | fails: it reads the target from the previous action | [history and shortcuts](52-history-and-shortcuts.md) |
+| `dp_vit_lang_reactive` (B) | patch and text tokens, no history | 93% after 5M samples on 4000 demonstrations, fixed position table | [how much data and training](71-how-much-data-and-training.md), [positions](12-positions.md) |
+| `vla_custom_tokens_reactive` (B) | every token, no history | works; pretraining the VLM mainly makes it close at the named object earlier in training | [pretrained backbones](102-case-pretrained-backbones.md) |
+| `vla_qwen_tokens_reactive` (B) | every token, no history | works after 0.5M samples | [pretrained backbones](102-case-pretrained-backbones.md) |
+
+What the table does show: no config with one conditioning vector succeeded, and every config that
+succeeded hands the head many tokens and no history, whether the backbone is a small ViT, a VLM
+trained here or Qwen. The backbone changes `N`, `D` and the cost per sample; in these runs the
+conditioning and history decided whether the policy worked at all.
+
+The flow-step count is chosen when serving, not training. On
+`dp_vit_lang_reactive` two flow steps took 25 ms per chunk against 71 ms for ten, at no cost in
+success; not so on every policy ([flow matching](41-flow-matching.md)), so measure yours.
 
 ## Where it goes wrong
 
-**Low loss, a complete grasp motion, an empty gripper.** The `vla_custom` row above: neither a near
-miss nor a reach between the objects, since where it closes the gripper does not depend on the
-scene. `.venv/bin/python -m sim.pickup.summarize` prints the slope of where the gripper closed
-against where the named object was: near 1 for an imprecise policy, near 0 for one that is not
-looking. Then check for a single conditioning vector, a previous-action
-input, and a budget that ends before a comparable run started to look.
+**Low loss, a complete grasp motion, an empty gripper.** The one-vector row of the results table
+above (final loss ~0.03 for `vla_custom`). Before changing the backbone, read `N` in this
+chapter's first table: 1 means the head gets a single vector for four images and an
+instruction. `.venv/bin/python -m sim.pickup.summarize` prints the slope of where the gripper
+closed against where the named object was, which tells a policy that is not looking (slope near 0)
+from an imprecise one (slope near 1) ([measuring failure](92-measuring-failure.md)).
 
-**The previous-action slot holds the answer.** A window at the first frame of a demonstration has
-no previous action; the slot is filled with a copy of the first action, the expert's first
-command, which already points at the target. When the policy is served, the slot holds the hold
-command. Probe a policy with history with `eval.py --first_prev_action expert` and
-`--expert_prefix 10`. `collect.py --hold_steps 1` begins every demonstration with a frame of the
-robot at rest. It did not help: a history policy trained on such demonstrations, with the position
-table fixed, ends at 0% / 4% after 5M samples. Start without history.
+**The previous-action slot holds the answer.** With history, slot 0 of the head's action sequence
+is the previous action, kept clean by `future_mask` in training and restored after every flow step
+by `past_mask` when served. A window at the first frame of a demonstration has no previous action:
+the default `padding_strategy: copy` of the preprocessing (`PaddingStrategy.copy_edge` in
+`vla_foundry/data/preprocessing/robotics/preprocess_masks.py`) fills it with the first action, the
+expert's first command, which already points at the target. When the policy is served,
+the slot holds the hold command. Probe a policy with history with `eval.py --first_prev_action
+expert` and `--expert_prefix 10`; [history and shortcuts](52-history-and-shortcuts.md) has what
+the probes showed and why `collect.py --hold_steps 1` did not cure it. Start without history.
 
-**Action-step tokens that share a position.** The rotary position table was computed in bfloat16
-under autocast, leaving 641 distinct positions out of 2048: 15 action-step tokens shared 8
-positions without history, 16 shared 4 with it, in training and serving alike. It is now computed
-in float32 (`rotary_legacy_autocast` reproduces the old one). With the fixed table the same
-recipe starts to look earlier and ends at 93% against 83% (trained weights); a second pair of runs,
-differing in the table alone, ends at 96% / 96% against 90% / 89% ([positions](12-positions.md)).
+**Action-step tokens that share a position.** Read the head-sequence column against 256. The
+rotary table was once computed in bfloat16, which holds every whole number up to 256 and merges
+neighbours above it. In every config whose action-step tokens sit above position 256, such as
+`dp_vit_lang_reactive` (426-440), they shared positions; in `vla_custom` and `vla_qwen` (4-19)
+they did not. It is now computed in float32 (`rotary_legacy_autocast` reproduces the old table);
+the mechanism and its effect are in [positions](12-positions.md).
+
+**A prompt longer than `conditioning_len`.** With `all_tokens`, `conditioning_from_hidden_states`
+pads the conditioning in front with zeros to exactly `conditioning_len` slots, and raises
+`ValueError` when a prompt has more real tokens than that. In `vla_custom_tokens_reactive.yaml`,
+528 leaves room for 13 instruction tokens after 3 prompt tokens and 2 x 256 image tokens; a task
+with longer instructions needs a larger value. The zero slots are not masked:
+`DiffusionPolicy.forward` calls the head without an attention mask, so each becomes the bias of
+`condition_encode` and is attended to like any other token. That is harmless only because a
+given prompt gets the same number of zero slots in training and when served.
 
 **The action token behind padding.** Both VLM wrappers (`VLMFoundryBackboneWrapper` and
 `VLMHFBackboneWrapper`) once appended the action token after the batch padding: one position later
@@ -350,4 +350,17 @@ without an error (`custom_path.sh vla ... scratch` does so on purpose). Check th
    .venv/bin/python -m pytest tests/essential/models/test_vlm_backbone_partial_freeze.py \
        tests/essential/models/test_backbone_conditioning.py \
        tests/essential/models/test_vlm_foundry_backbone_conditioning.py -q
+   ```
+
+4. From the head-sequence layout (`1 + N + 1 + 15` without history, `1 + N + 2 + 16` with it),
+   compute where the action-step tokens sit and how many distinct positions a bfloat16 table
+   gives them; explain why the one-vector VLAs were not touched by the old table:
+
+   ```bash
+   .venv/bin/python -c "
+   import torch
+   for name, n, hist in (('dp_vit_lang_reactive', 424, 0), ('dp_vit_lang', 816, 1), ('vla_custom', 1, 1)):
+       start = 1 + n + 1 + hist; k = 15 + hist
+       pos = torch.arange(start, start + k).to(torch.bfloat16)
+       print(name, start, start + k - 1, len(set(pos.tolist())))"
    ```

@@ -23,7 +23,7 @@ behaviour cloning fits it to the recorded pairs.
 The lab notebook lists 1500 `pick_target` demonstrations of about 66 control steps each, cut into
 98,841 **windows**: one training example per recorded step, the observations at that step plus
 the actions that follow. `pick_target` puts 3 of 4 objects on the table and names one in the
-instruction; `pick_cube` has one red cube. A window for `dp_vit`, the 36M-parameter diffusion
+instruction; `pick_cube` has one red cube. A window for `dp_vit`, the 36.3M-parameter diffusion
 policy with a small vision transformer and no language input, holds:
 
 | Part | Shape | Content |
@@ -71,7 +71,8 @@ The same observation can be followed by different correct actions: reach for the
 right one. Their distribution then has several peaks: it is **multimodal**. A model trained to
 minimise squared error outputs the mean of the targets. Arithmetic: with two objects 20 cm apart and
 demonstrations split evenly between them, the mean reach ends 10 cm from both, an action no
-demonstration contains. The policies here are generative; the failing ones did not do this.
+demonstration contains. The policies here are generative, and the ones that failed did not fail
+this way (What we measured, problem 3).
 
 ### 4. Inputs that predict the action without causing it
 
@@ -154,7 +155,12 @@ the start joint angles with the gripper open ([Train/inference skew](93-train-in
 gives the supervised-learning view of a policy, with or without history: its per-joint error against
 the expert's actions on recorded windows (a policy with history is given the expert's previous
 action), next to the error of repeating that previous action ([Loss is not
-success](91-loss-is-not-success.md)).
+success](91-loss-is-not-success.md)). It prints three lines with one value per joint: the error
+over the whole chunk, the error of the chunk's first action, and the copy baseline. `window_rows`
+skips every window that is padded where the policy reads or has no action before the current step,
+so the first window of each demonstration, the one where a served policy's previous action says
+nothing about the target, is never in the comparison. A policy that only beats the baseline narrowly has learned little beyond
+problem 4's shortcut.
 
 ```bash
 .venv/bin/python -m sim.pickup.open_loop_check \
@@ -164,97 +170,83 @@ success](91-loss-is-not-success.md)).
 
 ## What we measured
 
-All numbers are from the [lab notebook](../lab-notebook.md): first-round runs on machine A (one
-RTX 4090, 24 GB), second-round runs on machine B (L40S GPUs, 128 CPU cores), one training seed per
-run, on **layouts** the policy never saw (a layout: the objects, their poses, the named object
-and the arm's start pose, fixed by the seed). Paired numbers: trained weights (raw) /
-their running average (EMA). Runs not marked "after the position fix" used the
-old rotary position table, computed in half precision ([Positions](12-positions.md)); after the
-fix, the 83% / 85% recipe below ends at 93% (raw).
+All numbers are from the [lab notebook](../lab-notebook.md), one training seed per run, evaluated on
+**layouts** the policy never saw (a layout: the objects, their poses, the named object and the arm's
+start pose, fixed by the seed). First-round runs used machine A (one RTX 4090, 24 GB), the rest
+machine B (L40S GPUs, 128 CPU cores). Until a fix partway through, the table of rotary position
+angles was computed in bfloat16 under autocast and gave many positions the same angles (641 distinct
+positions of 2048). Runs trained before and after that fix differ, and
+[Positions](12-positions.md) gives the results of both. The results are sorted by the four problems.
 
-**The failing policies copied the motion and did not look.** On `pick_target` (machine A, 1500
-demonstrations, 1.0M samples, 100 episodes each), `dp_vit` scored 1/100 and `vla_custom`, the
-130M-parameter vision-language-action policy of [The from-scratch
-path](62-the-from-scratch-path.md), 0/100. Both closed the gripper in 100% of episodes, at the right
-height and time, as the expert does. They **closed at the named object** (the object nearest the
-gripper when it first closed was the one the instruction named) in 32% and 33% of episodes (chance
-is 33%), a median of 110 mm and 89 mm from the nearest object. `dp_vit`'s loss (0.069) did not show
-it: on `pick_cube` (1000 demonstrations, 1.5M samples) it ended at 0.058 and scored 37/50 = 74%
-([Loss is not success](91-loss-is-not-success.md)).
+**The expert being copied succeeds, with one plan.** Through the evaluation loop on `pick_target`
+(machine B, 100 layouts) the scripted expert succeeds 100/100 and closes the gripper 5 mm (median)
+from the object. The same expert under the disturbances of `eval.py`, 100 layouts per condition,
+counted over the episodes in which the object could be moved 80 mm:
 
-This is not problem 3. The [field notes](../notes.md) ("A failing policy ignores the scene; it does
-not average") found that these policies did not reach between the objects: where they closed did not
-depend on the scene. `sim/pickup/summarize.py` prints the **slope** of where the gripper first
-closed against where the named object was: 1 if it closes where the object is, 0 if the place does
-not depend on the scene ([Measuring failure](92-measuring-failure.md)). In the three runs that never
-started to look (machine B, 1.0M samples on 1500 demonstrations, all evaluations pooled) it lay
-between 0.00 and 0.09; the fourth, `dp_vit_lang_reactive`, ended at 0.29 / 0.18, at the start of its
-transition.
-
-**Looking at the scene arrived late.** `dp_vit_lang_reactive` is `dp_vit` with the instruction as
-tokens ([Language conditioning](51-language-conditioning.md)) and without history. After 1.0M
-samples on 1500 demonstrations it scored 3% / 5%; after 3.0M samples on the same demonstrations, 64%
-/ 62% (slope 0.96 / 0.97); after 5.0M samples on 4000 demonstrations, 83% / 85% (0.98 / 0.98),
-having been at 0% / 1% after 1.0M and at 4% / 36% after 2.0M. At 1.0M samples the policy that later
-worked had barely started to look ([How much data and training](71-how-much-data-and-training.md),
-[the `pick_target` case study](101-case-pick-target.md)).
-
-**With history, the policy takes its target from the previous action.** `dp_vit_lang` is the same
-policy with history. On the same 4000 demonstrations it was at 2% / 2% after 3.0M samples, where
-the run was stopped; the run without history was then at 81% / 75%. It is not blind, as two
-**probes** show: evaluations that change one thing about an episode. Its checkpoint at 2.5M
-samples (EMA), 100 layouts each:
-
-| At the start (`eval.py` option) | Success | Closed at the named object |
+| Condition | One plan (`reactive=False`) | Plans again (`reactive=True`) |
 |---|---|---|
-| as served: the first previous action is the hold command | 1/100 | 30% |
-| `--first_prev_action expert`: it is the expert's first command | 22/100 | 97% |
-| `--expert_prefix 10`: the expert drives the first 10 control steps | 77/100 | 100% |
+| unchanged task | 100/100 | 100/100 |
+| random start pose | 100/100 | 100/100 |
+| object moved at control step 10 of the reach | 0/100 | 100/100 |
+| moved at control step 20 | 0/99 | 96/96 |
+| moved at control step 30 | 0/100 | 100/100 |
+| moved as the gripper first closes | 0/100 | 100/100 |
 
-In training the previous-action slot always holds an expert command, the first window included;
-served, the first query carries the hold command, which says nothing about the target. The policy
-learned to read where to go from its own past ([History and
-shortcuts](52-history-and-shortcuts.md)). After the position fix, a history policy trained on
-demonstrations that begin with a hold frame (`--hold_steps 1`) ends at 0% / 4% after 5M samples,
-with slopes between -0.11 and 0.12: closing the leak at the first frame did not make it look. A
-history run on plain demonstrations was not repeated.
+The expert closes the gripper around control step 40, so a move at step 10 leaves it about 30 steps
+to react. With one plan it never does: `act` does not read the object's position after `reset`.
+The default demonstrations are the successful episodes of this expert, so problem 2 is built into
+them: no window shows an object somewhere other than where the arm is heading, and none shows a
+failed grasp.
 
-**Without history, the policy looks once.** The 85% policy (`dp_vit_lang_reactive` at 5.0M
-samples, EMA) closes at the named object in 100% of episodes, 7 mm (median) from it. Probed, 100
-layouts per row (fewer where the object could not be moved):
+**Problems 1 and 2 in the policy.** What the expert never does, the policy does not learn. The
+policy that works here is `dp_vit_lang_reactive`: `dp_vit` plus the instruction as tokens, without
+history, 48.9M parameters. Trained on 4000 demonstrations for 5M samples and evaluated at its final
+checkpoint on 100 layouts per condition, it scores no more than 18/100 with the object moved when
+the demonstrations are clean, before or after the position fix; trained on demonstrations collected
+with `--random_start --disturb_prob 0.5`, it holds 89-94% under every disturbance
+([Self-correction](103-case-self-correction.md); notes: "Self-correction has to be in the data"). Chunking does not stand in for the missing data: executing fewer actions of
+each chunk did not help the clean-data policy ([Chunks and execution](42-chunks-and-execution.md)).
 
-| Probe (`eval.py` option) | Success | The gripper (distances are medians) |
-|---|---|---|
-| `--stale_images`: the first frame's images throughout | 1/100 | closed at the named object in 99%, 17 mm from it |
-| `--expert_prefix 25 --prefix_target distractor`: the expert drives the first 25 control steps toward another object | 0/100 | closed at that other object in 100/100 |
-| `--disturb reach --disturb_step 20`: the named object is moved 80 mm at control step 20 | 0/96 | closed 8 mm from where the object had been |
-| `--disturb grasp`: it is moved as the gripper first closes | 1/99 | closed a second time in 29/99 |
+**Problem 3 did not occur.** The first-round policies that failed on machine A (`dp_vit`, and
+`vla_custom`, the 130M VLA built from scratch here and conditioned on one vector; 1500
+demonstrations, 1M samples, 0-1/100) ran the whole reach-descend-close-lift at the right height and
+time, at a place that did not depend on where the named object was. The measure is the **slope** of
+where the gripper first closed against where the named object was: 1 when it closes at the object,
+0 when where it closes does not depend on the scene. They did not average two reaches; they had no
+target ([Measuring failure](92-measuring-failure.md); notes: "A failing policy ignores the scene; it
+does not average").
 
-The field notes' reading ("Success is not the same as looking"): it decides where to go from its
-first look, then follows its own arm, whose joint state says where a straight reach from the home
-pose ends. Nothing in the demonstrations contradicts that: nothing in them moves and no grasp fails
-(problems 4 and 2) ([What a policy looks at](95-what-a-policy-looks-at.md)). The scripted expert
-with its one plan fails this too (0/100 with the object moved at the grasp); planning again, it
-succeeds 100/100.
+**Problem 4: how much the past gives away.** On `pick_cube` (machine A) the served policies
+reproduced the expert's chunks on recorded windows to within 0.01-0.04 rad per joint, and repeating
+the previous action came within 0.05-0.2 rad: most of the next action is already in the last one.
+Arithmetic on the 98,841 windows of `pick_target_1500`: 1500 of them (1.5%) start at a
+demonstration's first frame, and 8 x 1500 = 12,000 (12.1%) start in frames 0-7, the windows
+`boost_early_windows.py --max_frame 7` repeats. The notes find that only these first moments need
+the scene; in every later window the arm's own motion says where it is going. So few windows reward
+looking, which the notes ("Looking at the scene arrives late, and all at once") give as the reason
+the slope of a policy here stays near 0 for a long time and then rises quickly ([How much data and
+training](71-how-much-data-and-training.md)).
 
-**Deciding more often did not help.** Executing 2, 4, 8 or 15 actions of each chunk
-(`--exec_horizon`) gave the 85% policy 76/100, 84/100, 85/100 and 84/100.
-
-**Recoveries and varied starts in the data did.** The same policy after the position fix, 4000
-demonstrations collected with the options above, 5M samples (notes: "Self-correction has to be in
-the data"). With `--random_start`: 98% / 98%, 97% from a random start pose, 94% with the object
-moved at control step 10, but 0% moved at step 30 or at the grasp. With `--disturb_prob 0.5`:
-89% / 84%, 79-88% with the object moved, a second grasp attempt in 99 of 99, but 68% from a
-random start pose. With both: 94% / 94%, and 89-94% under every disturbance, also from a random
-start pose. A behaviour the demonstrations never show does not appear in the policy.
+Both shortcut inputs were caught. With the previous action as an input, `dp_vit_lang` (the same
+policy with history, 48.9M parameters; trained on three objects before the position fix) reads its
+target from that action: it fails as served and does far better when the first previous action is
+the expert's or the expert drives the first control steps. After the fix, demonstrations that begin
+with a hold frame did not cure it ([History and shortcuts](52-history-and-shortcuts.md)). Without
+the previous action, the arm's joint state remains. The policy trained on clean demonstrations from the home pose
+decides where to go at its first look and then follows its own arm: with its cameras frozen on the
+first frame it still closes at the named object, and an object moved during the reach is missed
+([What a policy looks at](95-what-a-policy-looks-at.md)). Random start poses take that guide away,
+and the policy then watches the scene while it reaches ([Which demonstrations
+teach](72-which-demonstrations-teach.md)).
 
 ## Where it goes wrong
 
 | What you see | Why | How to check | What to do |
 |---|---|---|---|
 | A complete reach-descend-close-lift at the wrong place | The policy has not started to look, or it reads its target from an input that differs when served | The Slope column of `.venv/bin/python -m sim.pickup.summarize`: near 0 it is not looking, near 1 it is imprecise | Evaluate every checkpoint and train past the point where a comparable run started to look. The recipe that worked: `dp_vit_lang_reactive`, 4000 demonstrations collected with `--random_start --disturb_prob 0.5`, 5M samples (the config saves averaged weights itself) |
-| A policy with history stays near 0% | It takes the target from its previous action | `--first_prev_action expert` and `--expert_prefix 10`: far better than as served | Train without history. `collect.py --hold_steps 1` did not cure it (0% / 4% after 5M samples) |
-| The gripper closes where a moved object was, or beside the object, and the arm lifts empty | No clean demonstration contains a moved object or a miss followed by a correction | `--disturb reach`, `--disturb grasp`; `grasp.retried_rate` in `results.json` counts second grasp attempts | Collect with `--random_start --disturb_prob 0.5`: 89-94% under every disturbance |
+| Low open-loop error, low closed-loop success | Repeating the previous action already fits most windows, and the check skips the first window of each demonstration, where it does not | `open_loop_check.py`: the gap between the chunk error and the "repeat previous action" baseline | Select checkpoints by closed-loop evaluation; read the open-loop check only as a test that the model beats the baseline at all |
+| A policy with history stays near 0% | It takes the target from its previous action | `--first_prev_action expert` and `--expert_prefix 10`: far better than as served | Train without history; `collect.py --hold_steps 1` did not cure it ([History and shortcuts](52-history-and-shortcuts.md)) |
+| The gripper closes where a moved object was, or beside the object, and the arm lifts empty | No clean demonstration contains a moved object or a miss followed by a correction | `--disturb reach`, `--disturb grasp`; `grasp.retried_rate` in `results.json` counts second grasp attempts | Collect with `--random_start --disturb_prob 0.5` and evaluate with the same disturbances |
 
 ## Background and further reading
 

@@ -262,15 +262,11 @@ machine B (L40S GPUs, 128 CPU cores) the final loss was 4.15.
 On machine A, stage 1 ran out of memory at batch 128: the float32 logits for 128 x 256 tokens over
 a 49,280-entry vocabulary are 6.5 GB per tensor. At batch 32 the same arithmetic gives 1.6 GB.
 
-The block as implemented trains, without the causal mask too: six of them, 256 wide
-(`sim/pickup/configs/dp_vit_lang_reactive.yaml`), are the action head of a policy for
-`pick_target` (three objects on the table, pick up the one the instruction names). After 5M
-training samples on 4000 demonstrations it succeeds in 93 of 100 unseen layouts (which objects are
-on the table, where they are, which one the instruction names, and the arm's start pose, all fixed
-by a seed) with its trained weights, after the position fix below; before it, the same
-recipe ended at 83% with trained weights and 85% with averaged weights
-([101-case-pick-target.md](101-case-pick-target.md)). No run here compares
-SwiGLU with GELU, pre-norm with post-norm, or tied with untied weights.
+The block as implemented also trains without the causal mask: six of them, 256 wide with 4 heads
+and `is_causal: false` (`sim/pickup/configs/dp_vit_lang_reactive.yaml`), are the action head of the
+policy that solves `pick_target`, picking up the one of three objects the instruction names
+([101-case-pick-target.md](101-case-pick-target.md)). No run here compares SwiGLU with GELU,
+pre-norm with post-norm, or tied with untied weights.
 
 ## Where it goes wrong
 
@@ -281,7 +277,7 @@ SwiGLU with GELU, pre-norm with post-norm, or tied with untied weights.
 | Same symptom during batched generation | `Transformer.generate(use_cache=False)` calls `forward` without the cache, so the mask is dropped there too | left-pad the prompts (`tokenizer.padding_side = "left"`) and keep `use_cache=True`, or generate one prompt at a time; `generate` takes the logits of the last position, which is a pad in a right-padded prompt (read from the code, not run) |
 | `is_causal=False` passed to `forward` changes nothing | the code computes `is_causal or self.is_causal`, so the argument can switch the mask on and never off | set `is_causal: false` in the config, as the action-head configs do |
 | A shape error in the position embedding, or attention narrower than the stream | `head_dim = hidden_dim // n_heads` is integer division with no check: an odd head width breaks the rotary embedding, an even one drops the remainder silently | choose `n_heads` that divides `hidden_dim` into an even head width |
-| Nothing: no error, and training and serving agree | the rotary position table was computed in bfloat16 (16-bit floats, 8 significant bits) under `hparams.precision: amp_bf16`: positions above 256 collapsed onto even numbers and above 512 onto multiples of 4, leaving 641 distinct positions out of 2048. The 15 action-step tokens (one per predicted action) of the 85% policy shared 8 positions | fixed in `vla_foundry/positional_embedding.py`: the angles are computed in float32, then cast (`tests/essential/models/test_rotary_precision.py`); `positional_embedding_type: rotary_legacy_autocast` reproduces the old table. Stage 1 (256 tokens) was not affected. The 85% policy was trained before the fix. Retrained with the fixed table, it ends at 93% (trained weights). A second pair of runs with other seeds, differing in the table alone, ends at 96% / 96% against 90% / 89% ([12-positions.md](12-positions.md)) |
+| Nothing: no error, and training and serving agree, but neighbouring positions beyond 256 look alike to attention | the rotary position table that rotates queries and keys was computed in bfloat16 (16-bit floats, 8 significant bits) under `hparams.precision: amp_bf16`, so positions above 256 shared angles with their neighbours; the mechanism and what it cost the policies are in [12-positions.md](12-positions.md) | fixed in `vla_foundry/positional_embedding.py`: the angles are computed in float32, then cast (`tests/essential/models/test_rotary_precision.py`); `positional_embedding_type: rotary_legacy_autocast` reproduces the old table. Stage 1 (256 tokens) was not affected; a model whose sequences are longer, such as the action head, was |
 
 ## Background and further reading
 
@@ -348,5 +344,30 @@ None of the following was measured here.
        print((model(input_ids=left).logits[:, 4:] - base[:, 4:]).abs().max().item())
        a, b = model(input_ids=ids, **kept).logits, model(input_ids=left, **kept).logits
        print((a[:, 4:] - b[:, 4:]).abs().max().item())
+   EOF
+   ```
+
+4. Show that the mask is switched off by the config and not by the call, as the action head needs.
+   The script changes the last eight of 16 ids and compares the first eight logits: for a causal
+   model, for that model called with `is_causal=False`, and for its weights in a model built with
+   `is_causal=False`. Expected: 0.0, 0.0, a non-zero value.
+
+   ```bash
+   .venv/bin/python - <<'EOF'
+   import torch
+   from vla_foundry.models.transformer import Transformer
+   from vla_foundry.params.model_params import TransformerParams
+
+   causal = Transformer(TransformerParams()).eval()
+   ids = torch.randint(0, 1000, (1, 16))
+   later = ids.clone()
+   later[:, 8:] += 1
+   bi = Transformer(TransformerParams(is_causal=False)).eval()
+   bi.load_state_dict(causal.state_dict())
+   with torch.no_grad():
+       for model, kw in [(causal, {}), (causal, {"is_causal": False}), (bi, {})]:
+           a = model(input_ids=ids, **kw).logits[:, :8]
+           b = model(input_ids=later, **kw).logits[:, :8]
+           print((a - b).abs().max().item())
    EOF
    ```

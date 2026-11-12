@@ -58,9 +58,9 @@ between the two; each is a place where training and inference can disagree witho
    standard deviation 0.5 the result lies in [-1, 1]: $(x - 0.5) / 0.5 = 2x - 1$.
 3. **Reorder** HWC to CHW, and resize if the image is not the size the model expects.
 
-A network can be fitted to either range. What it cannot tolerate is a range at inference different
-from the one its first layer's weights were fitted to. Background: inputs centred near zero with a
-spread near one are the convention because they usually make optimisation easier.
+A network can be fitted to either range, but not to a range at inference different from the one
+its first layer's weights were fitted to. Background: inputs centred near zero with a spread near
+one are the convention because they usually ease optimisation.
 
 ### 2. Patch embedding as a convolution
 
@@ -222,17 +222,19 @@ also expands every `<image>` in the prompt into `data.img_num_tokens` copies (25
 decodes JPEG bytes with `fast_image_decoder` and calls `RoboticsProcessor.process_inputs`, as
 training does.
 
-To train `dp_vit_lang_reactive` and evaluate every checkpoint (`PICKUP_NUM_CHECKPOINTS=10` gives
-the rows every 0.5M samples below; the config saves averaged weights by itself):
+To train `dp_vit_lang_reactive` and evaluate every checkpoint (`PICKUP_NUM_CHECKPOINTS=10` saves
+one every 0.5M samples; the config saves averaged weights by itself):
 
 ```bash
 sim/pickup/scripts/make_dataset.sh pick_target 4000 pick_target_4k
 PICKUP_NUM_CHECKPOINTS=10 sim/pickup/scripts/train_resilient.sh dp_vit_lang_reactive pick_target_4k my_run 5000000
 sim/pickup/scripts/eval_checkpoints.sh experiments/pickup/my_run pick_target
+.venv/bin/python -m sim.pickup.summarize --task pick_target --runs my_run
 ```
 
-With the current code this reproduces the run after the position fix (93%, trained weights);
-`--model.transformer.positional_embedding_type rotary_legacy_autocast` restores the old table.
+`sim.pickup.summarize` prints a Markdown table, one row per checkpoint. Its column
+`Miss, named (mm)`, the median distance between where the gripper closed and the named object, is
+the number to hold against the patch size estimated above.
 
 ## What we measured
 
@@ -242,38 +244,23 @@ All numbers are from the [lab notebook](../lab-notebook.md).
 serving, reached 37/50 = 74% (95% interval 60-84%) on `pick_cube` with 1000 demonstrations and 1.5M
 samples on machine A (one RTX 4090, 24 GB), and, on machine B (L40S GPUs, 128 CPU cores), 96% / 98%
 (raw / EMA: the trained weights and their running average) on 100 layouts once the position table
-was fixed (62% / 70% before the fix). No run here compares raw against normalised input with the
-rest held equal.
+was fixed ([52-history-and-shortcuts.md](52-history-and-shortcuts.md)): the first layer can be fitted to either range. No run here compares raw against
+normalised input with the rest held equal.
 
-**Position finer than a patch, late in training.** On 4000 `pick_target` demonstrations (machine
-B, 100 unseen layouts, raw / EMA) `dp_vit_lang_reactive` scored 0% / 1% after 1.0M samples,
-4% / 36% after 2.0M and 83% / 85% after 5.0M, when its gripper first closed a median 7 mm from the
-named object, against the 5 to 7 cm estimated above for one front-camera patch. At 1.0M the slope
-of where it closed against where the named object was (`sim/pickup/summarize.py` prints it) was
-0.11 / 0.14, where 1 means at the object and 0 that the place does not depend on the scene. Check
-this slope before blaming the patch grid: the policy was not reading the patches coarsely; it was
-not yet using them
-([71-how-much-data-and-training.md](71-how-much-data-and-training.md)). This run used the old
-position table (below); trained again with the fixed one, its slope after 1.0M samples is already
-0.58.
+**Position finer than a patch.** On 4000 `pick_target` demonstrations (machine B, 100 unseen
+layouts) `dp_vit_lang_reactive` ended at 83% / 85% after 5.0M samples with the position table of
+the runs before the fix, and at 93% (trained weights) with the corrected table
+([Telling Tokens Where They Are](12-positions.md)). Its gripper first closed a median 7 mm from
+the named object before the fix and 6 mm after it. The estimate above gives 5 to 7 cm for one
+front-camera patch, so the position was read from inside the patches: from how the object's
+pixels fall across neighbouring tokens, and from the wrist camera, which sees the object larger as
+the gripper approaches (the two cameras were not tested apart). Earlier in training the same policy
+did not use the image at all, a different failure from reading the grid coarsely
+([71-how-much-data-and-training.md](71-how-much-data-and-training.md)).
 
-**The first frame decides where it goes.** Sent the first frame's images for the whole episode
-(`eval.py --stale_images`), the 85% policy still closed at the named object (the object nearest
-the gripper at its first closing) in 99% of episodes, a median 17 mm off, and succeeded in 1/100
-([95-what-a-policy-looks-at.md](95-what-a-policy-looks-at.md)). The two cameras were not tested
-apart.
-
-**Before the position fix, the failures were grasp angles**: over the checkpoints from 3.0M
-samples on, the T block and the cube, which must be grasped at the right yaw, succeeded in 55% and
-82% of their episodes. Most of that was the position bug: after the fix, pooled over the last three
-checkpoints, the T block reaches 87% and the cube 94%
-([101-case-pick-target.md](101-case-pick-target.md)).
-
-**History made it worse on three objects.** `dp_vit_lang`, the same policy with history, scored
-2% / 2% after 3.0M samples, against 81% / 75% without history (both before the position fix).
-Probes show it reads the target from its previous action. After the fix, a history policy trained
-on demonstrations that begin with a hold frame still ends at 0% / 4% after 5M samples. On the single cube history costs nothing (96% / 98% after
-the fix) ([52-history-and-shortcuts.md](52-history-and-shortcuts.md)).
+Every `dp_vit*` run used 16 px patches and 224 px renders; whether 14 px patches would localise
+better here is not measured. Whether the two extra frames of the history configs help is the
+subject of [52-history-and-shortcuts.md](52-history-and-shortcuts.md).
 
 ## Where it goes wrong
 
@@ -285,15 +272,24 @@ Without an error, the stage-2 VLM listed a held-out scene's objects in left-to-r
 `tests/essential/models/test_simple_vlm_processor_scaling.py` holds the three input types to one
 output.
 
-**Positions behind the image tokens.** The transformer that receives these tokens uses rotary
-positions. Its table was computed in bfloat16, which keeps 8 significant bits, so positions above
-256 collapsed onto even numbers: behind the 426 tokens that precede them in the no-history policy
-(noise level, 32 instruction tokens, 392 patches, joint state), the 15 action-step tokens at
-positions 426-440 shared 8 positions (lab notebook). The table is now computed in float32. The
-same recipe trained again ends at 93% (trained weights), not 83% / 85%,
-and a second pair of runs with other seeds, differing in the table alone, ends at 96% / 96% against
-90% / 89%; in both pairs the policy starts to look earlier
-([Telling Tokens Where They Are](12-positions.md)).
+**Image tokens push everything after them to high positions.** Every frame adds 196 tokens to the
+sequence of the model that receives them, and whatever comes after the images inherits large
+position numbers: in the no-history policy 426 tokens precede the action-step tokens (noise level,
+32 instruction tokens, 392 patches, joint state), so those sit at positions 426-440; with history,
+at about 820. Any precision limit in the position encoding of that model therefore bites the
+action-step tokens first. That happened here: the rotary table was computed in bfloat16 and the 15
+action-step tokens shared 8 positions ([Telling Tokens Where They Are](12-positions.md)). For a
+model of your own, count the tokens in front of the ones you care about and check that the
+encoding still tells those positions apart.
+
+**The miss is about one patch.** What you see: the gripper closes near the named object but a few
+centimetres off, consistently. It is tempting to blame the 16 px grid. Check first whether the
+policy is looking at all: `sim.pickup.summarize` prints the slope of where the gripper closed
+against where the named object was, 1 when it goes where the object is and 0 when the place does
+not depend on the scene. A slope near 0 means the policy is not yet using the image, and a finer
+grid will not help ([92-measuring-failure.md](92-measuring-failure.md)). A slope near 1 with a
+miss of several centimetres would point at resolution; then a smaller `patch_size` (with
+`data.img_num_tokens` changed to match for a VLM) or a larger render is the experiment to run.
 
 **The token count and the placeholder count disagree.** What you see: an `AssertionError` on the
 first forward pass of a VLM. `VLM.forward` in `vla_foundry/models/vlm.py` asserts that the number

@@ -142,7 +142,8 @@ patches" into coordinates, pick the named object, and encode the result precisel
 grasp, taught only by the action loss passed back through that one token. On machine A (one RTX
 4090, 24 GB), where the first-round single-vector VLAs ran, a 10 mm sideways offset takes the
 scripted expert (the hand-written controller that recorded the demonstrations) from 94% to 60% on
-the can; on machine B, from 100% to 94% ([Measuring failure](92-measuring-failure.md)).
+the can; on machine B (L40S GPUs, 128 CPU cores), from 100% to 94%
+([Measuring failure](92-measuring-failure.md)).
 
 ## In this repository
 
@@ -195,9 +196,10 @@ conditioning_len: 528
 The number of images, state tokens and action-step tokens follows from `data.camera_names`,
 `data.image_indices` and `data.lowdim_past_timesteps`.
 
-**Running it.** The policy of the table below, on plain demonstrations (the
+**Running it.** The patch-token policy measured below, on plain demonstrations (the
 [README](../../README.md) adds `--random_start --disturb_prob 0.5` to the first line, for a policy
-that copes when the object moves); the config switches averaged weights on itself:
+that copes when the object moves); the config itself switches on **averaged weights**, a running
+average of the trained weights saved next to them ([The training loop](80-the-training-loop.md)):
 
 ```bash
 sim/pickup/scripts/make_dataset.sh pick_target 4000 pick_target_4k
@@ -207,77 +209,78 @@ sim/pickup/scripts/eval_checkpoints.sh experiments/pickup/my_run pick_target
 ```
 
 The all-token VLA needs a stage-2 VLM in `experiments/pickup/custom_vlm`
-([The from-scratch path](62-the-from-scratch-path.md)). On 4000 demonstrations and 3M samples it
-ends at 86% / 87% (trained / averaged weights) with the caption-pretrained backbone, 75% / 85% with
-a randomly initialised one (`scratch`; [field notes](../notes.md), "Pretraining a backbone: mainly
-an earlier start"):
+([The from-scratch path](62-the-from-scratch-path.md)). The fourth argument of
+`custom_path.sh vla` chooses its backbone weights (`pretrained`: the stage-2 VLM; `scratch`: the
+same architecture, randomly initialised), the fifth the config, whose default is the history
+variant `vla_custom_tokens`:
 
 ```bash
 sim/pickup/scripts/custom_path.sh vla pick_target_4k my_vla_tokens 3000000 pretrained vla_custom_tokens_reactive
 ```
 
+Before training an all-token config, compare its `conditioning_len` with the longest prompt it
+has to hold: `vla_custom_tokens.yaml` (four images) sets 1040, the no-history variant 528, and
+`vla_qwen_tokens_reactive.yaml` 128. A prompt with more real tokens than that raises the
+`ValueError` above as soon as it is batched; one with fewer is padded in front with zero slots.
+
 ## What we measured
 
 All numbers are from the [lab notebook](../lab-notebook.md): closed-loop success (the policy drives
 the simulated arm) on **layouts** the policy never saw (what a seed fixes: the objects, their poses,
-the named one and the arm's start pose), one training seed per run. A **sample** is one training window (one frame's observations and the actions that follow) drawn by
-the data loader.
-
-**One vector, one object.** On `pick_cube` (machine A, 200 demonstrations, 300k samples, 50
-episodes) one pooled vector per image from a pretrained CLIP encoder gave 2/50 = 4% and every
-patch as a token 15/50 = 30%; the two policies differ in more than that
-([One vector or many tokens](21-pooled-vs-patch-tokens.md)).
-
-**One vector, three objects.** The two first-round VLAs with one conditioning vector
-(`vla_custom`, VLM pretrained or randomly initialised; machine A, 1500 demonstrations, 1.0M
-samples, with history) scored 0/100 and 1/100 on `pick_target`. They **closed at the named
-object** (the object nearest the gripper when it first closed was the one the instruction named)
-in 33% and 29% of episodes (chance 33%), a median 89 mm from the nearest object. These are neither
-near misses nor reaches toward a point between the objects: where the gripper closed did not
-depend on the scene ([field notes](../notes.md), "A failing policy ignores the scene; it does not
-average"). `vla_qwen` (pretrained Qwen3-VL-2B, one vector, 400k samples) scored 6/100.
-
-**Tokens, three objects.** `pick_target` on machine B (L40S GPUs, 128 CPU cores), 100 layouts
-per row, the 48.9M-parameter patch-token policy with the instruction (12.6M of it the instruction
-embedding table), every row trained with the old position table (below). Each pair is the trained
-weights / their running average (raw / EMA, [The training loop](80-the-training-loop.md)).
-**Slope** is the least-squares slope of where the gripper first closed against where the named
+the named one and the arm's start pose), one training seed per run. A **sample** is one training
+window (one frame's observations and the actions that follow) drawn by the data loader. A pair is
+the trained weights / their running average (raw / EMA,
+[The training loop](80-the-training-loop.md)). A policy **closed at the named object** when the
+object nearest the gripper at its first close was the one the instruction named (chance: 33%). The
+**slope** is the least-squares slope of where the gripper first closed against where the named
 object was: 1 if it closes where the object is, 0 if where it closes does not depend on the scene.
 
-| Policy | Demos | Samples | Success | Closed at the named object | Slope |
-|---|---|---|---|---|---|
-| `dp_vit_lang` (history) | 4000 | 3.0M (stopped) | 2% / 2% | 30% / 35% | 0.11 / 0.08 |
-| `dp_vit_lang_reactive` (no history) | 1500 | 1.0M | 3% / 5% | 49% / 41% | 0.29 / 0.18 |
-| same | 1500 | 3.0M | 64% / 62% | 99% / 100% | 0.96 / 0.97 |
-| same | 4000 | 5.0M | 83% / 85% | 100% / 100% | 0.98 / 0.98 |
+**One object.** On `pick_cube` (machine A) one pooled CLIP vector per image
+gave 4% and every patch as a token 30%, from policies that differ in more than the conditioning
+([One vector or many tokens](21-pooled-vs-patch-tokens.md)).
 
-What this shows:
+**One vector, three objects.** The first-round from-scratch VLAs with one action-token vector
+(`vla_custom`, machine A, 1500 demonstrations, 1.0M samples, with history) scored 0/100 and 1/100
+on `pick_target` and closed at the named object at chance
+([Measuring failure](92-measuring-failure.md)). A rerun of the Qwen recipe on machine B,
+`vla_qwen_pt1500` (one vector, history, 1500 demonstrations), shows how much of
+the scene one vector does pass on:
 
-- **Tokens carry the place and the instruction.** In the last row the gripper closed at the named
-  object in every episode, 7 mm (median) from it, against the expert's 5 mm. That run's
-  remaining failures, mostly grasp angles on the T block (55%), were mainly the position bug: after the fix
-  the T block is at 87-93% and the rest is spread thinly over the objects
-  ([the `pick_target` case study](101-case-pick-target.md)).
-- **Being in the sequence is not being used.** The 424 conditioning tokens were there from the
-  first optimiser step, yet the last row's run stood at 0% / 1% after 1.0M samples (slope 0.11 /
-  0.14) and 4% / 36% after 2.0M (slope 0.81 / 0.96). Rows two and three are one policy on one
-  dataset: the 1.0M-sample run ended inside that transition
-  ([How much data and training](71-how-much-data-and-training.md)).
-- **The old position table delayed the start and lowered the end.** Computed in half precision, it held 641 distinct
-  positions out of 2048, and the 15 action-step tokens of the no-history policy shared 8. Trained
-  again with the fix, the last row's recipe ends at 93% (trained weights) and starts to look earlier
-  (58% against 4% at 1.5M samples). A second pair of runs with other seeds, differing in the table
-  alone, ends at 96% / 96% against 90% / 89% ([Positions](12-positions.md)).
-- **An input that holds the answer displaces the image.** The history policy reads the target
-  from its previous action. At 2.5M samples (EMA) it succeeded in 1/100 layouts as served, 22/100
-  when the previous action sent with its first query was the expert's first command, and 77/100
-  when the expert drove the first 10 control steps. In training, the previous-action slot of a
-  window that starts at the first frame holds a copy of that command; when served, the hold command
-  ([History and shortcuts](52-history-and-shortcuts.md)).
-- **A policy that succeeds may read the images once.** Sent the first frame's images for the whole
-  episode (`eval.py --stale_images`), the 85% policy still closed at the named object in 99% of
-  episodes, 17 mm (median) from it, and succeeded in 1/100: after its first look the state token
-  says where the arm is heading ([What a policy looks at](95-what-a-policy-looks-at.md)).
+| Samples | Success | Closed at the named object | Slope | Median miss to named |
+|---|---|---|---|---|
+| 0.10M | 1% | 33% | 0.04 | 175 mm |
+| 0.20M | 3% | 60% | 0.53 | 105 mm |
+| 0.30M | 2% | 60% | 0.62 | 98 mm |
+| 0.40M | 5% | 71% | 0.68 | 83 mm |
+
+Which object gets through: it closes at the named one well above chance and its slope rises. Where
+it is, precisely enough to grasp, does not: a median miss of 83 mm, against the 10 mm offset that
+already costs the expert grasps. That fits the argument above, a coarse direction being
+easier to write into one vector than a grasp point, but from one run whose recipe also had history,
+so it is not a test of it.
+
+**Tokens, three objects.** `dp_vit_lang_reactive` (patch tokens and 32 instruction tokens, no
+history; 48.9M parameters, 12.6M of them the instruction embedding table), on machine B with 4000
+demonstrations and 5M samples, ended at 83% / 85%
+([How much data and training](71-how-much-data-and-training.md)). It closed at the named object in
+100% / 100% of 100 layouts, slope 0.98 / 0.98, a median 7 mm from it, against the expert's 5 mm.
+With the patches and the instruction in the sequence, both "which" and "where" reach the
+action-step tokens precisely enough to grasp.
+
+What else this shows:
+
+- **Being in the sequence is not being used.** The 424 conditioning tokens are there from the
+  first optimiser step, but the run above closed at the named object at chance for its first
+  million samples. When a policy starts to look, and what moves that point, is the subject of
+  [How much data and training](71-how-much-data-and-training.md); that run also used the rotary
+  position table later found to merge positions ([Positions](12-positions.md)).
+- **Other inputs in the same sequence can carry the target instead.** The previous action, which
+  sits in front of the chunk as a sixteenth action-step token, lets a policy with history read its
+  target from its own past ([History and shortcuts](52-history-and-shortcuts.md)). The state token
+  does it after the first look: sent the first frame's images for the whole episode
+  (`eval.py --stale_images`), the policy above still heads for the named object and rarely
+  succeeds ([What a policy looks at](95-what-a-policy-looks-at.md)). The conditioning is the only
+  input that sees the scene, not the only one that can say where to go.
 
 What it does not show:
 
@@ -285,7 +288,9 @@ What it does not show:
   Those VLAs also had history and 1.0M samples on 1500 demonstrations, each of which alone kept a
   patch-token policy with the instruction at 2% to 5%. With every token, no history and 4000
   demonstrations the from-scratch VLA reaches 86% / 87% (3M samples) and the Qwen VLA 70% / 72%
-  (0.5M samples), against 0-6% with one vector; no run changes only the conditioning.
+  (0.5M samples), against 0/100 and 1/100 (`vla_custom`) and 6/100 and 5% (`vla_qwen`) with one
+  vector, each with history on 1500 demonstrations; no run changes only the conditioning (what
+  pretraining adds is in [the pretrained-backbones case](102-case-pretrained-backbones.md)).
 
 ## Where it goes wrong
 
@@ -295,16 +300,16 @@ median miss; `sim/pickup/summarize.py` adds the slope. Near 1 with a miss of a f
 centimetres, the policy is imprecise ([Measuring failure](92-measuring-failure.md)). Near 0, it is
 not looking: check that the conditioning is more than a few vectors, that the policy is not given
 its previous action, and that training did not end before the slope moved in a comparable run
-(the evidence for each, with its limits, is above).
+(the evidence for the first and third, with its limits, is above; for the second, see
+[History and shortcuts](52-history-and-shortcuts.md)).
 
 **The previous action in the sequence.** If a policy with history scores near zero, run
 `eval.py --first_prev_action expert` and `--expert_prefix 10`: a policy that scores far better
 with them than without reads its target from its own past. Start without
-history. `collect.py --hold_steps 1`, a frame of the robot at rest at the start of every
-demonstration, closes the leak at the first frame but did not help: trained on such demonstrations
-with the fixed position table, the history policy ends at 0% / 4% after 5M samples, and where it
-closes never depends on the scene. From the second step on the previous action still predicts the
-next one ([History and shortcuts](52-history-and-shortcuts.md)).
+history: in the sequence above that means `image_indices: [0]` and `lowdim_past_timesteps: 0`, one
+state token and no sixteenth action-step token. Removing only the first-frame leak
+(`collect.py --hold_steps 1`) is not enough, because from the second step on the previous action
+still predicts the next one ([History and shortcuts](52-history-and-shortcuts.md)).
 
 **The action token behind padding.** Appended after the batch padding, it read a short
 instruction one position later in a training batch than when served alone. Both wrappers now place
@@ -354,6 +359,11 @@ it after the last real token; the effect on success was not measured
        tests/essential/models/test_backbone_conditioning.py -q
    ```
 
-4. A policy with history scores 2% after 3.0M samples, with a slope of 0.08. Name two changes
-   to make before touching the backbone, and the two `eval.py` options that test whether it reads
-   its target from its previous action.
+4. A policy with history closes at the named object at chance throughout training, with a slope
+   near 0. Name two changes to make before touching the backbone, and the two `eval.py` options
+   that test whether it reads its target from its previous action.
+
+5. `vla_qwen_tokens_reactive.yaml` sets `conditioning_len: 128`, has no history and predicts 15
+   actions. Compute the policy's sequence length, and say what `conditioning_from_hidden_states`
+   does with a prompt of 120 real tokens and with one of 130. (Answer: 1 + 128 + 1 + 15 = 145; the
+   first is right-aligned behind 8 zero slots, the second raises a `ValueError`.)

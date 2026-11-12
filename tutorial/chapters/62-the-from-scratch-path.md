@@ -29,10 +29,10 @@ numbers, or the result of pretraining. In a demonstration, the only thing that t
 "green can" to an object is where the expert then moves
 ([Language conditioning](51-language-conditioning.md)). A policy can learn the tie from that
 alone, but late: `dp_vit_lang_reactive`, the policy that solves `pick_target` here, has no
-pretrained part, and trained with the old position table it closed the gripper at the object the
-instruction named about as often as chance for its first million training samples (with the table
-fixed, 65% of the time after 1.0M). The hope behind stages 1 and 2 is that a VLM which already ties
-the words to image regions gives the policy a head start.
+pretrained part and closes the gripper at the object the instruction named about as often as chance
+for most of its first million training samples
+([How much data, how much training](71-how-much-data-and-training.md)). The hope behind stages 1
+and 2 is that a VLM which already ties the words to image regions gives the policy a head start.
 
 That hope needs a **control**: a second run identical except in the one thing under test, here
 the same stage-3 policy with a VLM whose weights are random. A difference larger than the
@@ -100,6 +100,19 @@ At batch size 32:
 With history, two cameras at two frames each (`image_indices: [-1, 0]`) give four images, 1024
 image tokens per sample. Without it (`image_indices: [0]`, `lowdim_past_timesteps: 0`) there are
 two images and 512 image tokens, and the action head's sequence has no previous-action slot.
+
+The reactive config's comment counts its 528: 3 prompt tokens, 2 images x 256 and an instruction
+of at most 8 tokens. `conditioning_from_hidden_states`
+(`vla_foundry/models/vision_language_backbones/base.py`) pads every prompt in front to that length,
+so the shape is the same in every training batch and when the policy is served. The action
+head (`_build_transformer_input` in `vla_foundry/models/diffusion_policy/diffusion_policy.py`) then
+puts one token for the noise level in front of the 528 rows, one for the joint state after them and
+the 15 action-step tokens last: 545 positions.
+
+<!-- interactive: sequence-layout -->
+*Figure: the VLM prompt (prompt tokens, two images of 256 placeholders, the instruction) and the
+action head's sequence built from it: noise level, conditioning rows, joint state, action-step
+tokens.*
 
 ### How weights move between stages
 
@@ -172,17 +185,18 @@ argument the config is `vla_custom_tokens`, which has history.
   captions (`--max`); [Testing a VLM](32-testing-a-vlm.md) covers the scoring.
 - `vla` refuses to start without `experiments/pickup/custom_vlm/config_model.yaml`, for both
   initialisations, and runs under `train_resilient.sh`, which restarts a dead or stalled run from
-  its newest checkpoint. Extra arguments go after all five positional ones.
-- The pickup policy configs set `ema.enabled: true`, so every run saves a running average of the
-  weights (the EMA weights, `ema_N.pt`) next to the trained ones. `eval_checkpoints.sh` evaluates
-  both for every checkpoint, and with `PICKUP_WATCH=1` it follows a run that is still training.
+  its newest checkpoint and refuses a second trainer on the same run name. Extra arguments go after
+  all five positional ones.
+- The pickup policy configs set `ema.enabled: true`: every checkpoint also saves a running average
+  of the weights (`ema_N.pt`). `eval_checkpoints.sh` evaluates both, and with `PICKUP_WATCH=1`
+  follows a run that is still training.
 
 ## What we measured
 
 All numbers are from the [lab notebook](../lab-notebook.md), on machine A (one RTX 4090, 24 GB)
-unless machine B (L40S GPUs, 128 CPU cores) is named. The stage table, the first comparison and
-the `dp_vit_lang*` numbers not marked otherwise come from runs trained before the position-table
-fix ("Where it goes wrong"); the repeated comparison and its retrained stage-2 VLM come from after.
+unless machine B (L40S GPUs, 128 CPU cores) is named. The stage table (except its last sentence, on the
+retrained VLM) and the first comparison come from runs trained before the position-table fix
+("Where it goes wrong"); the retrained stage-2 VLM and the repeated comparison come from after.
 
 | Stage | Data | Budget | Result |
 |---|---|---|---|
@@ -211,10 +225,9 @@ Zero against one out of 100 is no difference, and no proof that pretraining is u
 1. **The task is solvable.** The scripted expert scores 99/100 through the same evaluation loop.
 2. **Neither policy was looking at the scene.** Both closed at the named object at chance, at the
    right height (within about 3 mm) around control step 34-44 as the expert does, but 89 mm
-   (median) from the nearest object. They were not aiming between the objects: where a failing
-   policy closed did not depend on the scene ([notes.md](../notes.md), "A failing policy ignores
-   the scene; it does not average"). A low loss does not contradict this
-   ([Loss is not success](91-loss-is-not-success.md)).
+   (median) from the nearest object: where they closed did not depend on the scene
+   ([Measuring how a policy fails](92-measuring-failure.md)), and the low loss does not contradict
+   this ([Loss is not success](91-loss-is-not-success.md)).
 3. **The stage-2 VLM had part of the information.** It named the leftmost object in 285 of 300
    held-out scenes, so it ties the object words to coarse image regions. Its captions give
    positions only as thirds of the image or as an ordering.
@@ -223,74 +236,51 @@ This is a floor effect: when every variant fails, a difference between them cann
 
 ### Why both stayed at the floor
 
-Three properties of the pair stood in the way. The numbers for the last two come from a
-48.9M-parameter patch-token policy with instruction tokens and no VLM (`dp_vit_lang`,
-`dp_vit_lang_reactive`) on machine B, as trained weights / EMA weights.
+Three settings of the first pair stood in the way, each found later on the smaller patch-token
+policy (48.9M parameters, no VLM) and told in full in its own chapter:
 
-- **One conditioning vector.** The named object's position has to be written into the values of
-  one vector by a VLM that only the action loss trains
-  ([What the action head sees](50-what-the-action-head-sees.md)). On `pick_target` the
-  same from-scratch VLA goes from 0/100 with one vector to 86% / 87% with every token, but history
-  and the number of demonstrations changed with it; a run that changes only the conditioning was
-  not made.
-- **History.** `vla_custom.yaml` has it. With the previous frame, state and action as inputs,
-  `dp_vit_lang` was at 2% / 2% after 3.0M samples on 4000 demonstrations; without them
-  `dp_vit_lang_reactive` was at 81% / 75%. The history policy reads its target from its previous
-  action: 1/100 as served, 22/100 when the previous action sent with the first query was the
-  expert's first command, 77/100 when the expert drove the first 10 control steps
-  ([History and shortcuts](52-history-and-shortcuts.md)). Demonstrations that begin with a frame
-  of the robot at rest (`collect.py --hold_steps 1`) did not cure it: trained after the position
-  fix, that policy ends at 0% / 4% after 5M samples, and where it closes never depends on the
-  scene.
-- **The budget.** After 1.0M samples on 1500 demonstrations `dp_vit_lang_reactive` was at 3% / 5%;
-  with 3.0M samples 64% / 62%, and with 4000 demonstrations and 5.0M samples 83% / 85%. That last
-  run closed at the named object in 35% / 32% of episodes after 1.0M samples and in 95% / 98%
-  after 2.0M: looking at the scene arrives late and all at once
-  ([How much data and training](71-how-much-data-and-training.md)).
+| Setting | First pair (`vla_custom.yaml`) | Repeated pair (`vla_custom_tokens_reactive.yaml`) | Told in |
+|---|---|---|---|
+| Conditioning | `action_token`: `[32, 1, 2048]` | `all_tokens`: `[32, 528, 2048]` | [What the action head sees](50-what-the-action-head-sees.md) |
+| History | `image_indices: [-1, 0]`, previous state and action | `image_indices: [0]`, `lowdim_past_timesteps: 0` | [History and the shortcut it opens](52-history-and-shortcuts.md) |
+| Data and budget | 1500 demonstrations, 1.0M samples (10.1 passes) | 4000 demonstrations (`pick_target_4k`), 3.0M samples | [How much data, how much training](71-how-much-data-and-training.md) |
 
-Which of the three held the VLA pair down was not isolated. The field notes ("Pretraining a
+With one row, the named object's position has to be written into its values by a VLM that only the
+action loss trains. With its previous action as an input, a policy can read its target there, so
+only the first window of each demonstration needs the image. And looking at the scene arrives
+late: the patch-token policy had barely started after 1.0M samples on 1500 demonstrations.
+
+Which of the three held the VLA pair down was not isolated; the field notes ("Pretraining a
 backbone: mainly an earlier start") conclude that neither policy could have found the object, so
-the first comparison says nothing about pretraining.
+the first comparison says nothing about pretraining. The step to the second pair changed all three
+together, and the position table with them, so the difference between the rounds is the effect of
+no single one.
 
 ### The comparison repeated
 
-Trained again on machine B without the three obstacles (every token, no history, 4000
-demonstrations, 3M samples, the retrained stage-2 VLM), trained / EMA weights:
+The second pair is the command in "In this repository", run on machine B after the position fix,
+with stage 2 retrained. Both left the floor; the pretrained run started to look after 0.25M samples
+and the random one after about 1.0M, and their end points, one seed each, do not rank the two.
+[Case study: a backbone from scratch against a pretrained one](102-case-pretrained-backbones.md)
+gives the table checkpoint by checkpoint.
 
-| Samples | Pretrained: success | closed at the named object | Random: success | closed at the named object |
-|---|---|---|---|---|
-| 0.25M | 5% / 43% | 81% / 97% | 0% / 0% | 33% / 28% |
-| 0.5M | 31% / 50% | 99% / 100% | 0% / 1% | 39% / 33% |
-| 1.0M | 73% / 62% | 99% / 99% | 9% / 4% | 84% / 68% |
-| 2.0M | 81% / 88% | 100% / 100% | 69% / 81% | 100% / 100% |
-| 3.0M (final) | 86% / 87% | 100% / 100% | 75% / 85% | 100% / 100% |
+Rules for reading any such pair from `summarize.py`'s columns:
 
-Four checks:
+1. **Both sides off the floor.** Closed at the named object well above 33% and a **slope** well
+   above 0 on both runs (the slope of where the gripper first closed against where the named object
+   was: 1 when it closes at the object, 0 when the place ignores the scene). Otherwise the success
+   rates cannot be compared.
+2. **Equal samples, every checkpoint.** The slope rises before success does, so it dates the
+   checkpoint at which a run starts to look at the scene.
+3. **One position table.** Set a pair built after the fix only against reference runs trained after
+   it ([Telling tokens where they are](12-positions.md)).
+4. **Both weights files.** Trained and averaged (`ema_N.pt`) weights can disagree by tens of points while a run starts
+   to look; report both.
 
-1. **Both runs left the floor.** Both end closing at the named object every time.
-2. **The curves differ in when looking starts.** The **slope** of where the gripper first closed
-   against where the named object was is 1 when it closes where the object is and 0 when the place
-   does not depend on the scene. The pretrained run is at 0.87 / 0.97 after 0.25M samples; the
-   random one is at -0.09 / -0.04 there and 0.87 / 0.73 at 1.0M.
-3. **The end points are close.** 11 points apart with trained weights, 2 with EMA weights, from
-   one seed each.
-4. **Same code on both sides.** Both VLAs and their VLM used the fixed table; the reference run
-   used the old one (83% / 85%). Trained again with the fixed table it ends at 93% (trained
-   weights), and a second pair with other seeds ends at 96% / 96% against 90% / 89%. The VLA pair
-   should be read against those runs.
-
-The field notes ("Pretraining a backbone: mainly an earlier start") read this as an earlier start:
-stages 1 and 2 moved the onset from about 1.0M to 0.25M samples, not the end point. Neither VLA
-beats the patch-token policy with the fixed table at the same 3M samples (90%).
-
-<!-- interactive: onset -->
-*Figure: success, closed at the named object and slope against training samples for the
-pretrained and the random-init VLA: the slope rises first, success follows, and the random one
-starts about 0.75M samples later.*
-
-A pair that succeeds needs probing too: the plain patch-token policy (85%) looks at the scene once,
-and with the object moved 80 mm at control step 20 it succeeded in 0 of 96 episodes
-([What a policy looks at](95-what-a-policy-looks-at.md)).
+A pair that succeeds still needs probing: neither VLA was given the probes of
+[Probing a policy that works](95-what-a-policy-looks-at.md), and both learned from one start pose
+with nothing moving, the conditions under which the patch-token policy learned to look once
+([Case study: a policy that corrects itself](103-case-self-correction.md)).
 
 ## Where it goes wrong
 
@@ -311,12 +301,28 @@ grep -c "Model has seen the desired number of samples" \
 ```
 
 **Stages from both sides of the position-table fix.** The rotary position table was computed in
-bfloat16 under autocast, which left 641 distinct positions out of 2048;
+bfloat16 under autocast, which merged positions above 256 in pairs and above 512 in fours;
 `vla_foundry/positional_embedding.py` now computes it in float32
 ([Telling tokens where they are](12-positions.md)). Stage 1 (256-token sequences) was not
-affected, stage 2 (320) was. Retrain an older stage 2 before building a new stage 3 on it.
+affected, stage 2 (320) was, and so is every stage-3 VLA, whose prompts alone hold at least 512
+image tokens. Retrain an older stage 2 before building a new stage 3 on it.
 `positional_embedding_type: rotary_legacy_autocast` reproduces the old table, for evaluating old
 runs only.
+
+**Stage 1 runs out of memory at a larger batch.** At batch 128 the float32 logits,
+`[128, 256, 49280]`, are 6.5 GB per tensor, and stage 1 did not fit on machine A; `custom_llm.yaml`
+uses batch 32.
+
+**The wrong dataset under the right name.** `README.md` builds `pick_target_4k` with
+`--random_start --disturb_prob 0.5`; the pair here was trained on plain demonstrations, one
+instruction per layout, under the same name. `make_dataset.sh` deletes `data/lerobot/<name>` and
+`data/preprocessed/<name>` before it collects, so whichever command ran last decides what the name
+holds. Give the two sets different names when both are needed.
+
+**A prompt longer than `conditioning_len`.** `conditioning_from_hidden_states` raises
+`ValueError` ("A prompt has N tokens but conditioning_len is 528.") rather than drop real tokens. A
+longer instruction needs a larger value, set before training: the served policy reads it from the
+run's config.
 
 **Both runs of a pair report the same result.** Two evaluations started on one port both talked to
 the server that had bound it first, and the second filed the other run's results under its own

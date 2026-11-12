@@ -102,8 +102,8 @@ See [joining vision and language](30-joining-vision-and-language.md).
 Behaviour cloning, the simplest form of imitation learning (training a policy from demonstrations),
 is supervised learning: the input is an observation, the label is the action the expert took.
 
-ALVINN (Pomerleau 1988) was a three-layer network trained by supervised learning to map camera and
-laser range finder images to a steering direction.
+ALVINN (Pomerleau 1988) was a three-layer network that learned to map camera and laser range finder
+images to a steering direction.
 
 Ross and Bagnell showed in 2010 that a cloned policy's errors compound: a small error takes it to a
 state the expert never visited, where it has no training data and errs more. Ross 2011 gave the
@@ -137,16 +137,16 @@ observation: starting from random noise, it refines it over several steps, which
 several modes. It executes the first part of the sequence and re-plans (receding-horizon control).
 ACT (Zhao 2023), on low-cost two-arm ALOHA hardware, predicts a chunk of future actions at once with
 a generative model (action chunking). A chunk means fewer decisions per episode, so fewer chances
-for errors to compound. Flow matching (Lipman 2022) is a simpler way to train such a generator: regress the velocity that
-carries noise to data. See [flow matching](41-flow-matching.md) and
+for errors to compound. Flow matching (Lipman 2022) is a simpler way to train such a generator:
+regress the velocity that carries noise to data. See [flow matching](41-flow-matching.md) and
 [chunks and execution](42-chunks-and-execution.md).
 
 ### Shared data and generalist policies (2023-2025)
 
 An embodiment is one robot body with its own cameras and action space. Until 2023 the convention was
 a separate model and dataset for each robot. Open X-Embodiment (2023) pooled data from 22 robots
-into one dataset in a standard format, and reports positive transfer to several of the robots. Octo and OpenVLA train on it. The policies that
-followed combine the earlier steps:
+into one dataset in a standard format and reports positive transfer to several of them. Octo and
+OpenVLA train on it. The policies that followed combine the earlier steps:
 
 | Policy | Backbone | Action output |
 |---|---|---|
@@ -182,7 +182,18 @@ states from the last `num_vlm_layers_to_use` layers into
 **Demonstrations come from a scripted expert.** `_worker` in
 [`sim/pickup/collect.py`](../../sim/pickup/collect.py) steps `ScriptedExpert.act()` until the
 episode ends and drops failed episodes. No learned policy runs there, so the data has none of the
-states DAgger collects.
+states DAgger collects. Two options put states off the expert's planned path into the data.
+`--random_start` starts each episode from a random gripper pose (`random_start` in
+[`sim/pickup/expert.py`](../../sim/pickup/expert.py)). `--disturb_prob 0.5` draws a move of the named
+object for half of the episodes, during the reach or as the gripper closes (`Disturbance` in
+[`sim/pickup/disturb.py`](../../sim/pickup/disturb.py); in `pick_target_4k_recover` the object was
+moved in 1505 of 4000), and makes the expert `ScriptedExpert(reactive=True)`, which plans again
+when the object has moved or a grasp closed on nothing. This is a scripted stand-in for DAgger: the
+expert, not the learned policy, reached these states. The dataset that [README.md](../../README.md) recommends uses both:
+
+```bash
+sim/pickup/scripts/make_dataset.sh pick_target 4000 pick_target_4k --random_start --disturb_prob 0.5
+```
 
 The era is selected by `model.vision_language_backbone.type`, resolved by
 `get_vision_language_backbone` in `vla_foundry/models/vision_language_backbones/__init__.py`:
@@ -197,49 +208,46 @@ The era is selected by `model.vision_language_backbone.type`, resolved by
 ## What we measured
 
 From the [lab notebook](../lab-notebook.md): closed-loop success (the policy's own actions drive the
-simulator and it sees the result) on unseen layouts, one training seed per run, Wilson 95% intervals
-(a confidence interval for a proportion).
+simulator and it sees the result) on unseen layouts, one training seed per run. Each result tests one
+idea from the history above; the chapter linked has the full numbers.
 
-**One vector against patch tokens.** On `pick_cube` with 200 demonstrations and 300k training
-samples on machine A (one RTX 4090, 24 GB), the diffusion policy on CLIP ViT-B/32 with one pooled
-vector per image and one for the text (245M parameters) scored 2/50 = 4% (1-14%), final loss 0.040.
-The one on a small ViT trained from scratch with every patch as a token (36M) scored 15/50 = 30%
-(19-44%), final loss 0.091. This fits the 2014 lesson that one vector is a bottleneck, but the two
-policies also differ in size and pretraining.
+**One vector is a bottleneck here too.** On `pick_cube` with 200 demonstrations on machine A (one RTX
+4090, 24 GB), a diffusion policy given one pooled CLIP vector per image scored 4%, one given every
+patch token of a small ViT trained from scratch 30%, though the two also differ in size and
+pretraining ([pooled against patch tokens](21-pooled-vs-patch-tokens.md)). The pooled vector says what
+is in the picture; a grasp needs where.
 
-**`pick_target` without a pretrained backbone.** `dp_vit_lang_reactive` is the same patch-token
-policy with the instruction added as tokens ([language conditioning](51-language-conditioning.md))
-and no history (no previous frame, state or action). On machine B (L40S GPUs, 128 CPU cores), after
-5.0M samples on 4000 demonstrations, it scored 83% / 85% over 100 layouts (trained weights / their
-running average, EMA). That run was at 0% / 1% after 1.0M samples, and with 1500 demonstrations a
-1.0M-sample run ended at 3% / 5%, a 3.0M-sample run at 64% / 62%: a budget that ends early reads as
-a broken design ([how much data and training](71-how-much-data-and-training.md),
-[case study](101-case-pick-target.md)). These runs computed the position table in half precision;
-with it fixed, the same recipe ends at 93% (trained weights), and a second pair of seeds at
-96% / 96% against 90% / 89% with the old table ([positions](12-positions.md)). With history
-(`dp_vit_lang`, 4000 demonstrations, before the fix) the policy was at 2% / 2% after 3.0M samples;
-probes show it reads the target from its previous action, not the cameras. After the fix, on
-demonstrations that begin with a hold frame, it ends at 0% / 4% after 5M samples
-([history and shortcuts](52-history-and-shortcuts.md)).
+**No pretrained part is needed for this task.** `dp_vit_lang_reactive`, the same patch-token policy
+with the instruction added as tokens ([language conditioning](51-language-conditioning.md)) and no
+history, scored 83% / 85% (trained weights / their running average, EMA) on 100 `pick_target`
+layouts (three of four known objects on the table, one of them named) after 5.0M samples on 4000
+demonstrations, on machine B (L40S GPUs, 128 CPU cores) ([case study](101-case-pick-target.md)).
+That run used a position table later found to be wrong ([positions](12-positions.md)), and it
+started to look at the scene (where the gripper closed began to depend on where the named object
+was) only late in training ([how much data and training](71-how-much-data-and-training.md)).
 
-**A pretrained VLM as backbone.** In the first round on `pick_target` (machine A, 1500
-demonstrations) `vla_qwen` scored 6/100 after 400k samples and the from-scratch `vla_custom` 0/100
-after 1.0M. Both had history, one conditioning vector and too small a budget. With every token
-handed to the action head, no history and 4000 demonstrations, the from-scratch VLA ends at
-86% / 87% after 3M samples (75% / 85% with a randomly initialised backbone, which starts to look
-about 0.75M samples later) and Qwen at 70% / 72% after 0.5M
-([the from-scratch path](62-the-from-scratch-path.md); [field notes](../notes.md), "Pretraining a
-backbone: mainly an earlier start").
+**Copying the expert invites shortcuts.** Given its previous action as an input as well, the same
+policy on `pick_target` never starts to look: it reads the target from that action
+([history and shortcuts](52-history-and-shortcuts.md)). In a smooth expert demonstration the
+previous action predicts the next one well, so the shortcut is cheap.
+
+**A pretrained VLM as backbone: mainly an earlier start.** This tests RT-2's bet. The first two
+VLAs trained here (machine A, 1500 demonstrations) had history, one conditioning vector (the readout
+in the first table) and too small a budget, and failed. With every token handed to the action head,
+no history and 4000 demonstrations, the from-scratch VLA ends at 86% / 87% after 3M samples with its
+VLM pretrained on captions and 75% / 85% with a randomly initialised one, which starts to look later
+([pretrained backbones](102-case-pretrained-backbones.md)). With four known objects and one form of
+instruction, a language model has little to add.
 
 ## Where it goes wrong: what is still hard
 
 **Precision.** What you see: a policy reaches for the right object and closes the gripper beside it.
-Measure how much error a grasp forgives, per object and machine, before blaming the model
-([measuring failure](92-measuring-failure.md)). The 85% policy closes 7 mm (median) from the named
-object. Before the position fix its failures were grasp-angle errors: 93% on the can, graspable at
-any angle, 55% on the T block (pooled over the checkpoints from 3.0M samples on). Most of that was
-the position bug: after the fix the T block is at 87% with clean demonstrations and 92% with random
-start poses (last three checkpoints pooled).
+Each object forgives a different placement error, and the cube and the T block also need the right
+grasp angle.
+Measure the tolerance per object and per machine before blaming the model. After the position fix
+the T block is still the hardest object (87% with clean demonstrations, 92% with random start
+poses, last three checkpoints pooled), but the remaining failures are spread thinly over the
+objects ([measuring failure](92-measuring-failure.md)).
 
 **Data.** Text and images were already on the internet; robot actions are not: each demonstration
 has to be teleoperated (driven by a person) or scripted. Here 1500 demonstrations took 70 s with 48
@@ -247,21 +255,20 @@ simulator processes, cheap only because the task can be scripted
 ([demonstrations](70-demonstrations.md)).
 
 **Evaluation.** Language models are compared by their loss on held-out text; policies cannot be: on
-`pick_cube` above, the 4% policy had the lower final loss. Only closed-loop rollouts count, and they
-are noisy (1-14% for 2 of 50) ([loss is not success](91-loss-is-not-success.md)). A rate near zero
-does not say whether a policy is imprecise or not looking. The slope `sim/pickup/summarize.py`
-prints, of where the gripper closed against where the named object was, does (near 1 or near 0): for
-the 85% policy, 0.11 / 0.14 after 1.0M samples and 0.98 / 0.98 at the end.
+`pick_cube` above, the pooled-vector policy had the lower final loss ([loss is not
+success](91-loss-is-not-success.md)). Only closed-loop rollouts count, and they are noisy: 2 successes
+in 50 has a Wilson 95% interval (a confidence interval for a proportion) of 1-14%. A rate near zero
+does not say whether a policy is imprecise or not looking; the slope `sim/pickup/summarize.py`
+prints, of where the gripper closed against where the named object was, does: near 1 for a policy
+that is imprecise, near 0 for one that is not looking ([measuring failure](92-measuring-failure.md)).
 
-**Recovery.** What you see: a policy that misses does not recover. The 85% policy looks at the scene
-once: with the named object moved 80 mm at control step 20
-(`eval.py --disturb reach --disturb_step 20`) it scored 0/96, closing 8 mm (median) from where the
-object had been; moved as the gripper closed (`--disturb grasp`), 1/99
-([what a policy looks at](95-what-a-policy-looks-at.md)). Policies trained on demonstrations with
-random start poses and recoveries (`collect.py --random_start --disturb_prob 0.5`) succeed 89-94% of
-the time wherever in the reach the object is moved or as the gripper closes, also from a random
-start pose ([field notes](../notes.md), "Self-correction has to be in the data"); noise-injected
-demonstrations remain on the [roadmap](../roadmap.md).
+**Recovery.** What you see: a policy trained on clean demonstrations that misses does not try again,
+and does not follow an object moved during the reach
+([what a policy looks at](95-what-a-policy-looks-at.md)). Why: Ross 2010; its data holds only the
+expert's own path. How to check: `eval.py --disturb reach` or `--disturb grasp`. What to do: the two
+`collect.py` options above; a policy trained on both copes with every disturbance tried
+([self-correction](103-case-self-correction.md)). Noise-injected demonstrations are on the
+[roadmap](../roadmap.md).
 
 ## Background and further reading
 

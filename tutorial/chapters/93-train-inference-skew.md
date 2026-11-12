@@ -97,7 +97,7 @@ hands its hidden states from the last `num_vlm_layers_to_use` layers to the **ac
 transformer that turns noise into actions, as its **conditioning**: the tensor the backbone hands
 over, `[batch, tokens, width]`, here with one token.
 
-**Symptom.** None isolated; its effect on success was not measured.
+**Symptom.** None isolated.
 
 **Cause.** `RoboticsProcessor.process_inputs` tokenises with `padding=True`, which pads every row
 to the longest prompt in the batch ([Tokens](10-tokens.md)). The token used to be appended to the
@@ -109,10 +109,11 @@ same prompt served alone:         7 7 7 7 3 4 A          A at index 6
 after the fix, in both cases:     7 7 7 7 3 4 A 0 0 0    A at index 6
 ```
 
-The server processes one prompt per request and pads nothing; in training two things differed. Its distance to every real token grew by the number of pads, and with rotary
+The server processes one prompt per request and pads nothing; in training two things differed.
+The action token's distance to every real token grew by the number of pads, and with rotary
 position encoding, the default in `model_params.py`, attention scores depend on that distance
-([Positions](12-positions.md)). It also attended to the pads: for a causal model `Transformer.forward` in
-`vla_foundry/models/transformer.py` sets `attention_mask = None` when `use_cache` is false, since
+([Positions](12-positions.md)). It also attended to the pads: for a causal model
+`Transformer.forward` in `vla_foundry/models/transformer.py` sets `attention_mask = None` when `use_cache` is false, since
 the causal mask already hides right-hand padding from real tokens, though not from a token placed
 after it. In the real data the notebook gives a shift of one position.
 
@@ -155,11 +156,10 @@ with 1 or `None`, `[0.0, 1.0]`.
 ### Case 4: the previous action at the first frame
 
 A policy with history (`dp_vit_lang.yaml`) receives its previous action as row 0 of 16 action
-rows, clean while the other 15 start as noise.
+rows.
 
-**Symptom.** On 4000 demonstrations of `pick_target` the policy with history was at 2% / 2%
-(trained / averaged weights) when its run was stopped at 3.0M samples; without
-history it was at 81% / 75% at that point. Both runs predate the fix of case 5.
+**Symptom.** On three objects the policy with history hardly ever succeeded where the same
+policy without history did ([History and shortcuts](52-history-and-shortcuts.md) has the runs).
 
 **Cause.** A window that starts at the first frame of a demonstration has no previous action.
 [`preprocess.yaml`](../../sim/pickup/configs/preprocess.yaml) sets `padding_strategy: copy`, so
@@ -168,17 +168,29 @@ already points at the target. When served, `eval.py` sends `env.last_action`, wh
 `PickupEnv.reset` is the **hold command**: the start joint angles with the gripper open. In
 training the answer was in the input; when served it is absent.
 
+The serving side of this row is built in `Policy.infer`. It allocates `action_seq` with `total`
+rows of zeros, writes the previous action into the first `past` of them, and sets `past_mask` to
+true on those rows. `DiffusionPolicy.generate_actions` keeps the masked rows as given at every
+flow step and starts the others from noise. Row by row, at the first frame of an episode:
+
+| Row of `actions` | Training window | Served query |
+|---|---|---|
+| 0 (previous action, clean) | copy of row 1: the expert's first command | `env.last_action`: the hold command |
+| 1 (current control step) | the expert's first command, noised | zeros, replaced by noise |
+| 2 to 15 | the expert's next 14 commands, noised | zeros, replaced by noise |
+
+Rows 1 to 15 differ by design. Row 0 is an input on both sides and should not differ.
+
 **What was tried.** `collect.py --hold_steps 1` begins every demonstration with one frame of the
-robot at rest, so the first windows hold what serving provides. It did not cure the policy: trained on such demonstrations with the position table fixed, the history policy ends
-at 0% / 4% (trained / averaged weights) after 5M samples, and at no checkpoint does where it closes
-depend on the scene (slope between -0.11 and 0.12). With the first-frame leak closed, the previous
-action still predicts the next one from the second control step on, and that is enough to keep the
-policy from looking.
+robot at rest, so the first windows hold what serving provides. It did not cure the policy
+([History and shortcuts](52-history-and-shortcuts.md)). Closing a skew does not remove a shortcut
+present on both paths: from the second control step on, the previous action predicts the next one,
+and in that run it was enough to keep the policy from looking.
 
 **Test.** Two **probes**, evaluations of a trained policy with one thing about the episode
 changed: `eval.py --first_prev_action expert` sends the expert's first command with the first
-query; `--expert_prefix 10` lets the expert drive the first 10 control steps.
-[History and shortcuts](52-history-and-shortcuts.md) treats the case in depth.
+query; `--expert_prefix 10` lets the expert drive the first 10 control steps. The first restores
+the training-side row 0 and nothing else, so it measures this skew alone.
 
 ### Case 5: a position table computed in half precision
 
@@ -189,17 +201,23 @@ the fix.
 [`positional_embedding.py`](../../vla_foundry/positional_embedding.py) builds the table of rotary
 position angles in the first forward pass. With `precision: amp_bf16` that pass runs under
 **autocast**, which on a GPU executes many operations in bfloat16, a 16-bit float with 8
-significant bits. The product of position and frequency was one of them. Eight bits hold every
-whole number up to 256 and only the even ones up to 512, so tokens far along the sequence shared a
-position.
+significant bits. The product of position and frequency was one of them, so tokens far along the
+sequence shared a position ([Positions](12-positions.md) has the arithmetic).
+
+Both paths ran the same code, so this case belongs here for what the fix
+did. The table is not stored in a checkpoint (only `inv_freq` is a buffer); it is rebuilt from code
+whenever a model runs. Weights trained on the old table and loaded by the fixed code are served
+positions they never saw: a skew between the code that trained a weights file and the code that
+serves it.
 
 **Fix.** The angles are computed in float32 with autocast off; only the finished cosines and sines
-are cast. Weights trained on the old table were fitted to it, so the fix makes a skew of its own:
-`positional_embedding_type: rotary_legacy_autocast` reproduces the old table for them.
+are cast. For weights trained before the fix, `positional_embedding_type: rotary_legacy_autocast`
+reproduces the old table.
 
-**Test.** `test_rotary_precision.py` requires 1024 distinct rows for 1024 positions under bfloat16
-autocast. The collapse needs a GPU.
-[Positions](12-positions.md) tells this case in full.
+**Test.** `test_rotary_precision.py` builds the table under bfloat16 autocast for 1024 positions
+and requires every row to be distinct and its cosines and sines to match a float32 reference
+within 0.01. `test_legacy_table_reproduces_the_old_collapse` requires the legacy option to still
+collapse 2048 positions; it needs a GPU and is skipped without one.
 
 ### The method
 
@@ -224,8 +242,10 @@ the named object against chance ([Measuring failure](92-measuring-failure.md)), 
 case 4 ([What a policy looks at](95-what-a-policy-looks-at.md)).
 
 **3. Unit tests that pin invariants.** An invariant is a property that must hold for every input,
-such as "the conditioning of a window depends on that window only". The tests here need no trained weights: `object.__new__(RoboticsProcessor)` creates the
-object without running `__init__`, and the data makes a wrong index visible.
+such as "the conditioning of a window depends on that window only". The tests here need no
+trained weights: `object.__new__(RoboticsProcessor)` creates the object without running
+`__init__`, and each test builds inputs whose values show a wrong index (in
+`test_proprioception_past_steps.py`, a state whose value is its row index).
 
 ## In this repository
 
@@ -291,35 +311,23 @@ model, which scores the true caption given the image, gave:
 | PIL | 1.93 | 1.89 |
 | unscaled uint8 tensors, as in training | 0.10 | 1.18 |
 
-The image mattered on the training path and not on the path the check used. With the fixed
-processor the stage-2 model scores 256/300 (85%) on ordering and 285/300 (95%) on the leftmost
-object, on machine A (one RTX 4090, 24 GB).
+The image mattered on the training path and not on the path the check used. A model trained with
+the fixed processor on machine A (one RTX 4090, 24 GB) orders 256/300 held-out scenes correctly
+([Testing a VLM](32-testing-a-vlm.md) has the rest).
 
-**Case 4.** The policy with history (4000 demonstrations, 2.5M samples, averaged weights) on
-machine B (L40S GPUs, 128 CPU cores); each row is 100 unseen **layouts** (objects, places,
-the named one, the arm's start pose):
+**Case 4.** On machine B (L40S GPUs, 128 CPU cores), the first probe alone took the policy with
+history (`dp_vit_lang_pt4k`, 4000 demonstrations, trained before the position fix; the checkpoint
+at 2.5M samples, averaged weights) from 1/100 to 22/100 on 100 unseen **layouts** (objects,
+places, the named one, the arm's start pose); the full probe table is in
+[History and shortcuts](52-history-and-shortcuts.md). One row of one query matters.
 
-| Condition | Success | Closed at the named object | Median miss to named |
-|---|---|---|---|
-| as served: the first previous action is the hold command | 1/100 | 30% | 186 mm |
-| the first previous action is the expert's first command | 22/100 | 97% | 25 mm |
-| the expert drives the first 10 control steps | 77/100 | 100% | 12 mm |
-
-**Closed at the named object** means that the object nearest the gripper when it first closed was
-the one the instruction named; chance is 33%. One changed input in one query takes it from chance
-to 97%: the policy had learned the task, and read the target from its previous action. Trained
-after the fix of case 5 on demonstrations that begin with a hold frame, a history policy ends at
-0% / 4% after 5M samples.
-
-**Case 5.** The old table had 641 distinct positions out of 2048: 15 **action-step tokens** (the
-per-step tokens of the action head's own sequence) shared 8 positions in the policy
-without history, 16 shared 4 with history. The run without history on 4000 demonstrations,
-repeated after the fix (trained weights), scores 58% against 4% after 1.5M samples and 93% against
-83% after 5.0M. A second pair with other seeds, trained from one version of the code and differing
-in the table alone, ends at 96% / 96% with the fixed table against 90% / 89% with the old one
-(trained / averaged weights), and again starts to look earlier: after 1.0M samples it closes at the
-named object 83% of the time against 44%. On the single cube the policy with
-history ended at 96% / 98% after the fix, against 62% / 70% before.
+**Case 5.** The old table had 641 distinct positions out of 2048. `dp_vit_lang_reactive` (patch
+tokens, instruction tokens, no history) on `pick_target` with 4000 demonstrations, trained again
+with the fixed table, ends at 93% against 83% on 100 unseen layouts (trained weights, 5.0M
+samples). That old-table run predates the fix, so other code changes come with the table. The
+legacy option served as a control: a second pair of runs with other seeds, one of them trained
+with `--model.transformer.positional_embedding_type rotary_legacy_autocast`, differs in the table
+alone ([Positions](12-positions.md) has its result).
 
 **Not measured.** The effect of case 2 on success. Nothing here shows that no further skew exists.
 

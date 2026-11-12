@@ -34,10 +34,10 @@ state saved at one point: weights, optimiser state and position in the data.
 | 3 | Measure how a policy fails | you know where the gripper closed and whether that depends on the scene | [Measuring failure](92-measuring-failure.md) |
 | 4 | Know the task tolerance | you know how many millimetres of error each object forgives | [Measuring failure](92-measuring-failure.md) |
 | 5 | Give the action head spatial tokens | its conditioning has one token per image patch | [Pooled vs patch tokens](21-pooled-vs-patch-tokens.md) |
-| 6 | Make sure the instruction reaches it | the trained policy closes at the named object far above chance | [Language conditioning](51-language-conditioning.md) |
+| 6 | Make sure the instruction reaches it | the trained policy closes at the named object (step 3) far above chance | [Language conditioning](51-language-conditioning.md) |
 | 7 | Start without history | the previous action is not an input, or the probes show the policy does not lean on it | [History and shortcuts](52-history-and-shortcuts.md) |
 | 8 | Keep training and serving identical | one sample through both paths reaches the model as the same tensors | [Train/inference skew](93-train-inference-skew.md) |
-| 9 | Checkpoint, auto-resume, evaluate every checkpoint | a dead run restarts by itself; every checkpoint has a success count and a slope | [The training loop](80-the-training-loop.md), [Surviving long runs](81-surviving-long-runs.md), [How much data and training](71-how-much-data-and-training.md) |
+| 9 | Checkpoint, auto-resume, evaluate every checkpoint | a dead run restarts by itself; every checkpoint has a success count and a slope (step 3) | [The training loop](80-the-training-loop.md), [Surviving long runs](81-surviving-long-runs.md), [How much data and training](71-how-much-data-and-training.md) |
 | 10 | Probe the policy that works | you know what it does when the cameras freeze and when the object moves | [What a policy looks at](95-what-a-policy-looks-at.md) |
 
 Steps 1 and 4 need no trained policy; 5 to 8 are settled before a long run, 9 during it, 10 after
@@ -63,7 +63,9 @@ training, clears a stated threshold, and the rate is reported with a confidence 
   1.5M samples, machine A) succeeded in 37 of 50 episodes, 74%, Wilson interval 60-84%.
 
 The threshold is a decision, not a measurement. The [roadmap](../roadmap.md) counts `pick_target`
-as working at 93%, the plain recipe trained after the position fix (83% / 85% before it).
+as working at 93%: `dp_vit_lang_reactive`, 4000 demonstrations, 5.0M samples, trained weights,
+machine B, after the position fix (token positions had been computed in half precision, merging
+neighbouring ones; [Positions](12-positions.md)).
 
 ## The steps in order
 
@@ -84,11 +86,12 @@ succeeded.
 record of where it first closed does, in two numbers. *Closed at the named object*: the object
 nearest the gripper was the one the instruction named; with three objects, chance is 33%. The
 *slope* of where the gripper closed against where the named object was: 1 if it closes where the
-object is, 0 if the place does not depend on the scene. Measured here: three first-round
-`pick_target` policies closed at the named object in 29-33% of episodes, a median of 89-110 mm
-from the nearest object; second-round policies that stayed at chance ended with slopes of 0.01 to
-0.17 (machine B). Where they closed did not depend on the scene: they did not reach between the
-objects or average them.
+object is, 0 if the place does not depend on the scene. Together they pick the next step. A slope
+near 0 says the policy is not using the scene: look at its inputs (steps 5 to 8) or its budget
+(step 9), not at grasp precision. A slope near 1 with low success says it looks but misses: compare
+the miss with the tolerance of step 4. Measured here: the failing first-round `pick_target`
+policies closed at the named object at chance, and where they closed did not depend on the scene;
+they did not reach between the objects or average them ([Measuring failure](92-measuring-failure.md)).
 
 **4. Know the task tolerance.** The tolerance is the placement error at which a grasp still
 succeeds; it turns a success target into a precision target. Measured here with a fixed sideways
@@ -102,31 +105,27 @@ patch tokens keep where things are. Worked example from
 cut into 16-pixel patches gives 14 x 14 = 196 tokens; with 32 slots for the instruction's tokens
 the conditioning is `[batch, 424, 256]`. The two VLA recipes (`vla_custom.yaml`, `vla_qwen.yaml`)
 add one *action token* to the prompt and hand over only its hidden states from the last 4 layers:
-`[batch, 1, 4 x width]`. Measured here on `pick_cube` (machine A, 200 demonstrations, 300k
-samples each): pooled vectors from CLIP, a pretrained image-text encoder, 2/50 (1-14%); patch
-tokens from a small vision transformer trained from scratch, 15/50 (19-44%). The encoder differs
-too, so one variable is not isolated.
+`[batch, 1, 4 x width]`; `conditioning: all_tokens` hands over every token instead. Measured
+here on `pick_cube` (200 demonstrations, 300k samples, machine A): pooled vectors from CLIP (a
+pretrained image-text encoder) 2/50 = 4% against patch tokens 15/50 = 30%, with the encoder
+differing too ([Pooled vs patch tokens](21-pooled-vs-patch-tokens.md)).
 
 **6. Make sure the instruction reaches it.** With three objects on the table, only the instruction
 says which one: `dp_vit`, which has no language input, scored 74% on `pick_cube` and 1/100 on
 `pick_target` (machine A). `dp_vit_lang_reactive` receives the instruction in those 32 slots, in
 front of the patch tokens; its final checkpoint (EMA weights) closed at the named object in 100% of
 episodes (machine B, 4000 demonstrations, 5.0M samples). The input alone was not enough: with
-history (step 7) or too small a budget (step 9) the same policy stayed near chance.
+history (`dp_vit_lang`, step 7) or too small a budget (step 9) the policy stayed near chance.
 
 **7. Start without history.** *History* is the previous frame, state and action as extra inputs.
-Measured here (machine B, 4000 demonstrations, 3.0M samples, both before the position fix): 2% / 2%
-with history, 81% / 75% without. The history policy is not blind: at 2.5M samples (EMA weights) it
-scored 1/100 as served, 22/100 when its first query carried the expert's first command as the
-previous action, and 77/100 when the expert drove the first 10 control steps. It reads the target
-from its previous action. In training, a window that starts at a demonstration's first frame fills
-that slot with the expert's first command, which points at the target; served, it holds the
-command that keeps the robot at rest. With `collect.py --hold_steps 1` every demonstration starts
-with a frame of the robot at rest; trained on those with the fixed position table, the history
-policy still ends at 0% / 4% after 5M samples: from the second step on the previous action still
-predicts the next one. On `pick_cube`, where there is nothing to choose, history costs nothing:
-trained with the fixed table the history policy ends at 96% / 98% (its earlier 62% / 70% was the
-position bug).
+The previous action is the risky one: it is close to the next action, so a policy can lean on it
+instead of on the cameras, and the loss will not show it. Start without it (two config keys,
+`image_indices: [0]` and `lowdim_past_timesteps: 0`) and add history only together with the probes
+that show what the policy does with it (a *probe* changes one input during an episode:
+`eval.py --first_prev_action expert`, `--expert_prefix 10`). Measured here: on three objects the
+policy with history stayed near chance, read the target from its previous action, and was not cured by a frame of the
+robot at rest at the start of every demonstration; on `pick_cube`, with nothing to choose, history
+costs nothing ([History and shortcuts](52-history-and-shortcuts.md)).
 
 **8. Keep training and serving identical.** *Train/inference skew* is any difference between the
 tensors the model receives in training and when served; it raises no error. Measured here: a
@@ -135,24 +134,23 @@ objects of a held-out scene in the right order in 1 of 300 cases; after the fix,
 previous-action slot of step 7 is another case, and an action token placed after the batch
 padding a third ([Train/inference skew](93-train-inference-skew.md)).
 
-**9. Checkpoint, auto-resume, evaluate every checkpoint.** Long runs die: machine A's runs died or
-hung several times. Evaluating every checkpoint, raw and EMA, turns a run into a curve: here flat,
-then steep. Measured here (machine B), `dp_vit_lang_reactive` on 4000 demonstrations, before the
-position fix: 0% / 1% after 1.0M samples (slope 0.11 / 0.14), 4% / 36% after 2.0M (0.81 / 0.96),
-56% / 70% after 2.5M, 83% / 85% after 5.0M; trained again with the fixed table it is at 58% after
-1.5M samples and ends at 93%. The slope moves first, then success; in this transition the EMA
-weights lead, though not in every run. A flat 0% says nothing about what comes next; a slope that
-has left 0 does.
+**9. Checkpoint, auto-resume, evaluate every checkpoint.** Long runs die: machine A's died or
+hung several times. `train_resilient.sh` restarts a run from its newest checkpoint when the trainer
+exits or its log stalls; `eval_checkpoints.sh` evaluates every checkpoint, raw and EMA, skips those
+already evaluated, and can run next to training. That turns a run into a curve, and here
+the curve was flat, then steep: before the position fix,
+`dp_vit_lang_reactive` on 4000 demonstrations was at 0% after 1.0M samples and at 83% / 85% after
+5.0M ([How much data and training](71-how-much-data-and-training.md)). The slope moves first, then
+success. A flat 0% says nothing about what comes next; a slope that has left 0 does.
 
 **10. Probe the policy that works.** A success rate on static scenes does not show what a policy's
-choices depend on. Probes of the 85% policy (EMA weights): with the first frame's images sent for
-the whole episode, it closed at the named object in 99% of episodes and succeeded in 1/100; with the
-named object moved 80 mm at control step 20, it closed 8 mm (median) from where the object had been,
-0/96. It decides where to go from its first look and then follows its own arm; nothing in its
-demonstrations moves or fails. Trained with random start poses (`--random_start`), the policy
-follows an object moved early in the reach (94/100); with recoveries (`--disturb_prob 0.5`) it
-follows a moved object and retries (79-88%); with both, 89-94% under every disturbance
-([field notes](../notes.md), "Self-correction has to be in the data").
+choices depend on. The probes here: the cameras freeze on the first
+frame, the expert drives the first steps toward another object, or the named object is moved.
+Measured here: trained on clean demonstrations from one start pose, the policy looks once and then
+follows its own arm ([What a policy looks at](95-what-a-policy-looks-at.md)); random start poses and
+recoveries (demonstrations where the object is moved once and the expert replans) make it
+follow a moved object and try again
+([Self-correction](103-case-self-correction.md)).
 
 ## In this repository
 
@@ -173,8 +171,9 @@ counts successes.*
 | 9 | `sim/pickup/scripts/train_resilient.sh` (restarts a dead or stalled run from its newest checkpoint), `eval_checkpoints.sh` | `PICKUP_STALL_SECONDS`, `PICKUP_NUM_CHECKPOINTS`, `PICKUP_WATCH=1`, `ema.enabled` (on in the pickup configs) |
 | 10 | `eval.py`; [`disturb.py`](../../sim/pickup/disturb.py) `Disturbance` | `--stale_images`; `--expert_prefix 25 --prefix_target distractor`; `--disturb reach --disturb_step 20`; `--disturb grasp` |
 
-The recommended first real run, as in the [README](../../README.md), reached 94% / 94% and 89-94%
-with the object moved:
+The recommended first real run, as in the [README](../../README.md), adds random start poses and
+recoveries to the demonstrations; it reached 94% / 94%, and 89-94% with the object moved
+([Self-correction](103-case-self-correction.md)):
 
 ```bash
 sim/pickup/scripts/make_dataset.sh pick_target 4000 pick_target_4k --random_start --disturb_prob 0.5
@@ -198,38 +197,38 @@ None yet feeds one sample through both the training pipeline and `Policy.infer`,
 
 ## What we measured: where `pick_target` stands
 
-`pick_target` is solved: `dp_vit_lang_reactive` (48.9M parameters) on 4000 demonstrations and
-5.0M samples, trained with the fixed position table, ends at 93% (trained weights), 96% / 96% with
-other seeds; with random start poses and recoveries in the demonstrations it ends at 94% / 94%. The
-table shows the route there, final checkpoints on machine B, all trained before the fix ("Where it
-goes wrong"); the last row's checkpoint scored 83/100 on a second set of 100 layouts.
+`pick_target` works, as defined above (93% after the position fix), with `dp_vit_lang_reactive`
+(patch tokens, instruction tokens, no history; 48.9M parameters) on 4000 demonstrations and 5.0M
+samples. Each problem on the way was caught by a step of the checklist, mostly in runs whose loss
+looked fine:
 
-| Policy | Demos, samples | Success | Closed at the named object | Slope |
-|---|---|---|---|---|
-| `dp_vit_lang`: patch and instruction tokens, history | 4000, 3.0M (stopped) | 2% / 2% | 30% / 35% | 0.11 / 0.08 |
-| `dp_vit_lang_reactive`: the same without history | 1500, 1.0M | 3% / 5% | 49% / 41% | 0.29 / 0.18 |
-| same | 1500, 3.0M | 64% / 62% | 99% / 100% | 0.96 / 0.97 |
-| same | 4000, 5.0M | 83% / 85% | 100% / 100% | 0.98 / 0.98 |
+| What held the policies back | What catches it | Step | Told in full |
+|---|---|---|---|
+| the policies did not look at the scene | where the gripper closed did not depend on where the objects were | 3 | [Measuring failure](92-measuring-failure.md) |
+| one vector for a whole image, or for a whole VLM prompt | comparing the conditioning on the same data: patch tokens, or every token of the VLM, did far better | 5 | [Pooled vs patch tokens](21-pooled-vs-patch-tokens.md), [What the action head sees](50-what-the-action-head-sees.md) |
+| the previous action as an input | the probes of step 7 | 7 | [History and shortcuts](52-history-and-shortcuts.md) |
+| a run stopped inside the flat stretch | evaluating every checkpoint: the slope had started to move | 9 | [How much data and training](71-how-much-data-and-training.md) |
+| pixel range, action-token position, a zero read as "unset" | comparing what training and serving feed the model | 8 | [Train/inference skew](93-train-inference-skew.md) |
+| positions merged by a half-precision table | only a test of the table itself; training and serving agreed | 8 | [Positions](12-positions.md) |
+| demonstrations in which nothing moves and the arm always starts at home | the probes of step 10 | 10 | [Which demonstrations teach](72-which-demonstrations-teach.md), [Self-correction](103-case-self-correction.md) |
 
-- History and budget were isolated on the patch-token policy. The single conditioning vector was
-  not: `vla_custom` also had history and 1.0M samples. The from-scratch VLA that hands every token
-  to the action head (no history, 4000 demonstrations, 3M samples, after the fix) ends at 86% / 87%,
-  though history, the number of demonstrations and the position table changed with it.
-- Before the fix, what failed looked like the grasp angle (T block 55%, 64 degrees off on failed
-  grasps); most of it was the position bug: after the fix the T block is at 87% and the cube at 94%
-  (pooled over the last three checkpoints).
-
-Which demonstrations teach what is chapter 72, still to come. The case studies tell both tasks in
-order: [`pick_cube`](100-case-pick-cube.md) and [`pick_target`](101-case-pick-target.md).
+The single conditioning vector of the VLA recipes was tested only together with history and a short
+budget, so that row is not isolated. Before the position fix, the remaining failures were
+grasp-angle errors on the T block (74/138 = 54%) and the cube; most of that was the position table:
+after it, the T block reached 60/69 = 87% (last three checkpoints pooled). The case studies tell
+both tasks in order:
+[`pick_cube`](100-case-pick-cube.md) and [`pick_target`](101-case-pick-target.md); pretraining the
+backbone has its own ([Pretrained backbones](102-case-pretrained-backbones.md)).
 
 ## Where it goes wrong
 
 | What you see | Why | Check | Do |
 |---|---|---|---|
-| A comparison comes out equal | neither side can do the task: pretrained VLM 0/100, random-init VLM 1/100, both closing at the named object at chance (33%, 29%) | that share for both | fix what both lack, then compare again by checkpoint: with every token and no history, pretrained 86% / 87% against random-init 75% / 85%, the pretrained one looking after 0.25M samples instead of about 1.0M |
+| A comparison comes out equal | neither side can do the task: pretrained VLM 0/100, random-init VLM 1/100, both closing at the named object at chance | that share and the slope for both | fix what both lack, then compare again checkpoint by checkpoint; here the pretrained backbone mainly started to look earlier ([Pretrained backbones](102-case-pretrained-backbones.md)) |
+| A change seems to do nothing | the run ended in the flat stretch before the policy starts to look | the slope of the last checkpoints | train longer before judging the change (step 9) |
 | Two evaluations of one run disagree | `eval.sh` without `PICKUP_WEIGHTS` serves the EMA weights of a run that saved them (the pickup configs switch them on); one checkpoint here scored 4% raw, 36% EMA | `server.checkpoint` in `results.json` | set `PICKUP_WEIGHTS=raw` or `ema` |
 | A result belongs to another run | two evaluations on one port both reached the policy server that bound it first; about 40 results here were filed under the wrong run and redone | `server.checkpoint` against the result's directory | `eval.sh` takes a free port and `eval.py` checks which checkpoint is served |
-| Nothing: the loss falls, and training agrees with serving | the rotary position table was computed in bfloat16 under autocast: 641 distinct positions out of 2048 | `tests/essential/models/test_rotary_precision.py` | fixed in `vla_foundry/positional_embedding.py`; `rotary_legacy_autocast` reproduces the old table; with the fix the policy starts to look earlier and the same recipe ends at 93% instead of 83%, a second pair of seeds at 96% / 96% instead of 90% / 89% ([Positions](12-positions.md)) |
+| Nothing: the loss falls, and training agrees with serving | the rotary position table was computed in bfloat16 under autocast: 641 distinct positions out of 2048 | `tests/essential/models/test_rotary_precision.py` | fixed in `vla_foundry/positional_embedding.py`; `rotary_legacy_autocast` reproduces the old table; with the fix the policy starts to look earlier and ends higher ([Positions](12-positions.md)) |
 
 ## Background and further reading
 
@@ -256,8 +255,9 @@ Background, not measured here:
    ```
 
 2. Reproduce the interval for 37 successes in 50 episodes with the formula in `eval.py`. The result
-   should round to 60-84%. Then set `k, n = 85, 100`: is 83/100, the same checkpoint on a second
-   set of layouts, inside the interval?
+   should round to 60-84%. Then set `k, n = 85, 100`, `dp_vit_lang_reactive`'s EMA weights after
+   5.0M samples, before the position fix (step 9): is 83/100, the same checkpoint on a second set
+   of 100 layouts, inside the interval?
 
    ```bash
    .venv/bin/python -c "
@@ -268,9 +268,10 @@ Background, not measured here:
    print(round(c - h, 3), round(c + h, 3))"
    ```
 
-3. Step 10's probes were of a policy trained on clean demonstrations. Predict what the
-   recommended run, trained with recoveries, does in each, then run them (notebook: frozen cameras,
-   at the named object 0%; moved at control step 20, 89/98).
+3. Step 10's probes were first run on a policy trained on clean demonstrations. Predict what the
+   recommended run, trained with random start poses and recoveries, does with frozen cameras and
+   with the object moved at control step 20, then run both and compare with the table in
+   [Self-correction](103-case-self-correction.md).
 
    ```bash
    PICKUP_OUT=results/pickup/my_run/pick_target/stale_images \

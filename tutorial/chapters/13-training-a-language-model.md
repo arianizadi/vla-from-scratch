@@ -182,7 +182,7 @@ for perplexity, the size of a uniform choice that would be equally uncertain.
 | 6.3 | 9.1 | 545 | start of the run, machine A; the step it was read at is not recorded |
 | 4.1 | 5.9 | 60 | final value, machine A |
 
-Each log line averages about 20 steps; the first covers steps 0 to 20, inside the warm-up, so expect it near or above 10.8, not 6.3. To see where 6.3 falls:
+The first log line averages steps 0 to 20, inside the warm-up. To see where 6.3 falls:
 `grep "Train Checkpoint" experiments/pickup/custom_llm.train.log | head -15`.
 
 A low loss says the model predicts its training targets well and nothing more. The robot policies
@@ -190,17 +190,16 @@ of later chapters show it: the same loop logs their loss, and the simulator test
 success: the fraction of test episodes in which the robot completes the task).
 
 <!-- interactive: loss-vs-success -->
-*Figure: loss beside closed-loop success of the same checkpoints (lab notebook, machine A) on the
-pick-the-named-object task (`pick_target`), 1500 demonstrations. The pretrained-backbone policy
-(`vla_qwen`) after 100k, 200k and 300k samples: loss 0.087, 0.066, 0.039, success 0/50, 1/50, 6/50.
-The from-scratch policy (`vla_custom`) after 1.0M samples: loss near 0.03, success 0/100. See
-[91-loss-is-not-success.md](91-loss-is-not-success.md).*
+*Figure: loss beside closed-loop success of the same checkpoints of one robot policy on a pretrained
+Qwen backbone (`vla_qwen`, picking the named object, 1500 demonstrations, machine A, lab notebook):
+after 100k, 200k and 300k samples the loss falls from 0.087 to 0.039 while success goes 0/50, 1/50,
+6/50. See [91-loss-is-not-success.md](91-loss-is-not-success.md).*
 
-Later, on machine B (L40S GPUs, 128 CPU cores), a smaller policy, `dp_vit_lang_reactive`, trained
-on 4000 demonstrations before the position fix ("Where it goes wrong"), scored 0% / 1% at 1M
-samples and 83% / 85% at 5M (trained weights / their running average, EMA; lab notebook). With the
-position table fixed, the same recipe ends at 93% (trained weights). See
-[101-case-pick-target.md](101-case-pick-target.md).
+Reasoning, not measured here: for the language model the loss curve is still the first
+instrument. It should fall fastest in the first few hundred steps and flatten as the cosine nears
+its end; one that climbs again after the warm-up suggests a learning rate too high for the batch.
+A final loss far below 4.1 on the same data and budget would more likely mean memorised documents
+than better text, which only held-out text can tell apart.
 
 ## In this repository
 
@@ -278,16 +277,11 @@ the model by what it generates ([14-generation.md](14-generation.md)) and by wha
 
 What was built on it: the stage-2 VLM initialised from it listed the objects of 300 held-out
 scenes in left-to-right order 85% of the time (256/300) on machine A and 83% (249/300) on machine
-B. The first stage-3 policies scored 0/100 with that VLM and 1/100 with a randomly initialised
-one, which settles nothing: both passed one vector from the VLM to the action head (the part that
-outputs actions), had history (the previous frame, state and action as inputs) and stopped at 1M
-samples on 1500 demonstrations. With every token passed to the action head, no history, 4000
-demonstrations and 3M samples (stage 2 retrained after the position fix), the two end close:
-86% / 87% with the pretrained backbone and 75% / 85% with a randomly initialised one (trained /
-averaged weights). The pretrained one starts to look after
-0.25M samples, the other after about 1.0M: pretraining mainly bought an earlier start
-([62-the-from-scratch-path.md](62-the-from-scratch-path.md); notes: "Pretraining a backbone:
-mainly an earlier start").
+B ([62-the-from-scratch-path.md](62-the-from-scratch-path.md)). Whether the robot policy needs
+this pretraining at all is tested in
+[102-case-pretrained-backbones.md](102-case-pretrained-backbones.md): with a randomly initialised
+backbone it ends close behind and mainly starts to use the camera image later in training (notes:
+"Pretraining a backbone: mainly an earlier start").
 
 ## Where it goes wrong
 
@@ -302,28 +296,29 @@ mainly an earlier start").
   `LR:` field of the first log lines; it should rise through the warm-up.
 - **A budget that ends too early.** $S$ in the schedule is the run's own budget, so a short run is
   not the beginning of a long one: with a third of the samples it ends its decay where the longer
-  run still has about three quarters of its peak rate. Lab notebook, machine B:
-  `dp_vit_lang_reactive` on 1500 demonstrations ended a 1M-sample budget at 3% / 5% success, which
-  read as a design that does not work; with a 3M budget on the same data it scored 1% / 0% at 0.9M
-  samples, 21% / 18% at 1.5M and 64% / 62% at the end. See
-  [71-how-much-data-and-training.md](71-how-much-data-and-training.md).
+  run still has about three quarters of its peak rate ($\tfrac{1}{2}(1+\cos\tfrac{\pi}{3}) = 0.75$,
+  ignoring the warm-up). On machine B, a robot policy (`dp_vit_lang_reactive`, 48.9M parameters)
+  trained on 1500 demonstrations ended a 1M-sample budget at 3% / 5% (trained weights / a running
+  average of those weights) and a 3M budget on the same data at 64% / 62% (lab notebook); choosing
+  a budget is [71-how-much-data-and-training.md](71-how-much-data-and-training.md).
 - **Updates smaller than the weights can store.** The weights are bf16 and AdamW updates them in
   place. A weight near 0.04 sits on a grid of 0.00024, the size of the peak learning rate, so an
   update below half that spacing, as late in the decay, leaves it unchanged. The effect on the
   final loss was not measured here. Background: the float32 master copy in Micikevicius (2017) and
   Kalamkar (2019) exists to avoid this.
-- **A constant computed inside autocast.** bf16 holds whole numbers exactly up to 256, then only
-  even ones, and above 512 only multiples of 4. The table of rotary position angles
-  ([12-positions.md](12-positions.md)) was computed under autocast: 641 distinct positions out of
-  2048 (lab notebook), and no error, because training and serving built the same table. Stage 1,
-  with 256-token sequences, lost none. The stage-2 VLM (320 tokens) and the patch-token and
-  from-scratch policies were affected (the Qwen policy's 20-token action head was not). With the
-  table fixed the policy starts to look earlier and ends higher: 93% against 83% in the run above,
-  96% / 96% against 90% / 89% in two runs with other seeds that differ in the table alone (lab
-  notebook, "After the position fix"). `RotaryEmbedding._update_cos_sin_tables`
-  (`vla_foundry/positional_embedding.py`) now computes
-  the angles in float32 with autocast off, and `positional_embedding_type: rotary_legacy_autocast`
-  rebuilds the old table for checkpoints trained before the fix.
+- **A constant computed inside autocast.** Autocast also covers tables a module builds and caches
+  during the forward pass. bf16 holds whole numbers exactly up to 256, then only even ones, and
+  above 512 only multiples of 4. `RotaryEmbedding.forward` (`vla_foundry/positional_embedding.py`)
+  calls `_update_cos_sin_tables` with the keys' device and dtype, and rebuilds the table of rotary
+  position angles ([12-positions.md](12-positions.md)) when the sequence is longer than the cached
+  table or the device or dtype differs: in training that happened inside autocast, so position x
+  frequency was formed in bf16 and neighbouring positions got the same rotation. No error was
+  raised, because training and serving built the same table. Stage 1, with 256-token sequences, lost
+  no position; the stage-2 VLM (320 tokens) and the longer policy sequences did (what it cost them:
+  12-positions.md). The function now forms the angles in float32 with autocast off and casts only
+  the finished cos and sin; `positional_embedding_type: rotary_legacy_autocast` rebuilds the old
+  table for checkpoints trained before the fix. Elsewhere, look for tensors that `forward` creates
+  and caches, and print their dtype inside `torch.autocast`.
 - **The run hangs.** A dead data-loader worker leaves the trainer waiting at 0% GPU (lab
   notebook). The `llm` stage calls `main.py` directly, not `train_resilient.sh`; see
   [81-surviving-long-runs.md](81-surviving-long-runs.md).
@@ -378,13 +373,27 @@ mainly an earlier start").
    python3 -c "import math; print(4.15 / math.log(2), math.exp(4.15))"
    ```
 
-4. Cast the positions 0 to 2047 to bf16 and count the distinct values. Explain the count, and why
-   a 256-token sequence loses none:
+4. Cast the positions 0 to 2047 to bf16 and count the distinct values. Explain the count from the
+   spacing of bf16 between 256 and 512, 512 and 1024, and 1024 and 2048, and why a 256-token
+   sequence loses none:
 
    ```bash
    .venv/bin/python -c "
    import torch
    p = torch.arange(2048, dtype=torch.float32).to(torch.bfloat16)
    print(p[255:260].float().tolist(), p.unique().numel())
+   "
+   ```
+
+5. Find the smallest update that still moves a bf16 weight near 0.04, and compare it with the
+   learning rate of the stage-1 schedule from exercise 1. From which step on can a single AdamW
+   update of about one learning rate no longer move such a weight?
+
+   ```bash
+   .venv/bin/python -c "
+   import torch
+   w = torch.tensor(0.04, dtype=torch.bfloat16)
+   print(w.item(), torch.nextafter(w, torch.tensor(1.0, dtype=torch.bfloat16)).item() - w.item())
+   for u in (1e-4, 2e-4, 3e-4): print(u, (w + u).item() == w.item())
    "
    ```

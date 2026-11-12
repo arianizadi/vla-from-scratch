@@ -9,6 +9,9 @@ status: draft
 # Case Study: One Cube
 
 `pick_cube` is the smallest task in this repository: one red cube on a table and one instruction.
+With nothing to choose, a failure here is a failure to see or to grasp, so the cube is the
+baseline for `pick_target`, where the instruction names one of three objects on the table
+([Case Study: Three Objects, From 0% to 98%](101-case-pick-target.md)).
 
 ## The idea
 
@@ -28,8 +31,8 @@ encodes the images; the **action head**, a transformer, turns noise into the chu
 steps** ([Flow matching](41-flow-matching.md)). Policies are judged **closed-loop**: the policy
 drives the simulated arm on layouts it never saw (evaluation seeds start at 1,000,000).
 
-All numbers are from the [lab notebook](../lab-notebook.md), one training seed per run. Machine A
-is one RTX 4090 (24 GB); machine B has L40S GPUs and 128 CPU cores.
+All numbers are from the [lab notebook](../lab-notebook.md), one training seed per run, on machine A
+(one RTX 4090, 24 GB) or machine B (L40S GPUs, 128 CPU cores).
 
 ## The route, step by step
 
@@ -78,9 +81,6 @@ for cfg in dp_clip dp_vit; do
   sim/pickup/scripts/train.sh $cfg pick_cube_200 ${cfg}_pick_cube_200 300000
   sim/pickup/scripts/eval.sh experiments/pickup/${cfg}_pick_cube_200 pick_cube 50
 done
-# the pooled policy on layouts it was trained on: demonstration seeds start at 0
-PICKUP_OUT=results/pickup/dp_clip_pick_cube_200/pick_cube_train \
-  sim/pickup/scripts/eval.sh experiments/pickup/dp_clip_pick_cube_200 pick_cube 20 --seed_start 0
 ```
 
 A **window** is one training example: the observations at one frame plus the actions that follow.
@@ -88,21 +88,10 @@ A **sample** is one window drawn by the data loader; 300k samples on 200 demonst
 passes over the data (**epochs**). `eval.sh` serves the averaged weights (step 5) unless
 `PICKUP_WEIGHTS=raw`.
 
-**Measured.** Machine A, 50 unseen layouts, Wilson 95% intervals
-([Closed-loop evaluation](90-closed-loop-evaluation.md)); notebook, "`pick_cube` (machine A)".
-
-| Policy | Final loss | Success | 95% CI |
-|---|---|---|---|
-| `dp_clip`: pooled vectors, 245M parameters | 0.040 | 2/50 = 4% | 1-14% |
-| `dp_vit`: patch tokens, 36M parameters | 0.091 | 15/50 = 30% | 19-44% |
-
-The pooled policy also scored 0/20 on its own training layouts: it ran a plausible
-reach-descend-close-lift a few centimetres from the cube. It had learned the motion, not the
-cube's place.
-
-<!-- interactive: pooled-vs-tokens -->
-*Figure: four camera frames reaching the action head as five vectors in `dp_clip`, or as 784
-patch tokens in `dp_vit`, where the patches that cover the cube are separate inputs.*
+**Measured.** Machine A, 50 unseen layouts (notebook, "`pick_cube` (machine A)"). The pooled
+policy ended at the lower loss, 0.040 against 0.091, and at the lower success, 2/50 = 4% against
+15/50 = 30%; [One vector or many tokens](21-pooled-vs-patch-tokens.md) has the intervals and what
+the pooled policy did instead of grasping.
 
 **Changed.** Every later policy conditions on patch tokens, and no later decision was taken from a
 loss ([Loss is not success](91-loss-is-not-success.md)). It is not a controlled test of pooling:
@@ -126,24 +115,24 @@ sim/pickup/scripts/eval.sh experiments/pickup/dp_vit_pick_cube_1k_500k pick_cube
 sim/pickup/scripts/eval.sh experiments/pickup/dp_vit_pick_cube_1k pick_cube 50
 ```
 
-**Measured.** Same table and conditions, `dp_vit` on 1000 demonstrations.
+**Measured.** Machine A, 50 unseen layouts, same notebook table, `dp_vit` on 1000 demonstrations,
+with Wilson 95% intervals ([Closed-loop evaluation](90-closed-loop-evaluation.md)).
 
 | Samples (epochs) | Final loss | Success | 95% CI |
 |---|---|---|---|
 | 500k (8) | 0.084 | 20/50 = 40% | 28-54% |
 | 1.5M (23) | 0.058 | 37/50 = 74% | 60-84% |
 
-The intervals of 30% and 40% overlap; 74% is separated from both.
+The interval of 40% overlaps that of step 2's 30% (19-44%); 74% is separated from both.
 
 <!-- interactive: loss-vs-success -->
 *Figure: training loss next to closed-loop success for the four machine A runs.*
 
-**Changed.** 22.9 epochs on 1000 demonstrations gave 74%. The first three-object runs then used only
-10.1 (1M samples on 1500) and ended before the policy started to look (notes: 'Looking at the scene
-arrives late, and all at once'). The three-object runs that work use 4000 demonstrations and 5M
-samples (19.0 epochs on `pick_target_4k`): 93% with the corrected position table, 83% / 85% before
-it ([How much data and training](71-how-much-data-and-training.md)); README.md's recipe adds
-random start poses and recoveries to the same budget.
+**Changed.** 1.5M samples on `pick_cube_1k`, 22.9 epochs, became the single-cube budget (steps 5
+and 6). The first `pick_target` runs got 10.1 (1M samples on 1500 demonstrations) and
+ended before where the gripper closed began to depend on where the named object was (the slope of
+step 5); the runs that work use 19.0 (5M samples on `pick_target_4k`;
+[How much data and training](71-how-much-data-and-training.md)).
 
 ### 4. The inference settings
 
@@ -174,18 +163,16 @@ PICKUP_OUT=$out/flow_25 sim/pickup/scripts/eval.sh $run pick_cube 50 --flow_step
 All intervals overlap.
 
 **Changed.** No setting. Five evaluations of one weights file spread over 12 points, as
-50-episode evaluations can by chance. A later 100-layout sweep on `pick_target` found 8 actions per
-chunk no worse than 2 or 4 ([Chunks and execution](42-chunks-and-execution.md)); later evaluations
-use 100 layouts.
+50-episode evaluations can by chance. Later evaluations use 100 layouts
+([Chunks and execution](42-chunks-and-execution.md) has the 100-layout sweep).
 
 ### 5. Without history against with history, on machine B
 
 **Believed.** That **history** (the previous camera frames, joint state and action as extra
-inputs) lets a policy stop looking at the scene. On the three-object task, with 4000
-demonstrations and before the position fix, the patch-token policy with instruction tokens scored
-2% / 2% with history and 81% / 75% without after 3.0M samples
-([the `pick_target` case study](101-case-pick-target.md)). The cube would show whether history
-costs anything where nothing has to be chosen.
+inputs) lets a policy stop looking at the scene: on the three-object task, before the position
+fix (step 6), the patch-token policy with instruction tokens had failed with history and worked without it
+([History and shortcuts](52-history-and-shortcuts.md)). The cube would show what history costs
+with nothing to choose.
 
 **Ran.** `dp_vit_lang_reactive.yaml` has no history (`image_indices: [0]`,
 `lowdim_past_timesteps: 0`). `dp_vit.yaml`, the config of step 3, has it (`image_indices: [-1, 0]`
@@ -213,8 +200,7 @@ from gripper to cube when the gripper first closed;
 where the cube is, 0 if the scene makes no difference.
 
 **Measured.** Machine B, 100 unseen layouts per cell, six of each run's eleven checkpoints
-(notebook, "Single cube"). Both runs were trained before the fix of step 6.
-`PICKUP_NUM_CHECKPOINTS=10` saves one every tenth of the budget and one more at the end ("final").
+(notebook, "Single cube"). `PICKUP_NUM_CHECKPOINTS=10` saves one every tenth of the budget and one more at the end ("final").
 
 | Samples | No history: success | Median miss | History: success | Median miss |
 |---|---|---|---|---|
@@ -228,7 +214,7 @@ where the cube is, 0 if the scene makes no difference.
 From 0.3M samples on, the slope of both runs is between 0.93 and 1.07: both go to the cube. From
 0.6M on the history policy closes further from it, 14 / 14 mm against 7 / 6 mm at the end.
 
-**Changed.** The gap was read as the cost of history. That reading skipped two other differences
+**Changed.** The gap was read as the cost of history, skipping two other differences
 (notebook, above the history table): `dp_vit` has no instruction tokens (`processor: "none"` drops
 the text) and is fed pixels in 0-255; `dp_vit_lang_reactive` adds the instruction as 32 token
 slots and its `simple_vlm` processor scales pixels to [-1, 1].
@@ -236,18 +222,26 @@ slots and its `simple_vlm` processor scales pixels to [-1, 1].
 ### 6. The same two configurations after the position fix
 
 **Believed.** That step 5 had measured the cost of history, or of one of the other two
-differences. A bug in shared code changed that.
+differences.
 
-**Rotary position encoding** tells the action head where in its sequence a token sits
-([Positions](12-positions.md)). Its table, the rotation angles for each position 0 to 2047, was
-computed in bfloat16 (8 significant bits): positions above 256 collapsed onto even numbers, those
-above 512 onto multiples of 4 and those above 1024 onto multiples of 8, leaving 641 distinct of
-2048 (notebook, "Bugs found and fixed").
-The action head's sequence is one token for the noise level (how far the current flow step is
-between noise and action), the conditioning, the joint state, then the actions. Without history
-the 15 **action-step tokens** (one per action of the chunk) sat at positions 426 to 440 and shared
-8 positions. In `dp_vit`, 784 patch tokens and two states put its 16 (the previous action and the 15
-to predict) at 787 to 802, where they shared 4.
+**Rotary position encoding** tells the action head where in its sequence a token sits by rotating
+its queries and keys by an angle that grows with the position. The table of those angles had been
+computed in bfloat16, so neighbouring high positions got the same angle;
+[Positions](12-positions.md) has the mechanism and the count (notebook, "Bugs found and fixed").
+Tokens that share an angle look to attention as if they stood at the same place, and only their
+content tells them apart.
+
+How hard each config was hit depends on where its actions sit. The action head's sequence is one
+token for the noise level (how far the current flow step is between noise and action), the
+conditioning, the joint state, then the **action-step tokens**, one per action:
+
+| Config | Tokens before the actions | Action-step tokens | Positions | Distinct angles |
+|---|---|---|---|---|
+| `dp_vit_lang_reactive` | 426: noise level, 32 instruction, 392 patches, state | 15 | 426-440 | 8 |
+| `dp_vit` | 787: noise level, 784 patches, two states | 16 (with the previous action) | 787-802 | 4 |
+
+Past position 512 four neighbours share one angle, so the longer conditioning of the history config
+cost it more: step 5 compared two amounts of damage as well as two sets of inputs.
 
 **Ran.** `RotaryEmbedding._update_cos_sin_tables` in
 [`vla_foundry/positional_embedding.py`](../../vla_foundry/positional_embedding.py) now computes
@@ -270,11 +264,10 @@ At 0.15M samples the slope was 0.22 / 0.08 with history and 0.68 without: the hi
 not yet go to the cube, and the other only partly did. From 0.30M on it is at least 0.93 in both
 runs.
 
-**Changed.** The history configuration went from 62% / 70% to 96% / 98% with the same config and
-a corrected table. The no-history configuration, whose action-step tokens had kept 8 positions
-instead of 4, ended where it had before (91% with trained weights against 95% / 91%). The history
-configuration still had no instruction tokens and still saw pixels in 0-255, so on one cube (one
-run per cell) what held it back was the position table, not history.
+**Changed.** With only the table corrected, the history configuration went from 62% / 70% to
+96% / 98%; the less damaged no-history one ended where it had (91% trained weights, against
+95% / 91%). Still without instruction tokens and on pixels in 0-255, the history configuration was
+held back on one cube (one run per cell) by the position table, not by history.
 
 ### 7. The tolerance of the cube
 
@@ -306,9 +299,9 @@ checkpoints of step 6 close 6 to 8 mm away, where the offset expert still succee
 of episodes. That reference is optimistic: it adds one error and keeps angle and timing.
 
 The working policies still fail in 2 to 9 of 100 layouts, not broken down in the notebook. On the
-three-object task, before the fix, failed cube grasps were a median 16 mm off and 32 degrees from a
-valid grasp angle, against 8 mm and 20 degrees for successes (notebook, "The failures that
-remain"); exercise 2 asks whether the single cube is alike.
+three-object task, before the fix, failed cube grasps were a median 16 mm off and 32 degrees from a valid grasp
+angle, against 8 mm and 20 degrees for successes (notebook, "The failures that remain");
+exercise 2 asks whether the single cube is alike.
 
 ## In this repository
 
@@ -326,8 +319,8 @@ Paths are under `sim/pickup/` unless given in full.
 
 What the route shows:
 
-- **Lower loss, worse policy.** The pooled CLIP policy had the lowest loss and scored 4% against
-  30% (step 2).
+- **Lower loss, worse policy.** The pooled CLIP policy had the lowest loss of step 2 and the lowest
+  success.
 - **Going to the cube comes early; precision takes the budget.** In all four machine B runs the
   slope is at least 0.93 from 0.3M samples on, with median misses of 16 to 40 mm there; the three
   that end above 90% end at 6 to 8 mm.
@@ -341,19 +334,19 @@ What it cannot show:
   it; with one object, closing at the named object only measures whether the gripper closed at
   all (100% at nearly every checkpoint; 91% / 89% at 0.15M samples with history after the fix).
 - **Whether the policy keeps looking.** A policy that looks once and then follows its own arm
-  succeeds on a cube that never moves, as the 85% `pick_target` policy did
-  ([What a policy looks at](95-what-a-policy-looks-at.md)); the cube was not probed (exercise 3).
+  succeeds on a cube that never moves, as the `pick_target` policy trained on demonstrations from
+  one start pose, with nothing moved, did ([Probing a Policy That Works](95-what-a-policy-looks-at.md);
+  [Case Study: A Policy That Corrects Itself](103-case-self-correction.md) has the policies that
+  keep looking). The cube was not probed (exercise 3).
 - **That history is safe.** On `pick_target` the history policy read its target from the previous
-  action. Here the first window still carries the expert's first command, which points at the
-  cube. The history policy trained after the fix went to the cube anyway (step 6) but was not
-  probed for the leak, and one cube cannot show whether history hides the choice of object
-  ([History and shortcuts](52-history-and-shortcuts.md)).
+  action ([History and shortcuts](52-history-and-shortcuts.md)). With nothing to choose, one cube
+  cannot show that shortcut.
 
 ## Where it goes wrong
 
 | What you see | Why | What to do |
 |---|---|---|
-| Your `dp_vit` runs do not match the machine A rows | Steps 2 to 4 used the old position table and were not repeated after the fix; `eval.sh` now serves averaged weights, which the machine A table does not record | Evaluate both (`PICKUP_WEIGHTS=raw` for the trained weights); compare with step 6, which shares your code |
+| Your `dp_vit` runs do not match the machine A results | Steps 2 to 4 used the old position table and were not repeated after the fix; `eval.sh` now serves averaged weights, which the machine A table does not record | Evaluate both (`PICKUP_WEIGHTS=raw` for the trained weights); compare with step 6, which shares your code |
 | Two settings or two checkpoints differ by 10 points | Evaluation noise: 37/50 has an interval of 60-84%; two checkpoints at about 1.5M samples differed by 6 points on 100 layouts | Use 100 layouts and a second set (`--seed_start 1000100`); never report the best of several |
 | A comparison flips after a fix to shared code | The bug hit the two sides differently, here through sequence length | Rerun both sides; list every difference between two configs before naming a cause |
 
@@ -409,3 +402,16 @@ What it cannot show:
 
 4. Which config in `sim/pickup/configs/` keeps history but removes both other differences from
    the comparison of step 5?
+
+5. Reproduce the last column of step 6's position table without a GPU. The first angle column of
+   the rotary table has frequency 1, so under the old table its angle is the position rounded to
+   bfloat16.
+
+   ```bash
+   .venv/bin/python -c "
+   import torch
+   t = torch.arange(2048, dtype=torch.float32).to(torch.bfloat16)
+   for name, first, last in [('dp_vit_lang_reactive', 426, 440), ('dp_vit', 787, 802)]:
+       print(name, t[first:last + 1].unique().numel(), 'distinct of', last - first + 1)
+   "
+   ```

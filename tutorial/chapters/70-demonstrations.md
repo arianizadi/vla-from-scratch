@@ -82,9 +82,16 @@ runs at most 30 iterations of damped least squares (damping 0.05) from the previ
 limits. Its result plus the gripper command is the 8-D action.
 
 That is one plan per episode. `ScriptedExpert(env, reactive=True)` also checks before every action
-whether the named object has moved more than 15 mm from where the plan found it, or whether the
-fingers have met on nothing during the lift; if so it plans again from where the gripper is, rising
-first when the gripper is low.
+(`_needs_new_plan`) whether the named object has moved more than 15 mm from where the plan found it,
+or whether the fingers have met on nothing during the lift. Then it does one of two things:
+
+- **track** (`_track`): if the object has moved at most `TRACK_LIMIT = 0.04` m and the gripper is not
+  closing, the remaining waypoints are shifted with it;
+- **plan again** (`_plan(again=True)`): otherwise a new plan from the current set-point, rising
+  first when the gripper is more than 2 cm below the new approach height.
+
+Both counts, `tracks` and `replans`, go into `meta/episodes.jsonl`. `collect.py` switches `reactive`
+on whenever `--disturb_prob` or `--drift_prob` is above 0.
 
 <!-- interactive: arm-replay -->
 *Figure: a 3D replay of one episode: the gripper moves above the named object, descends, closes
@@ -103,7 +110,7 @@ library, with one Parquet file (a column-oriented table format) per episode:
 ```text
 data/lerobot/<name>/
   meta/info.json        fps, totals, feature shapes, expert_success_rate, expert_attempted, the options used
-  meta/episodes.jsonl   per episode: episode_index, tasks (the instruction), length, seed, disturbed, replans
+  meta/episodes.jsonl   per episode: episode_index, tasks (the instruction), length, seed, disturbed, replans, tracks
   meta/tasks.jsonl      the distinct instructions
   data/chunk-000/episode_000000.parquet   one row per frame: front, wrist, state, action, indices
 ```
@@ -155,25 +162,40 @@ lists them, and `shards/stats.json` holds the per-channel statistics of `state` 
 ### What the options add
 
 By default every demonstration is one clean pass that starts near `HOME_Q`, with the one
-instruction its seed drew. Four options of `collect.py` change that:
+instruction its seed drew. Five options of `collect.py` change that:
 
 | Option | What it records | Why it exists |
 |---|---|---|
 | `--targets_per_layout N` | every seed's scene `N` times, each with another object named | by default no scene appears with two instructions |
 | `--disturb_prob p` | in a share `p` of the episodes the named object is moved once, 5 to 10 cm, during the reach or as the gripper closes ([`disturb.py`](../../sim/pickup/disturb.py)); the expert runs with `reactive=True` | by default nothing moves and no grasp is repeated |
 | `--random_start` | every episode from a random gripper pose above the table (`random_start` in `expert.py`) | from one start pose the arm's position gives the goal away a few steps into a reach |
-| `--hold_steps K` | `K` frames of the robot at rest, under its hold command, first | with `K = 1`, slot 0 of the window anchored at frame 0 holds the hold command, as when served; it did not make a history policy look ([Where it goes wrong](#where-it-goes-wrong)) |
+| `--hold_steps K` | `K` frames of the robot at rest, under its hold command, first | with `K = 1`, slot 0 of the window anchored at frame 0 holds the hold command, as when served; it did not make a history policy look ([History and shortcuts](52-history-and-shortcuts.md)) |
+| `--drift_prob p` | in a share `p` of the otherwise undisturbed episodes the named object slides on a smooth random path until it is held (speed set by `--drift_cm_s`); the expert tracks it | a target that never stands still; no dataset of the lab notebook uses it |
+
+**How a disturbed episode is drawn.** `_worker` seeds a generator with `[seed, 7]` per episode:
+with probability `--disturb_prob` the episode is disturbed, half the time during the reach (at a
+control step from 5 to 29) and half as the gripper closes, by 0.05 to 0.10 m.
+`Disturbance.update` tries up to 64 directions for a place inside the spawn area, 0.11 m from the
+other objects and 0.07 m from the gripper; if none is free, the episode runs undisturbed and is
+recorded as `"disturbed": "none"`. `random_start` draws its pose from `[seed, 13]`. Both streams
+are separate from the layout's, so `pick_target_4k_recover` and `pick_target_4k_rs` hold the same
+layouts as `pick_target_4k`, seed for seed.
 
 With one instruction per scene, a function of the image alone that has stored which object was
 picked in each training scene fits the data as well as one that reads the instruction: the loss
-cannot tell them apart, whatever training then finds ([What we measured](#what-we-measured)).
+cannot tell them apart, whatever training then finds
+([Which demonstrations teach what](72-which-demonstrations-teach.md)).
 `PickupEnv.reset(seed, target_index=i)` names the seed's `i`-th object in an identical scene, so a
 model that ignores the instruction can at best draw one of the `N` trajectories at random.
 
 [`boost_early_windows.py`](../../sim/pickup/boost_early_windows.py) reweights a preprocessed
 dataset instead: in its copy the windows anchored at frames 0 to `--max_frame` (default 7) appear
 `--repeat` (default 5) extra times: only the first frames need the scene to choose the target. On
-a 66-frame episode 8 of 66 windows (12%) become 48 of 106 (45%).
+a 66-frame episode 8 of 66 windows (12%) become 48 of 106 (45%). The copy does not duplicate the
+original shards: it links to them, writes the repeated windows into new shards named
+`early_000000.tar` onwards (shuffled with a fixed seed, 256 per shard), lists both in its manifest,
+and copies `stats.json` unchanged, so the normalisation statistics are those of the original
+windows.
 
 ## In this repository
 
@@ -199,9 +221,25 @@ sim/pickup/scripts/make_dataset.sh pick_target 4000 pick_target_4k_hold --hold_s
 ```
 
 The first command makes the data of the run [README](../../README.md) recommends, which names the
-folder `pick_target_4k`: `dp_vit_lang_reactive`, 5M samples (windows drawn by the data loader),
-94% / 94%. Its config saves averaged weights itself (`ema: enabled: true`). The names and options
-are the lab notebook's.
+folder `pick_target_4k`. Trained on it, `dp_vit_lang_reactive` reached, after 5M samples (windows
+drawn by the data loader), a success rate of 94% with the trained weights and 94% with the averaged
+weights (an exponential moving average of the weights during training), each on 100 unseen layouts
+([Which demonstrations teach what](72-which-demonstrations-teach.md)). Its config saves the
+averaged weights itself (`ema: enabled: true`). The names and options are the lab notebook's.
+
+To see how often the expert corrected itself in a recovery dataset:
+
+```bash
+.venv/bin/python - <<'EOF'
+import collections, json
+eps = [json.loads(l) for l in open("data/lerobot/pick_target_4k_rs_recover/meta/episodes.jsonl")]
+print(collections.Counter(e["disturbed"] for e in eps))
+print("episodes that planned again:", sum(e["replans"] > 0 for e in eps))
+print("mean length, disturbed / not:",
+      *(round(sum(e["length"] for e in g) / max(len(g), 1), 1)
+        for g in ([e for e in eps if e["disturbed"] != "none"], [e for e in eps if e["disturbed"] == "none"])))
+EOF
+```
 
 To inspect the first window of a shard:
 
@@ -257,6 +295,13 @@ All numbers are from the [lab notebook](../lab-notebook.md).
 | `pick_target_4k_rs_recover_early` | 4000 | 435,550 | `pick_target_4k_rs_recover`, the same |
 | `pick_target_4k_hold` | 4000 | 267,075 | one frame of the robot at rest first |
 
+The table checks the options, since the `pick_target_4k*` datasets share their layouts. From random
+start poses the same 4000 layouts give fewer windows (241,318 against 263,289), so shorter episodes;
+with recoveries more (293,541), as a disturbed episode carries a new plan and, after a move at the
+grasp, a second approach. The disturbed counts, 1505 and 1456 of 4000 at `--disturb_prob 0.5`, are
+below half; one reason in the code is that a move with no free place is skipped. And since windows
+differ, 5M samples are a different number of passes over each dataset.
+
 **The expert.** Through the evaluation loop on 100 unseen `pick_target` layouts it scored 100/100
 on machine B (L40S GPUs, 128 CPU cores), closing 5 mm (median) from the object and within 10 mm in
 98% of episodes, and 99/100 on machine A (one RTX 4090, 24 GB). With the named object moved 80 mm
@@ -265,40 +310,10 @@ once per episode (`eval.py --expert --disturb reach --disturb_step 10`, `20` or 
 expert that plans again (`--expert_reactive`) 100/100, 96/96, 100/100 and 100/100, and from a random
 start pose 98/98 (moved at control step 20) and 100/100 (at the grasp).
 
-**Policies trained on these data.** `dp_vit_lang_reactive` (instruction tokens next to the patch
-tokens, no history; [Language conditioning](51-language-conditioning.md)) on machine B, 100 unseen
-layouts, raw / EMA weights (the trained weights / their running average). **Closed at the named
-object**: the object nearest the gripper when it first closed was the named one (chance 33%). The
-**slope** of where the gripper first closed against where the named object was is 1 if it closes
-at the object and 0 if the place does not depend on the scene (`summarize.py` prints both).
-
-Before the position fix ([Positions](12-positions.md#the-position-table-under-bfloat16)), the
-policy scored 3% / 5% on `pick_target_1500` after 1M samples and 64% / 62% after 3M; after 1M,
-0% / 1% on `pick_target_cf` and 8% / 15% on `pick_target_cf_early`; on `pick_target_4k`, 83% / 85%
-after 5M. The 1M numbers are not verdicts: this policy starts to use the scene late and all at
-once, and 1M samples on 1500 demonstrations end before or inside that transition
-([How much data and training](71-how-much-data-and-training.md)).
-
-After the fix, with 4000 demonstrations and 5M samples (the first two runs saved no EMA weights;
-the last three columns use EMA weights where saved):
-
-| Dataset | Success | Closed at the named object, 1.0M | Random start | Moved at step 10 / 20 / 30 | Moved at the grasp |
-|---|---|---|---|---|---|
-| `pick_target_4k` | 93% | 65% | 9/100 | 12/100, 0/97, 0/100 | 0/100 |
-| `pick_target_4k_early` | 96% | 99% | 9/100 | 10/100, 0/100, 0/100 | 0/100 |
-| `pick_target_cf4k` | 91% / 89% | 98% | 10/100 | 18/100, 0/96, 0/100 | 0/100 |
-| `pick_target_4k_recover` | 89% / 84% | 81% | 68/100 | 88/100, 79/96, 85/100 | 78/99 |
-| `pick_target_4k_rs` | 98% / 98% | 91% | 97/100 | 94/100, 50/98, 0/100 | 0/100 |
-| `pick_target_4k_rs_recover` | 94% / 94% | 100% | 91/100 | 92/100, 89/98, 94/100 | 89/100 |
-| `pick_target_4k_rs_recover_early` | 87% / 86% | 93% | 85/100 | 73/99, 76/97, 81/100 | 77/100 |
-
-The policy starts to look sooner whenever more of its windows cannot be answered without looking.
-On the unchanged task the differences are small. One instruction per layout did not keep the policy
-from following the instruction (on `pick_target_4k` it closed at the named object in 100% of
-episodes before the fix and 99% after), and every object named ends no higher. Under disturbances
-they are large: random starts follow an early move, recoveries add late moves and a second attempt
-(99 of 99 at the grasp), and both together give 89-94% everywhere, also from a random start pose (90/98 moved at control step 20, 89/100 at the grasp). One run each (field notes,
-"What the demonstrations contain", "Self-correction has to be in the data").
+**Policies trained on these data** are compared in
+[Which demonstrations teach what](72-which-demonstrations-teach.md) and, for the recovery datasets,
+[A policy that corrects itself](103-case-self-correction.md); the budget a run needs is in
+[How much data and training](71-how-much-data-and-training.md).
 
 ## Where it goes wrong
 
@@ -309,23 +324,20 @@ they are large: random starts follow an early move, recoveries add late moves an
 - **Same seed, different trajectory.** The layout depends only on the seed; the expert's speed,
   heights and noise come from one generator per worker process, so they also depend on
   `PICKUP_WORKERS` and on the collection rounds.
-- **A policy that succeeds and cannot correct.** The policy trained on `pick_target_4k` (93/100)
-  scored 0/97 with the named object moved 80 mm at control step 20 of the reach
-  (`eval.py --disturb reach --disturb_step 20`) and 0/100 with it moved as the gripper first closed
-  (`--disturb grasp`): nothing in its demonstrations moves and no grasp in them fails
-  ([Imitation learning](43-imitation-learning.md),
-  [What a policy looks at](95-what-a-policy-looks-at.md)). Random start poses and recoveries in the
-  data give 89-94% under every disturbance. Evaluate with the disturbances the data was meant to
-  teach.
-- **A policy with history stays near 0%.** Before the position fix, `dp_vit_lang`, the same policy
-  with history, was at 2% / 2% after 3.0M samples on `pick_target_4k`; one checkpoint (2.5M
-  samples, EMA) scored 1/100 as served, 22/100 with the expert's first command as its first
-  previous action (`eval.py --first_prev_action expert`) and 77/100 with the expert driving the
-  first 10 control steps (`--expert_prefix 10`): it took its target from the previous action. After
-  the fix, trained on `pick_target_4k_hold`, it ends at 0% / 4% after 5M samples, and where it
-  closes never depends on the scene (slope -0.11 to 0.12): the hold frame closes the leak at the
-  first frame, but from the second step on the previous action still gives the next one away. Start
-  without history ([History and shortcuts](52-history-and-shortcuts.md)).
+- **Clean data, a policy that cannot correct.** A dataset made without `--disturb_prob` and
+  `--random_start` holds no moved object, no failed grasp and one start pose, and a policy trained
+  on it does well on the unchanged task and fails as soon as the object moves
+  ([What a policy looks at](95-what-a-policy-looks-at.md)). Check `disturbed_episodes` in
+  `meta/info.json`, and evaluate with the disturbances the data was meant to teach
+  ([A policy that corrects itself](103-case-self-correction.md)).
+- **The first window leaks the target to a policy with history.** Slot 0 of the window anchored at
+  frame 0 holds the expert's first command, not the hold command served. `--hold_steps 1` removes
+  that mismatch but not the leak from the second frame on
+  ([History and shortcuts](52-history-and-shortcuts.md)). Without history the slot is never read.
+- **A boosted copy goes stale.** An `_early` dataset links to the shards of its source and keeps
+  the source's `stats.json`. Re-running `make_dataset.sh` with the source's name rewrites those
+  shards, and the copy then mixes new shards with repeated windows of the old episodes. Rebuild the
+  copy after its source.
 
 ## Background and further reading
 
@@ -359,9 +371,10 @@ they are large: random starts follow an early move, recoveries add late moves an
    are there? In which of them does a policy with history read the copy as its previous action, and
    what does that slot hold after `--hold_steps 1`?
 
-3. Collect 50 episodes with recoveries and count the disturbed ones. Why are they usually fewer
-   than `--disturb_prob` asks for (`Disturbance.update`)? Why are the episodes marked
-   `"disturbed": "grasp"` longer than the others?
+3. Collect 50 episodes with recoveries and count the disturbed ones. Why does every disturbed
+   episode have `replans` of at least 1, whatever the distance drawn (compare the range of
+   distances with `TRACK_LIMIT`)? Why are the episodes marked `"disturbed": "grasp"` longer than
+   the others?
 
    ```bash
    sim/pickup/scripts/make_dataset.sh pick_target 50 pick_target_50_recover --disturb_prob 0.5

@@ -166,9 +166,9 @@ PICKUP_OUT=results/pickup/<run>/pick_target/disturb_grasp \
 All numbers are from the [lab notebook](../lab-notebook.md): one training seed per run and, unless
 stated, 100 episodes per evaluation on unseen **layouts** (the objects on the table, their places,
 the named one and the arm's start pose, all fixed by a seed). The first round ran on machine A
-(one RTX 4090, 24 GB), the rest on machine B (L40S GPUs, 128 CPU cores). Pairs are raw / EMA: the
-trained weights and their running average. Unless marked, the runs predate the fix of the rotary
-position table ([Positions](12-positions.md)).
+(one RTX 4090, 24 GB), the rest on machine B (L40S GPUs, 128 CPU cores). Pairs are trained /
+averaged weights (a running average of the trained ones, saved by the same run). Unless marked, the
+runs predate the fix of the rotary position table ([Positions](12-positions.md)).
 
 **The reference.** The scripted expert on `pick_target`, machine B: 100/100, the gripper closes
 5 mm (median) from the object, 98% within 10 mm.
@@ -197,14 +197,17 @@ $R^2$ is at most 0.006.
 
 The diagnostics name the failure, not its cause. The [roadmap](../roadmap.md) lists four: a
 single conditioning vector for `vla_custom`
-([What the action head sees](50-what-the-action-head-sees.md)), the previous action as an input, a
-budget that ended before a policy starts to look, and a position table computed in half precision.
+([What the action head sees](50-what-the-action-head-sees.md)), the previous action as an input
+([History and shortcuts](52-history-and-shortcuts.md)), a budget that ended before a policy starts
+to look ([How much data and training](71-how-much-data-and-training.md)), and a position table
+computed in half precision ([Positions](12-positions.md)).
 
 **A policy that points.** `vla_qwen` (a pretrained Qwen3-VL-2B backbone, also a single
-conditioning vector, with history: the previous frame, state and action as inputs; machine B, 1500
-demonstrations, 0.40M samples) fails differently: 5% success, 71% closed at the named object,
-slope 0.68, median miss 83 mm. It heads for the named object and stops far outside the tolerance:
-imprecise, not blind.
+conditioning vector, with history (each camera's previous frame, the previous joint state and the
+last action as inputs); machine B, 1500 demonstrations, 0.40M samples; its success is
+in [the backbone case study](102-case-pretrained-backbones.md)) fails differently: 71% closed at the
+named object, slope 0.68, median miss 83 mm. It heads for the named object and stops far outside
+the tolerance: imprecise, not blind.
 
 **The tolerance.** Machine B (MuJoCo 4.0.1), 320 episodes per offset:
 
@@ -216,10 +219,9 @@ imprecise, not blind.
 | 20 mm | 93% | 98% | 29% | 70% | 72% |
 | 30 mm | 32% | 76% | 3% | 15% | 32% |
 
-On machine A (an earlier MuJoCo 4.0 build), with the same seeds, the cube and T block columns are
-identical and the two round objects, whose collision shapes are cylinders, are much harder: the
-can is at 94% with no offset, 60% at 10 mm and 18% at 20 mm. The build has not been isolated as
-the cause; measure the tolerance on the machine that evaluates.
+On machine A (an earlier MuJoCo 4.0 build, same seeds) the cube and T block match, and the round
+objects are much harder: the can is at 94% at 0 mm, 60% at 10 mm, 18% at 20 mm. Measure
+the tolerance on the machine that evaluates.
 
 <!-- interactive: tolerance -->
 *Figure: grasp success of the offset expert against the offset, one curve per object.*
@@ -227,34 +229,26 @@ the cause; measure the tolerance on the machine that evaluates.
 "Within 2 cm" passes for the cube and the T block (93% and 98%) and fails for the can (29%), which
 a success rate averaged over objects hides.
 
-**The same diagnostics during training.** `dp_vit_lang_reactive` (the instruction as tokens, no
-history) on 4000 demonstrations, at checkpoints of a 5.0M-sample run:
+**The same diagnostics during training.** Run on every checkpoint (command 5), they show the order
+in which a policy gets better. `dp_vit_lang_reactive` (the instruction as tokens, no history) on
+4000 demonstrations ([How much data and training](71-how-much-data-and-training.md) has its whole
+curve) walks down the flowchart one leaf at a time:
 
-| Samples | Success | Closed at the named object | Slope | Median miss to named |
-|---|---|---|---|---|
-| 1.0M | 0% / 1% | 35% / 32% | 0.11 / 0.14 | 138 / 154 mm |
-| 1.5M | 4% / 2% | 61% / 49% | 0.47 / 0.37 | 102 / 104 mm |
-| 2.0M | 4% / 36% | 95% / 98% | 0.81 / 0.96 | 32 / 18 mm |
-| 5.0M (final) | 83% / 85% | 100% / 100% | 0.98 / 0.98 | 7 / 7 mm |
+1. At 1.0M samples it reads like the three failures above: 35% / 32% closed at the named object,
+   slope 0.11 / 0.14. Not looking.
+2. At 1.5M success is still noise (4% / 2%) while the slope has left zero (0.47 / 0.37): it has
+   started to look.
+3. At 2.0M the trained weights close at the named object in 95% of episodes, slope 0.81, 32 mm
+   from it, where the expert offset by 30 mm is at 32% (all objects). Imprecise.
+4. From 3.0M on it closes at the named object in at least 99% of episodes, slope at least 0.97:
+   what is left is the last leaf, the failed grasp.
 
-At 1.0M the run reads like the three failures above. At 1.5M success is still noise while the slope
-has left zero. At 2.0M the raw weights are imprecise: 95% closed
-at the named object, 32 mm from it, where the expert offset by 30 mm is at 32% (all objects). The
-slope moves first, then the miss shrinks, then success follows (field notes, "Looking at the scene
-arrives late, and all at once"). Trained again after the position fix, the same run has a slope
-of 0.58 after 1.0M samples and ends at 93% (trained weights). A second pair of runs with other
-seeds, differing in the position table alone, ends at 96% / 96% with the fixed table and
-90% / 89% with the old one; at 1.0M the fixed table's slope is again ahead (0.77 against 0.25).
+The slope moves first, then the miss shrinks, then success follows (field notes, "Looking at the
+scene arrives late, and all at once"). A budget can end inside that transition, so no 1.0M-sample
+result here shows the limit of a design.
 
-A budget can end inside this transition. On 1500 demonstrations the same policy read 3% / 5%
-when trained for 1.0M samples (slope 0.29 / 0.18) and 64% / 62% when trained for 3.0M
-(0.96 / 0.97), so no 1.0M-sample result in this chapter shows the limit of a design
-([How much data and training](71-how-much-data-and-training.md),
-[the `pick_target` case study](101-case-pick-target.md)).
-
-**The failures that remain.** From 3.0M samples on, that run closes at the named object in at
-least 99% of episodes, slope at least 0.97: what is left is the last leaf of the flowchart. Its 12
-evaluations from there on (raw and EMA), pooled by object, with medians:
+**The failures that remain.** Step 4 is where `by_target` and exercise 3 take over. The same run's
+12 evaluations from 3.0M samples on (trained and averaged weights), pooled by object, with medians:
 
 | Object | Success | Miss: successes, failures | Yaw error: successes, failures | Height above the grasp point, failures |
 |---|---|---|---|---|
@@ -266,14 +260,13 @@ evaluations from there on (raw and EMA), pooled by object, with medians:
 Yaw error is measured against the grasps the expert uses (four on the cube; two on the T block,
 across the stem), so it is at most 45 and 90 degrees. The T block forgives the largest offset in
 the tolerance table and fails most often, with a median miss of 15 mm in its failures, an offset
-at which the expert is at 100%. Sideways position is not what fails: the failed T-block grasps
-are a median of 64 degrees off and close 9 mm above the grasp height. The tolerance table is thus
-an optimistic reference for a policy: it is the expert with one error added and its height,
-finger angle and timing intact.
+at which the expert is at 100%. The failed T-block grasps are a median of 64 degrees off and close
+9 mm above the grasp height. The tolerance table is an optimistic reference: the expert with one
+error added and its height, finger angle and timing intact.
 
-Here too the diagnostics named the failure and not its cause: most of it was the position bug
-(field notes, "What still fails"). After the fix, pooled over the last three checkpoints, the
-T block is at 60/69 = 87% and the cube at 68/72 = 94%.
+Here too the diagnostics named the failure and not its cause: most of it was the position bug of
+[Positions](12-positions.md) (field notes, "What still fails"). After the fix, pooled over the last
+three checkpoints, the T block is at 60/69 = 87% and the cube at 68/72 = 94%.
 
 ## Where it goes wrong
 
@@ -284,21 +277,37 @@ evaluations, and 0.04 and 0.09 on the two axes with its 22 evaluations pooled. R
 checkpoints, or pool evaluations: a trend counts, one value does not.
 
 **A low slope read as an inability.** `dp_vit_lang` is `dp_vit_lang_reactive` with history. On the
-4000 demonstrations it read 2% / 2% after 3.0M samples, slope 0.11 / 0.08. Its 2.5M-sample
-checkpoint (EMA) closes at the named object in 30% of episodes as served, and in 97% when the
-previous action sent with its first query is the expert's first command
-(`--first_prev_action expert`; success 1/100 and 22/100). It is not blind: it reads the target
-from its previous action ([History and shortcuts](52-history-and-shortcuts.md)).
+4000 demonstrations its slope stayed near zero up to 3.0M samples (0.11 / 0.08). Its 2.5M-sample
+checkpoint (averaged weights) closes at the named object in 30% of episodes as served, and in 97%
+when the previous action sent with its first query is the expert's first command
+(`--first_prev_action expert`). It can find the target, and does so only when its previous action
+lets it ([History and shortcuts](52-history-and-shortcuts.md)). Before calling a low slope an
+inability, change one input and evaluate again.
 
-**A perfect first close read as watching the scene.** The 85% checkpoint (EMA) closes at the
-named object in 100% of episodes, 7 mm from it. Sent the first frame's images throughout
-(`--stale_images`), it still does so in 99%, 17 mm from it, and succeeds in 1/100: it looks once.
-With the object moved as the gripper first closes (`--disturb grasp`), it succeeds in 1/99 and
-closes a second time in 29, the episodes `retried_rate` counts. A policy trained after the fix on
-demonstrations in which the expert recovers succeeds in 78/99 and closes a second time in all 99;
-the scripted expert scores 0/100 with its one plan and 100/100 when it plans again. Such
-evaluations, which change one thing about an episode, are the probes of
-[What a policy looks at](95-what-a-policy-looks-at.md).
+**A perfect first close read as watching the scene.** The final checkpoint of the
+4000-demonstration run (averaged weights) closes at the named object in 100% of episodes, 7 mm from
+it; sent the first frame's images throughout (`--stale_images`), it still does so in 99%. A good
+first close says where the policy looked once, not that it keeps watching
+([What a policy looks at](95-what-a-policy-looks-at.md)). With `--disturb grasp` the record is
+taken before the object moves (`eval.py` calls `probe.update` before `disturbance.update`); only
+`closes` and `retried_rate` show whether the policy tried again
+([Self-correction](103-case-self-correction.md)).
+
+**A median over fewer episodes than the rate.** In `summarize`, the medians are over the episodes
+in which the gripper closed; the rates divide by all episodes. A policy that closes in half its
+episodes, always near the object, shows a small median miss next to a within-10 mm rate of at most
+50%. Read `closed_gripper_rate` first, as the flowchart does.
+
+**Only the first close counts.** `GraspProbe.update` stores its record at the first action with
+`action[7] < 0.5` and ignores every later one. A policy that closes early, in the air, then opens
+and grasps correctly is recorded at the early place as a miss. `close_step` gives it away (the
+first-round policies, like the expert, closed around control step 34-44), and so does
+`retried_rate`.
+
+**No slope at all.** `close_slope` in `summarize.py` returns `None` when fewer than three episodes
+have a close or the named object's position does not vary, and `summarize.py` prints `-`; `_fit`
+in `diagnostics.py` (behind `close_vs_target_slope`) does the same, and also returns `None` when
+the gripper's position does not vary. On `pick_target` a `-` is the "No attempt" leaf, not a slope of zero.
 
 ## Background and further reading
 

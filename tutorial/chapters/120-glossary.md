@@ -56,7 +56,7 @@ the weights directly. [13 Training a Language Model](13-training-a-language-mode
 **All tokens (`conditioning: all_tokens`).** The setting of both VLM backbones that hands the
 action head the hidden states of every image and text token instead of the action token's alone.
 [50 What the Action Head Sees](50-what-the-action-head-sees.md); also
-[60](60-anatomy-of-a-vla.md), [61](61-pretrained-backbones.md).
+[60](60-anatomy-of-a-vla.md), [61](61-pretrained-backbones.md), [102](102-case-pretrained-backbones.md).
 
 **Anchor.** The current frame of a training window, the one the window is cut around.
 [42 Action Chunks and Closed-Loop Execution](42-chunks-and-execution.md); also
@@ -111,7 +111,8 @@ captions built from the simulator's state. [31 Training a VLM](31-training-a-vlm
 
 **Case study.** One task taken through every run made on it, in order, each step saying what was
 believed, run, measured and changed. [100 Case Study: One Cube](100-case-pick-cube.md); also
-[101](101-case-pick-target.md).
+[101](101-case-pick-target.md), [102](102-case-pretrained-backbones.md),
+[103](103-case-self-correction.md).
 
 **Causal.** Of a model: each position attends only to itself and earlier positions.
 [10 Text Becomes Tokens](10-tokens.md).
@@ -150,6 +151,10 @@ next. [42 Action Chunks and Closed-Loop Execution](42-chunks-and-execution.md).
 episodes that end in success. [01 Setup and a First Run](01-setup-and-first-run.md); also
 [90](90-closed-loop-evaluation.md).
 
+**Clutter, occlusion.** Objects that crowd the target or hide it from a camera. Not in `pick_target`,
+where three objects stand at least 110 mm apart with nothing in front of them; the task
+`pick_clutter` is not written. [110 Toward Real Tasks](110-toward-real-tasks.md).
+
 **Compounding error.** In behaviour cloning, a small error moving the arm off the demonstrated
 path, where the next observation is unlike the data and the next error larger.
 [43 Imitation Learning and Why It Breaks](43-imitation-learning.md).
@@ -168,7 +173,7 @@ raises a `ValueError`. [10 Text Becomes Tokens](10-tokens.md); also
 95% of repeated evaluations; here the Wilson interval. [90 Closed-Loop Evaluation](90-closed-loop-evaluation.md).
 
 **Control.** In an experiment, a second run identical except in the one thing under test.
-[62 The From-Scratch Path](62-the-from-scratch-path.md).
+[62 The From-Scratch Path](62-the-from-scratch-path.md); also [102](102-case-pretrained-backbones.md).
 
 **Control step.** One command to the arm: 50 ms in this simulator, which runs at 20 Hz. Episodes
 end at 200 control steps. [01 Setup and a First Run](01-setup-and-first-run.md); also
@@ -200,20 +205,31 @@ about 66 control steps each. [01 Setup and a First Run](01-setup-and-first-run.m
 
 **Disturbance.** An evaluation (`eval.py --disturb reach` or `--disturb grasp`) or a demonstration
 (`collect.py --disturb_prob`) in which the named object is moved once, during the reach or as the
-gripper first closes; by 80 mm unless `--disturb_mm` says otherwise.
+gripper first closes; by 80 mm unless `--disturb_mm` says otherwise. The object is set down at the
+first of up to 64 random directions that leaves room; if none does, the episode runs undisturbed.
+For an object that keeps moving, see *drift*.
 [01 Setup and a First Run](01-setup-and-first-run.md); also [43](43-imitation-learning.md),
-[95](95-what-a-policy-looks-at.md).
+[95](95-what-a-policy-looks-at.md), [103](103-case-self-correction.md).
 
 **Draw.** One output of a generative model: an action chunk sampled from one starting noise, or a
 token drawn with its probability. Not a *sample*.
 [41 Generating Actions with Flow Matching](41-flow-matching.md); also [14](14-generation.md).
 
+**Drift.** An evaluation (`eval.py --disturb drift`) or a share of demonstrations
+(`collect.py --drift_prob`) in which the named object slides from the first control step along a
+random path that turns away from the edge of the placement area and from the other objects, at
+`--drift_cm_s` (default 2.0), and stands still while the gripper is commanded closed. In
+`collect.py` the share applies to the episodes not drawn for a jump, and each drifting episode
+draws its speed between 0.5 and 1.5 times `--drift_cm_s`. No result yet.
+[110 Toward Real Tasks](110-toward-real-tasks.md); also [103](103-case-self-correction.md).
+
 ## E
 
 **Early windows repeated.** A dataset in which the windows that start in frames 0-7 of every
 demonstration appear 6 times instead of once (`boost_early_windows.py --max_frame 7 --repeat 5`).
+The new dataset links the original shards and adds the copies; nothing is collected.
 [70 Demonstrations](70-demonstrations.md); also [71](71-how-much-data-and-training.md),
-[95](95-what-a-policy-looks-at.md).
+[72](72-which-demonstrations-teach.md), [95](95-what-a-policy-looks-at.md).
 
 **EGL.** The interface through which the simulator renders on a GPU without a display; its device
 order is not `nvidia-smi`'s. [01 Setup and a First Run](01-setup-and-first-run.md); also
@@ -237,6 +253,12 @@ inverse kinematics. [40 What an Action Is](40-action-spaces.md).
 
 **Epoch.** One pass over a dataset's windows: 5M samples on `pick_target_4k` are 19.0 epochs.
 [01 Setup and a First Run](01-setup-and-first-run.md); also [71](71-how-much-data-and-training.md).
+
+**Every object named.** A dataset in which each layout is demonstrated once per object on the
+table, each named in turn (`collect.py --targets_per_layout 3`, `pick_target_cf4k`): the scene is
+identical and only the instruction differs, and 4000 episodes are about 1333 layouts.
+[70 Demonstrations](70-demonstrations.md); also [51](51-language-conditioning.md),
+[72](72-which-demonstrations-teach.md).
 
 **Execution horizon.** The number of actions of a chunk executed before the policy is queried again
 (`--exec_horizon`, default 8 of 15). [42 Action Chunks and Closed-Loop Execution](42-chunks-and-execution.md).
@@ -263,6 +285,10 @@ own. [11 The Transformer Block](11-the-transformer-block.md).
 **Fine-tuning.** Continuing training from pretrained weights on a new task.
 [02 From Language Models to Robot Policies](02-how-we-got-here.md).
 
+**Floor.** A comparison is at the floor when both sides succeed near 0% and close at the named
+object at chance: no difference between them can show.
+[102 Case Study: A Backbone From Scratch Against a Pretrained One](102-case-pretrained-backbones.md).
+
 **Flow matching.** How the action head here generates actions: a demonstrated chunk is mixed with
 noise along a straight line, the network learns the direction from action to noise, and sampling
 follows it back from pure noise in a few flow steps.
@@ -273,14 +299,28 @@ follows it back from pure noise in a few flow steps.
 divisor of 1000. [01 Setup and a First Run](01-setup-and-first-run.md); also
 [41](41-flow-matching.md).
 
+**Flower trimming.** The real task this repository is heading for (Phase 4 of the roadmap): find
+one flower among others that look like it, among leaves that move and hide it, and cut its stem in
+the right place. [110 Toward Real Tasks](110-toward-real-tasks.md).
+
 **Freeze.** Exclude a part's weights from training. [31 Training a VLM](31-training-a-vlm.md);
 also [61](61-pretrained-backbones.md).
+
+**From-scratch path.** Training a language model (stage 1), a VLM (stage 2) and a VLA (stage 3)
+here from random weights, each stage starting from the last one's weights (`custom_path.sh`).
+[62 The From-Scratch Path](62-the-from-scratch-path.md); also
+[102](102-case-pretrained-backbones.md).
 
 **Frozen cameras.** A probe that sends the first frame's images for the whole episode
 (`eval.py --stale_images`), so that only the joint state changes.
 [95 Probing a Policy That Works](95-what-a-policy-looks-at.md); also [21](21-pooled-vs-patch-tokens.md).
 
 ## G
+
+**Gap from simulation.** Every difference between the simulator and a real robot: rendered images
+under fixed lights against real cameras, simulated against real contact. Not measured here; the one
+gap measured between two setups is the grasp tolerance on two simulator builds.
+[110 Toward Real Tasks](110-toward-real-tasks.md).
 
 **Generation step.** One pass of the text-generation loop: pick a token, append it, run the model
 again. [14 Generating Text](14-generation.md).
@@ -317,14 +357,14 @@ gripper open. It fills the previous-action slot of the first query when a policy
 **Hold frame.** A frame of the robot at rest recorded at the start of every demonstration
 (`collect.py --hold_steps 1`), so that the first windows hold what serving provides.
 [52 History and the Shortcut It Opens](52-history-and-shortcuts.md); also
-[70](70-demonstrations.md).
+[70](70-demonstrations.md), [72](72-which-demonstrations-teach.md).
 
 ## I
 
 **Id (token id).** A token's index in the vocabulary. [10 Text Becomes Tokens](10-tokens.md).
 
 **Initialisation.** The values the weights hold before a run: random, or the result of pretraining.
-[62 The From-Scratch Path](62-the-from-scratch-path.md).
+[62 The From-Scratch Path](62-the-from-scratch-path.md); also [102](102-case-pretrained-backbones.md).
 
 **Invariant.** A property that must hold for every input, such as "the conditioning of a sample
 does not depend on the rest of its batch"; pinned by unit tests.
@@ -366,10 +406,15 @@ progress; here the training log. [81 Surviving Long Runs](81-surviving-long-runs
 probabilities. [11 The Transformer Block](11-the-transformer-block.md); also
 [14](14-generation.md).
 
+**Look-alikes (`pick_lookalike`).** Objects of one shape whose colours are a step apart. The task
+`pick_lookalike` in `sim/pickup/env.py` puts 3 of a red, an orange, a pink and a dark red cube on
+the table, so only the colour word of the instruction tells them apart. No result yet.
+[110 Toward Real Tasks](110-toward-real-tasks.md).
+
 **Looks once.** A policy that chooses its target from the first frames and then follows its own arm,
 so that later images matter only for the last centimetres. Shown with frozen cameras, expert
 handover and disturbances. [01 Setup and a First Run](01-setup-and-first-run.md); also
-[95](95-what-a-policy-looks-at.md).
+[95](95-what-a-policy-looks-at.md), [103](103-case-self-correction.md).
 
 **Low-dimensional (lowdim).** The framework's name for the small arrays of a window, here the 8-D
 state and the 8-D action. [42 Action Chunks and Closed-Loop Execution](42-chunks-and-execution.md).
@@ -408,6 +453,12 @@ deviation before the model sees it, and reversing that on the output.
 
 **Offset (between positions).** The query's position minus the key's.
 [12 Telling Tokens Where They Are](12-positions.md).
+
+**Onset (of looking).** The point in training at which a policy starts to use the scene, read per
+checkpoint from closed at the named object and the slope, which rise before success does; the
+start of the *transition*. [72 Which Demonstrations Teach What](72-which-demonstrations-teach.md);
+also [12](12-positions.md), [71](71-how-much-data-and-training.md),
+[102](102-case-pretrained-backbones.md).
 
 **Open-loop.** The model's predictions are compared with recorded data and never executed, as in
 `open_loop_check.py` or the notebook's "First action chunk, open loop".
@@ -465,7 +516,7 @@ residual stream. [11 The Transformer Block](11-the-transformer-block.md).
 [80 The Training Loop](80-the-training-loop.md).
 
 **Pretraining.** Training on one task so that the weights become the starting point for another.
-[62 The From-Scratch Path](62-the-from-scratch-path.md).
+[62 The From-Scratch Path](62-the-from-scratch-path.md); also [102](102-case-pretrained-backbones.md).
 
 **Previous-action slot.** Row 0 of the action tensor of a policy with history: the previous action,
 given clean and never scored. In a window that starts at the first frame it holds a copy of the
@@ -488,11 +539,23 @@ opening, fed to the policy as the joint state. [40 What an Action Is](40-action-
 
 **Random start.** Demonstrations or evaluations in which every episode starts from a random gripper
 pose above the table instead of the home pose (`collect.py --random_start`, `eval.py
---random_start`). [70 Demonstrations](70-demonstrations.md); also [95](95-what-a-policy-looks-at.md).
+--random_start`). [70 Demonstrations](70-demonstrations.md); also [72](72-which-demonstrations-teach.md),
+[95](95-what-a-policy-looks-at.md), [103](103-case-self-correction.md).
+
+**Reactive expert (the expert that plans again).** `ScriptedExpert(reactive=True)`. Before every
+action `_needs_new_plan` checks whether the named object lies more than 15 mm from where the plan
+was made for it, or whether the fingers met on nothing during the lift. A move of up to 40 mm
+(`TRACK_LIMIT`) while the gripper is not being closed shifts the remaining waypoints (`_track`,
+counted in `tracks`); anything else makes it plan again (`_plan(again=True)`, counted in `replans`).
+Switched on by `eval.py --expert --expert_reactive`, and for every episode by `collect.py
+--disturb_prob` or `--drift_prob` above 0. [103 Case Study: A Policy That Corrects Itself](103-case-self-correction.md);
+also [72](72-which-demonstrations-teach.md), [110](110-toward-real-tasks.md).
 
 **Recoveries.** Demonstrations in which the named object is moved once and the expert plans again
-(`collect.py --disturb_prob 0.5`, with `ScriptedExpert(reactive=True)`).
-[70 Demonstrations](70-demonstrations.md); also [95](95-what-a-policy-looks-at.md).
+(`collect.py --disturb_prob 0.5`, with `ScriptedExpert(reactive=True)`). Only episodes in which a
+free place was found are moved: 1505 of 4000 in `pick_target_4k_recover`.
+[70 Demonstrations](70-demonstrations.md); also [72](72-which-demonstrations-teach.md),
+[95](95-what-a-policy-looks-at.md), [103](103-case-self-correction.md).
 
 **Register tokens.** Extra learned tokens of some DINOv2 checkpoints; not patches.
 [22 Pretrained Vision Encoders](22-pretrained-vision-encoders.md).
@@ -500,15 +563,22 @@ pose above the table instead of the home pose (`collect.py --random_start`, `eva
 **Regression.** Training the output directly with mean squared error, which predicts the mean of
 all targets for an input. [41 Generating Actions with Flow Matching](41-flow-matching.md).
 
-**Re-plan.** A new query to the policy after the executed part of a chunk.
+**Re-plan.** A new query to the policy after the executed part of a chunk. Not the scripted
+expert's `replans`, which counts new plans after the object moved (see *reactive expert*).
 [42 Action Chunks and Closed-Loop Execution](42-chunks-and-execution.md).
 
 **Residual stream.** The tensor `[batch, tokens, width]` that runs from embedding to output, each
 block adding its update. [11 The Transformer Block](11-the-transformer-block.md).
 
+**Retreat waypoint.** The waypoint the expert that plans again puts first when its gripper
+set-point is more than 2 cm below the new approach height: straight up, gripper open, so the
+fingers clear the objects before the arm moves sideways.
+[103 Case Study: A Policy That Corrects Itself](103-case-self-correction.md).
+
 **Retried rate.** The share of episodes in which the gripper closed twice or more, a second grasp
-attempt (`grasp.retried_rate` in `results.json`). [92 Measuring How a Policy Fails](92-measuring-failure.md);
-also [95](95-what-a-policy-looks-at.md).
+attempt (`grasp.retried_rate` in `results.json`; `closes >= 2` per episode). A retry is not a
+recovery: it says nothing about success. [92 Measuring How a Policy Fails](92-measuring-failure.md);
+also [95](95-what-a-policy-looks-at.md), [103](103-case-self-correction.md).
 
 **Rollout.** One run of a policy in the simulator. [43 Imitation Learning and Why It Breaks](43-imitation-learning.md).
 
@@ -527,11 +597,13 @@ the model is a *draw*. [01 Setup and a First Run](01-setup-and-first-run.md); al
 
 **Scripted expert.** A hand-written controller that reads the true object pose from the simulator
 and executes a plan; it records the demonstrations and, through `eval.py --expert`, checks the task.
-With `--expert_reactive` it plans again when the object has moved. [00 The Route on One Page](00-the-route.md);
-also [70](70-demonstrations.md).
+With `--expert_reactive` it plans again when the object has moved (see *reactive expert*).
+[00 The Route on One Page](00-the-route.md); also [70](70-demonstrations.md),
+[103](103-case-self-correction.md).
 
 **Second set of layouts.** A further 100 unseen layouts (`--seed_start 1000100`), to re-evaluate a
-chosen checkpoint. [90 Closed-Loop Evaluation](90-closed-loop-evaluation.md).
+chosen checkpoint. [90 Closed-Loop Evaluation](90-closed-loop-evaluation.md); also
+[103](103-case-self-correction.md).
 
 **Seed (layout seed), training seed.** The integer a layout is generated from (demonstrations from 0,
 evaluation from 1,000,000), and, separately, the integer that seeds a training run
@@ -590,7 +662,8 @@ in front of the patch tokens of a patch-token policy (32 slots in the pickup con
 sequence. [10 Text Becomes Tokens](10-tokens.md); also [20](20-images-to-tokens.md).
 
 **Tolerance.** The placement error at which a grasp still succeeds, per object and simulator build.
-[92 Measuring How a Policy Fails](92-measuring-failure.md); also [00](00-the-route.md).
+[92 Measuring How a Policy Fails](92-measuring-failure.md); also [00](00-the-route.md),
+[110](110-toward-real-tasks.md).
 
 **Tool centre point (TCP).** The reference point between the fingertips.
 [40 What an Action Is](40-action-spaces.md); also [92](92-measuring-failure.md).
@@ -604,8 +677,8 @@ exponential moving average. Tables give "trained / averaged", or "raw / EMA".
 [01 Setup and a First Run](01-setup-and-first-run.md); also [71](71-how-much-data-and-training.md).
 
 **Transition.** The stretch of training in which the slope goes from near 0 to near 1: slope first,
-then median miss, then success. [71 How Much Data, How Much Training](71-how-much-data-and-training.md);
-also [101](101-case-pick-target.md).
+then median miss, then success; its start is the *onset*. [71 How Much Data, How Much Training](71-how-much-data-and-training.md);
+also [72](72-which-demonstrations-teach.md), [101](101-case-pick-target.md).
 
 **Truncation, truncation side.** Cutting a row longer than `max_length`, and the end that is cut;
 the SmolVLM2 tokenizer cuts on the left. [10 Text Becomes Tokens](10-tokens.md).

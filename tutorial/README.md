@@ -14,7 +14,12 @@ Where it stands: `pick_target` is solved in simulation. The patch-token policy w
 as tokens and no history (`dp_vit_lang_reactive`), trained on 4000 demonstrations for 5M samples,
 reaches 93% on clean demonstrations and 98% with random start poses in them; with random start
 poses and recoveries it scores 94% and holds 89-94% when the object is moved during the reach or as
-the gripper closes. All chapters have `status: draft`. Where a chapter and the lab notebook disagree, the
+the gripper closes, also from a random start pose
+([Which Demonstrations Teach What](chapters/72-which-demonstrations-teach.md),
+[Case Study: A Policy That Corrects Itself](chapters/103-case-self-correction.md)). The next
+properties on the way to a real task, a target that keeps moving and look-alike objects, have code
+and no results yet ([Toward Real Tasks](chapters/110-toward-real-tasks.md)). All chapters have
+`status: draft`. Where a chapter and the lab notebook disagree, the
 notebook is right.
 
 ## Chapters
@@ -24,7 +29,7 @@ notebook is right.
 | # | Chapter | After reading you can |
 |---|---|---|
 | 00 | [The Route on One Page](chapters/00-the-route.md) | Follow the ten-step order of work that takes a robot policy to a measured closed-loop success rate, and say where this repository stands on it. |
-| 01 | [Setup and a First Run](chapters/01-setup-and-first-run.md) | Install the repository, run the whole loop once on the single-cube task as a smoke test, then start the three-object run (93% here after the position fix; 83% / 85% before it) and read its success curve and grasp map. |
+| 01 | [Setup and a First Run](chapters/01-setup-and-first-run.md) | Install the repository, run the whole loop once on the single-cube task as a smoke test, then start the three-object run and read its success curve with `summarize.py` and its grasp map. |
 | 02 | [From Language Models to Robot Policies](chapters/02-how-we-got-here.md) | Name the published idea behind each part of a vision-language-action policy, the problem it solved, and what is still open. |
 | 03 | [The Model Families Today](chapters/03-the-landscape.md) | Place any robot policy, published or in this repository, on a map of five design choices and say what follows from each choice. |
 
@@ -85,6 +90,7 @@ notebook is right.
 |---|---|---|
 | 70 | [Demonstrations](chapters/70-demonstrations.md) | Generate a demonstration dataset with the scripted expert, choose what its episodes contain, say what its files and arrays hold, and open a training shard to check it. |
 | 71 | [How Much Data, How Much Training](chapters/71-how-much-data-and-training.md) | Count a training budget in demonstrations, windows, samples and epochs, read a run's checkpoints for the point where the policy starts to use the scene, and choose a budget that does not end before it. |
+| 72 | [Which Demonstrations Teach What](chapters/72-which-demonstrations-teach.md) | Decide which windows of your demonstrations need the scene, choose collect.py options and window weighting accordingly, and read from a run's checkpoints whether the change made the policy look earlier, end higher, or neither. |
 
 ### Part 8: Training
 
@@ -110,6 +116,14 @@ notebook is right.
 |---|---|---|
 | 100 | [Case Study: One Cube](chapters/100-case-pick-cube.md) | Repeat, run by run, the route that took the single-cube task from a scripted expert to policies above 90%, and say what each run tested, what it measured and what it changed. |
 | 101 | [Case Study: Three Objects, From 0% to 98%](chapters/101-case-pick-target.md) | Follow the debugging method through the whole history of `pick_target`, wrong turns included, and run the same checks, in the same order, on a policy of your own. |
+| 102 | [Case Study: A Backbone From Scratch Against a Pretrained One](chapters/102-case-pretrained-backbones.md) | Run a pretrained-against-random backbone comparison that can show a difference, read it checkpoint by checkpoint at equal training samples, and say what one seed per side supports. |
+| 103 | [Case Study: A Policy That Corrects Itself](chapters/103-case-self-correction.md) | Disturb your own policy the way this repository does, read the result against an expert that plans again, and record demonstrations that teach a policy to follow a moved object and to try a missed grasp again. |
+
+### Part 11: Toward real tasks
+
+| # | Chapter | After reading you can |
+|---|---|---|
+| 110 | [Toward Real Tasks](chapters/110-toward-real-tasks.md) | Split a real manipulation task into properties, say for each one what this repository has measured and what it has not, and run and read the first experiments that add those properties to the simulator. |
 
 ### Part 12: Appendix
 
@@ -117,17 +131,6 @@ notebook is right.
 |---|---|---|
 | 120 | [Glossary](chapters/120-glossary.md) | Look up any term the chapters use, with its meaning in this repository and the chapter that introduces it. |
 | 121 | [Edge Cases and Failures](chapters/121-edge-cases.md) | Look up what you see, find why it happens and how to check it, and follow the link to the chapters that explain it. |
-
-### Still to come
-
-Their results are in the lab notebook and the [field notes](notes.md); the chapters are not written.
-
-| # | Chapter |
-|---|---|
-| 72 | Which demonstrations teach what: random start poses, recoveries, every object named, early windows repeated |
-| 102 | The from-scratch path against a pretrained backbone, with every token handed to the action head |
-| 103 | Self-correction: disturbances in the evaluation and recoveries in the data |
-| 110 | Toward real tasks: clutter, look-alike objects, moving targets, cutting |
 
 ## Three ways through
 
@@ -140,9 +143,11 @@ Chapters link to each other and to the code, so they can be read out of order wi
 1. [00 The Route on One Page](chapters/00-the-route.md) and
    [01 Setup and a First Run](chapters/01-setup-and-first-run.md): the order of work, a smoke test
    on one cube, and the recommended three-object run.
-2. [70 Demonstrations](chapters/70-demonstrations.md) and
-   [71 How Much Data, How Much Training](chapters/71-how-much-data-and-training.md): what to put in
-   the demonstrations, and a budget that does not end before the policy starts to look.
+2. [70 Demonstrations](chapters/70-demonstrations.md),
+   [71 How Much Data, How Much Training](chapters/71-how-much-data-and-training.md) and
+   [72 Which Demonstrations Teach What](chapters/72-which-demonstrations-teach.md): how
+   demonstrations are made, a budget that does not end before the policy starts to look, and what
+   to put in them (random start poses and recoveries).
 3. [50 What the Action Head Sees](chapters/50-what-the-action-head-sees.md) and
    [52 History and the Shortcut It Opens](chapters/52-history-and-shortcuts.md): give the action
    head spatial tokens, and start without history.
@@ -152,7 +157,10 @@ Chapters link to each other and to the code, so they can be read out of order wi
 5. [90 Closed-Loop Evaluation](chapters/90-closed-loop-evaluation.md) and
    [95 Probing a Policy That Works](chapters/95-what-a-policy-looks-at.md): a success curve over
    every checkpoint, then the probes that show what the policy looks at.
-6. [101 Case Study: Three Objects, From 0% to 98%](chapters/101-case-pick-target.md): the whole
+6. [103 Case Study: A Policy That Corrects Itself](chapters/103-case-self-correction.md): move the
+   object under your policy, read the result against an expert that plans again, and record the
+   demonstrations that teach recovery.
+7. [101 Case Study: Three Objects, From 0% to 98%](chapters/101-case-pick-target.md): the whole
    route on one task, wrong turns included.
 
 **Understand the models from the ground up.** In order:
@@ -171,6 +179,8 @@ Chapters link to each other and to the code, so they can be read out of order wi
 6. Parts 5 and 6, [50](chapters/50-what-the-action-head-sees.md) to
    [62](chapters/62-the-from-scratch-path.md): what the action head receives, and the whole VLA,
    from a pretrained backbone or built stage by stage here.
+7. [102 Case Study: A Backbone From Scratch Against a Pretrained One](chapters/102-case-pretrained-backbones.md):
+   what pretraining the backbone bought here, read checkpoint by checkpoint.
 
 **Debug a policy that does not work.** Start from the symptom.
 
@@ -186,10 +196,14 @@ Chapters link to each other and to the code, so they can be read out of order wi
    that holds the answer in training, and one window through both paths.
 5. [12 Telling Tokens Where They Are](chapters/12-positions.md): a fault that training and serving
    share, the position table.
-6. [95 Probing a Policy That Works](chapters/95-what-a-policy-looks-at.md): when it succeeds and
-   still fails as soon as something moves.
+6. [95 Probing a Policy That Works](chapters/95-what-a-policy-looks-at.md) and
+   [103 Case Study: A Policy That Corrects Itself](chapters/103-case-self-correction.md): when it
+   succeeds and still fails as soon as something moves, and the demonstrations that change that.
 7. [Edge Cases and Failures](chapters/121-edge-cases.md): look the symptom up, then follow the link
    to the chapter that explains it.
+
+After any route, [110 Toward Real Tasks](chapters/110-toward-real-tasks.md) sets these results
+against a real task, property by property, and lists the experiments now starting.
 
 ## Other files
 

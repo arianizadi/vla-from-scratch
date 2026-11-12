@@ -25,11 +25,14 @@ The task used here does not require a pretrained backbone. `dp_vit_lang_reactive
 with the instruction as extra tokens next to the image patches
 ([Language conditioning](51-language-conditioning.md)) and no history (no previous frame, state or
 action among its inputs), succeeds on 93% of 100 unseen layouts after 5M samples on 4000
-demonstrations (trained weights, after the position fix; 94% / 94%, trained / averaged weights,
-with random start poses and recoveries in the demonstrations; [case study](101-case-pick-target.md)).
-The Qwen policy with one conditioning vector and history scored 6/100 (machine A) and 5% (machine B
-rerun) after 0.4M samples; with every token, no history and 4000 demonstrations, 70% / 72% after
-0.5M.
+demonstrations (trained weights, after the fix that computes the rotary position table in float32
+instead of bfloat16: [Positions](12-positions.md); [case study](101-case-pick-target.md)). The Qwen
+policy configured below hands the action head one conditioning vector (the hidden states at a
+single action token) and has history; it ended in single digits after 0.4M samples ("What we
+measured"). Handed every prompt token instead (both modes: "What reaches the action head"), with
+no history and 4000 demonstrations, it reaches 70% / 72% after 0.5M samples, a tenth of that budget
+(trained weights / averaged weights, the running average of the weights kept during training;
+[Pretrained backbones, case study](102-case-pretrained-backbones.md)).
 
 The configuration is [`sim/pickup/configs/vla_qwen.yaml`](../../sim/pickup/configs/vla_qwen.yaml)
 and the model `Qwen/Qwen3-VL-2B-Thinking`; the policy generates no text and reads only hidden
@@ -188,10 +191,8 @@ Both configs name the model in `model.vision_language_backbone.hf_pretrained` an
 | `data.image_indices`, `data.lowdim_past_timesteps` | `[-1, 0]`, 1 (preset) | `[0]`, 0 | history: 4 images (196 tokens), previous state and action; none: 2 images (98) |
 | `data.img_num_tokens` | 49 | 49 | records the count without setting it: `get_processor` (`vla_foundry/data/processor/__init__.py`) uses it only for `simple_vlm` and PaliGemma processors |
 
-The recommended first run is `dp_vit_lang_reactive` on 4000 demonstrations with random start poses
-and recoveries (`make_dataset.sh pick_target 4000 pick_target_4k --random_start --disturb_prob 0.5`)
-for 5M samples; its config switches averaged weights on ([README](../../README.md), "What you
-get"), not a Qwen policy. To train the configuration measured below and evaluate every checkpoint:
+The recommended first run is `dp_vit_lang_reactive` ([README](../../README.md), "What you get"),
+not a Qwen policy. To train the configuration measured below and evaluate every checkpoint:
 
 ```bash
 sim/pickup/scripts/make_dataset.sh pick_target 1500 pick_target_1500
@@ -221,27 +222,25 @@ windows): on machine A in the first round, and again on machine B (L40S GPUs, 12
 | 300k (3) | 0.039 | 6/50 | 2% | 60% | 0.62 | 98 mm |
 | 400k (4), final | 0.03-0.04 | 6/100 | 5% | 71% | 0.68 | 83 mm |
 
-`vla_qwen_tokens_reactive` (every token, no history, 4000 demonstrations, machine B, after the
-fix) closed at the named object 71% / 80% of the time after 0.10M samples (trained / averaged
-weights) and ended at 70% / 72% after 0.5M, closing at the named object 98% / 99% of the time,
-15 / 14 mm off.
+`vla_qwen_tokens_reactive` (machine B, after the position-table fix) has its checkpoint table in the [case study](102-case-pretrained-backbones.md).
 
 Speed: `vla_qwen` at batch 16 trained at 49 samples/s on machine A and 45-48 on machine B, against
-about 1100 for `dp_vit_lang_reactive` alone on a GPU.
+about 1100 for `dp_vit_lang_reactive` alone on a GPU. `vla_qwen_tokens_reactive` (2 images per
+sample, 128 conditioning tokens) ran at about 62 samples/s on machine B.
 
 Policy inference took about 190 ms per chunk of 15 actions for the Qwen VLA (machine A): almost
-four control steps at 20 Hz. `dp_vit` (36.3M) took 20-65 ms on machine A, and
-`dp_vit_lang_reactive` takes 71 ms per chunk at 10 flow steps on machine B.
+four control steps at 20 Hz. `dp_vit_lang_reactive` takes 71 ms per chunk at 10 flow steps on machine B.
 `DiffusionPolicy.generate_actions` runs the backbone once per chunk, so fewer flow steps (the
 sampler's steps from noise to actions) shorten only the head's share. The simulator waits for the
 policy (`eval.py` blocks on the reply before `env.step`), so the success rates include no such
 delay.
 
-What this suggests. The other three policies of the first round closed at the named object in
-32%, 33% and 29% of episodes (chance is 33%): where they closed did not depend on the scene
-([field notes](../notes.md), "A failing policy ignores the scene; it does not average"). The Qwen
+What this suggests. The other three policies of the first round (`dp_vit` and the two `vla_custom`
+policies, 1.0M samples each) closed at the named object 29-33% of the time, chance being 33%: where
+they closed did not depend on the scene
+([Measuring how a policy fails](92-measuring-failure.md)). The Qwen
 policy with the same single vector did look: after 0.4M samples on machine B it closed at the
-named object 71% of the time (slope 0.68, 83 mm off). It pointed at the right object and did not
+named object 71% of the time, with a slope of 0.68. It pointed at the right object and did not
 grasp it ([field notes](../notes.md), "Pretraining a backbone: mainly an earlier start"), and on
 machine A it never lifted an object other than the named one in 150 episodes (lab notebook,
 "`pick_target`, first round"). This agrees with the premise of RT-2 (Brohan et al., 2023;
@@ -252,13 +251,12 @@ What it does not prove:
 - That the policy works. 94 of the 100 final episodes on machine A failed.
 - That pretraining caused the difference, or is needed for it. Each policy is one seed, and the
   runs differ in size, training samples (400k against 1.0M) and architecture at once. Measured
-  since on the from-scratch VLA: pretraining bought mainly an earlier start (it looks after 0.25M
-  samples instead of about 1.0M; 86% / 87% against 75% / 85% at 3M), and a policy with no language
-  model reaches 93-98% (same field-notes entry).
+  since, with the from-scratch VLA and its randomly initialised twin, pretraining bought mainly an
+  earlier start ([case study](102-case-pretrained-backbones.md)).
 - What more training would do. The runs had 4 epochs; on the same 1500 demonstrations
-  `dp_vit_lang_reactive` (48.9M) scored 0-3% up to 1.2M samples and 64% / 62% at 3M, 30.4 epochs
-  ([How much data and training](71-how-much-data-and-training.md)). 5-6% after 4 epochs cannot be
-  read as the limit of this design.
+  `dp_vit_lang_reactive` scored 0-3% up to 1.2M samples and 64% / 62%
+  at 3M, 30.4 epochs ([How much data and training](71-how-much-data-and-training.md)). 5-6% after
+  4 epochs cannot be read as the limit of this design.
 - Where the misses come from. The runs combined a frozen vision encoder, 49 tokens of 32 px per
   image, one conditioning vector, history and a 4-epoch budget; the every-token run changed three
   things at once (conditioning, history, number of demonstrations).
@@ -297,21 +295,21 @@ trainer waiting forever; `train_resilient.sh` restarts such a run
 of the four causes the [roadmap](../roadmap.md) names for the first round's failures: one
 conditioning vector, the previous action as an input, and a short training budget. The fourth, the
 half-precision position table, merged positions only above 256 and did not reach their 20-token
-action head ([Positions](12-positions.md)). With history, `dp_vit_lang` (48.9M) stood at 2% after
-3M samples on 4000 demonstrations, against 81% / 75% for `dp_vit_lang_reactive` without it, both
-before the position fix: the history policy reads the target from its previous action
-([History and shortcuts](52-history-and-shortcuts.md)). After the fix, a history
-policy trained on demonstrations that begin with a hold frame ends at 0% / 4% after 5M samples
-([field notes](../notes.md), "The previous action as an input"). The probe below gives the
-first query the expert's first command as previous action (1/100 to 22/100 for `dp_vit_lang`).
-Evaluate every checkpoint and read the slope next to the success rate
-([Measuring how a policy fails](92-measuring-failure.md)). `vla_qwen_tokens_reactive.yaml` removes
-the first two causes.
+action head ([Positions](12-positions.md)). A policy given its previous action can take the
+direction of its reach from it instead of from the cameras
+([History and shortcuts](52-history-and-shortcuts.md) has the measurements). To test a `vla_qwen`
+run for this, evaluate the same checkpoint a second time with the expert's first command as the
+previous action of the first query (`--first_prev_action expert`; the default is `hold`):
 
 ```bash
 PICKUP_OUT=results/pickup/vla_qwen/pick_target/prev_expert \
   sim/pickup/scripts/eval.sh experiments/pickup/vla_qwen pick_target 100 --first_prev_action expert
 ```
+
+If success and the rate of closing at the named object rise against the run as served, the
+previous action, not the cameras, is choosing the target. `--expert_prefix 10` goes further: the scripted expert
+drives the first 10 control steps before the policy takes over.
+`vla_qwen_tokens_reactive.yaml` removes the first two causes.
 
 **Conditioning that depends on the rest of the batch.** In the machine A run the action token was
 appended after the batch padding, so a short instruction's action token sat behind padding in a
@@ -359,3 +357,9 @@ padding is masked from attention) was not tested.
    In `test_pretrained_backbone_reads_the_action_token_behind_the_last_real_token`, which ids does
    the stand-in model receive for the short row? Where would the action token sit if it were
    appended to the padded batch, and which assertion would fail first?
+
+4. Set `num_trainable_vlm_layers: 0` in a copy of `vla_qwen.yaml`. Read
+   `_train_only_last_layers` in `vla_foundry/models/vision_language_backbones/vlm_hf_backbone.py`:
+   is the language model's final `norm` trained, and what does the method's log line report as
+   trained? Which rows of the memory table shrink, and from which module on are activations kept
+   for the backward pass?

@@ -116,9 +116,9 @@ Inside `RotaryEmbedding` and the two functions it calls:
   or dtype of the keys changes. `max_seq_len` is therefore not a limit.
 - `apply_rotary_pos_emb` returns `x * cos + rotate_half(x) * sin`, which pairs number `i` with
   number `i + head_dim / 2`, not with its neighbour as in the paper. The rotation is the same.
-- `offset` is the number of tokens already in the key-value cache (the keys and values of earlier
-  tokens, kept while text is generated; [generation](14-generation.md)), so that a token generated
-  alone is still rotated by its true position.
+- `offset` is the number of tokens already in the key-value cache (earlier keys and values, kept
+  while text is generated; [generation](14-generation.md)), so a token generated alone is still
+  rotated by its true position.
 
 **A learned table, in the ViT.** `ViTPatchEmbeddings` in
 [`vla_foundry/models/vit.py`](../../vla_foundry/models/vit.py) adds `position_embedding`, a
@@ -187,16 +187,15 @@ Training and serving built the same table, so comparing the two paths
 
 **The fix.** The angles are now computed in float32 inside `torch.autocast(..., enabled=False)`,
 and only the finished cosines and sines are cast. `positional_embedding_type:
-rotary_legacy_autocast` keeps the old computation for checkpoints trained before the fix: their
-weights were fitted to the old table, and serving them on the new one would itself be a
-train/inference skew. For a patch-token policy the key goes under `model.transformer` in the run's
-saved `config.yaml`, which `sim/pickup/policy_server.py` reads. Do not train a new run with it,
-except to measure what the old table costs, as the notebook's second pair of seeds does.
+rotary_legacy_autocast` keeps the old computation for checkpoints trained before the fix, whose
+weights were fitted to the old table; for a patch-token policy the key goes under
+`model.transformer` in the run's saved `config.yaml`, which `sim/pickup/policy_server.py` reads.
+Do not train a new run with it, except to measure what the old table costs.
 
 **The test.** `tests/essential/models/test_rotary_precision.py` runs `RotaryWithCast(64, 2048)`
 under bfloat16 autocast and requires 1024 distinct table rows for 1024 positions, and agreement
 with a float32 reference to within 0.01. A third test, which needs a GPU, checks that the legacy
-table still collapses. What the old table cost in success is in "What we measured".
+table still collapses.
 
 ### Why the conditioning has a fixed length
 
@@ -225,47 +224,62 @@ state at 529, action-step tokens at 530 to 544. A longer prompt raises a `ValueE
 is fixed as well as the alignment: without a mask, a zeroed slot is still a key that every token
 attends to.
 
-With the default `conditioning: action_token`, one special token, the action token, is added to
-the VLM's prompt and its hidden states in the last layers are the whole conditioning. It used to
-land after the batch padding; `insert_after_last_real_token` in the same file now places it after
-the last real token ([train/inference skew](93-train-inference-skew.md)). The effect on success was
-not measured.
+With the default `conditioning: action_token`, the hidden states of one special token added to the
+prompt, the action token, are the whole conditioning; `insert_after_last_real_token` in the same
+file places it after the last real token, not after the batch padding
+([train/inference skew](93-train-inference-skew.md)).
 
 ## What we measured
 
 No run in the [lab notebook](../lab-notebook.md) compares learned, sinusoidal and rotary schemes.
-It compares the old table with the fixed one in two pairs of runs of `dp_vit_lang_reactive` (4000
-demonstrations, 5M samples, 100 unseen layouts, machine B (L40S GPUs, 128 CPU cores)).
+It compares the old table with the fixed one in two pairs of runs of `dp_vit_lang_reactive`
+(4000 demonstrations, 5M samples, machine B (L40S GPUs, 128 CPU cores)). Success on 100 unseen
+layouts, trained weights, with the averaged weights (their running average) in brackets where
+saved.
 
-- **The policy without history** (15 action-step tokens on 8 positions). Before the fix it ended
-  at 83% / 85% (raw / EMA weights, the trained weights and their running average). The same recipe with the fixed table ends at 93% (trained weights; that run saved no
-  averaged weights) and starts to look earlier (58% against 4% after 1.5M samples). A second pair
-  with other seeds (`--data.seed 43 --hparams.seed 43`), trained from one version of the code and
-  differing in the table alone, ends at 96% / 96% with the fixed table and 90% / 89% with the old
-  one, and again starts to look earlier (closed at the named object after 1.0M samples: 83%
-  against 44%). The old table cost an earlier start and, with the trained weights, 10 and 6 points
-  at the end (field notes, "Train/inference mismatches hide in preprocessing").
-- **The policy with history** (`dp_vit_lang`, 16 action-step tokens on 4 positions) on 4000
-  demonstrations ended at 2% / 2% when it was stopped at 3M samples (trained before the fix). It
-  reads its target from the previous action: its checkpoint at 2.5M samples (EMA weights) succeeds
-  in 77/100 layouts when the scripted expert drives the first 10 control steps
-  ([History and shortcuts](52-history-and-shortcuts.md)). The fix does not rescue it: trained after
-  the fix on demonstrations that begin with a hold frame, it ends at 0% / 4% after 5M samples. On
-  the single cube, where the same 16 action-step tokens shared 4 positions, the history policy
-  (`dp_vit_cube1k`) went from 62% / 70% before the fix to 96% / 98% after it.
+| Seeds | Old table | Fixed table |
+|---|---|---|
+| first pair | 83/100 (85/100) | 93/100 |
+| second pair (`--data.seed 43 --hparams.seed 43`) | 90/100 (89/100) | 96/100 (96/100) |
+
+- **First pair.** Its old-table run predates the fix, so other code changes ride along with the
+  table. Per object at the final checkpoint the cube and the T block gain most
+  (cube 23/24 against 18/24, T block 20/23 against 15/23). The fixed table also makes the policy
+  start to look earlier (where the gripper closes begins to follow the named object): it closed at
+  the named object in 65% of layouts against 35% after 1.0M samples, and succeeded in 58% against
+  4% after 1.5M.
+- **Second pair.** Trained from one version of the code, once with `rotary` and once with
+  `rotary_legacy_autocast`: it differs in the table alone. Again the fixed table makes the policy
+  start to look earlier: after 1.0M samples the gripper closed at the named object in 83% of
+  layouts against 44%.
+
+With the trained weights the old table cost 10 points at the end for one pair and 6 for the other,
+and in both it delayed the onset of looking (field notes, "Train/inference mismatches hide in
+preprocessing"; the onset is the subject of
+[how much data and training](71-how-much-data-and-training.md)).
+
+- **Policies with history.** On the single cube (`pick_cube`, 1000 demonstrations, 1.5M samples,
+  trained / averaged weights) the history policy went from 62% / 70% before the fix to 96% / 98%
+  after it: there history costs nothing once the table is fixed. On three objects it fails for
+  another reason ([History and shortcuts](52-history-and-shortcuts.md)).
 - **The from-scratch language model and VLM** on machine B. The language model's 256-token
-  sequences are not affected. The VLM's 320-token sequences are; trained before the fix, it names
-  a held-out scene's objects in left-to-right order in 249/300 cases (83%). Retrained with the fix
-  (same data and budget), it scores 267/300 = 89% exact ordering (final loss 0.059). The VLA built
-  on it with every token handed to the action head (`vla_custom_tokens_reactive`, 4000
-  demonstrations, 3M samples) ends at 86% / 87%, and at 75% / 85% with a randomly initialised
-  backbone ([the from-scratch path](62-the-from-scratch-path.md)).
+  sequences use positions 0 to 255, all of which bfloat16 holds exactly. The VLM's 320-token
+  sequences were merged in pairs above 256; trained before the fix, it names a held-out scene's
+  objects in left-to-right order in 249/300 cases (83%), and retrained with the fix (same data and
+  budget) in 267/300 = 89% (final loss 0.059). Its use as a policy's backbone is in
+  [pretrained backbones](102-case-pretrained-backbones.md).
 
 ## Where it goes wrong
 
 **Tokens that share a position.** No error, and training agrees with serving. Check: build the
 module under the precision you train with and count the distinct rows of its table, as
 `test_rotary_precision.py` does. Compute such a table in float32 with autocast off.
+
+**A checkpoint served on the other table.** A run trained before the fix has `rotary` (or no key,
+which defaults to it) in its saved `config.yaml`, and `rotary` now builds the float32 table: the
+server loads its weights onto a table they were not fitted to, without a warning. Check when a
+checkpoint was trained and set the key under `model.transformer` to match. What this costs was not
+measured.
 
 **Padding between conditioning and action-step tokens.** No error and a normal training loss, but
 the served policy receives inputs it was not trained on. Check: compare the conditioning of one
@@ -276,9 +290,9 @@ prompt alone and inside a padded batch, as the tests under "Check yourself" do.
 instruction. Template tokens and placeholders already take 7 slots with two images and 9 with
 four.
 
-**Sequences longer than those trained.** Nothing stops one: the angles are defined, but the
-weights were fitted on shorter offsets. Train at the longer length, as here: the VLM, trained on
-320 tokens, reads about 523 or 1,035 as a policy's backbone, and the policy's training updates it.
+**Sequences longer than those trained.** The angles are defined, but the weights were fitted on
+shorter offsets. Train at the longer length: the VLM, trained on 320 tokens, reads about 523 or
+1,035 as a policy's backbone, and the policy's training updates it.
 
 **`positional_embedding_type: none` with `is_causal: false`.** Training runs, but the action head
 receives no order: its images cannot be told apart and action-step tokens lose their control step.

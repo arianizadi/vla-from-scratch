@@ -12,8 +12,8 @@ A vision encoder can hand the rest of the model one vector for the whole image, 
 every patch of it. The single vector is compact and says what is in the picture; the patch vectors
 are many and also say where, which a policy needs to close a gripper within a centimetre or two of
 an object. In the runs here patch tokens were necessary and not sufficient: a policy given one
-vector per image lifted a single cube in 2 of 50 attempts, and on a harder task the same patch
-tokens gave 0% or 85% depending on what else was right (93-98% once a position bug was fixed).
+vector per image lifted a single cube in 2 of 50 attempts against 15 of 50 with patch tokens, and
+on a harder task the same patch tokens failed or succeeded depending on what else was right.
 
 ## The idea
 
@@ -84,15 +84,6 @@ turns noise into actions) applies rotary position encoding along its sequence
 (`positional_embedding_type: rotary`, the default). Its attention can then weight the few tokens
 that cover the cube and read from them where it is.
 
-The rotary table was faulty in every run in the tables below. Computed in bfloat16 under autocast
-(mixed precision), it held 641 distinct positions out of 2048: positions above 256 collapsed onto
-even numbers and above 512 onto multiples of 4. Every sequence with patch tokens here is longer
-than 256 tokens; the pooled policy's 24 are not. `RotaryEmbedding._update_cos_sin_tables` in
-`vla_foundry/positional_embedding.py` now computes the table in float32. Fixed, the 85% recipe below
-ends at 93% (trained weights) against 83%. A second pair of runs with other seeds, differing in the
-table alone, ends at 96% / 96% against 90% / 89%. In both pairs the policy starts to look earlier
-([chapter 12](12-positions.md)).
-
 ### Shapes in the policies trained here
 
 `dp_clip` and `dp_vit` use two cameras and two frames per camera (`image_indices: [-1, 0]`, control
@@ -100,27 +91,32 @@ steps t-1 and t): four images at a time. Both feed a flow-matching action transf
 ([Generating Actions with Flow Matching](41-flow-matching.md)).
 `DiffusionPolicy._build_transformer_input` in
 [`vla_foundry/models/diffusion_policy/diffusion_policy.py`](../../vla_foundry/models/diffusion_policy/diffusion_policy.py)
-builds its input sequence from four parts:
+concatenates its input sequence in this order:
 
-- one **time token** for the flow-matching time, that is, how noisy the actions being generated
-  currently are (not the control step);
-- the **conditioning** tokens from the backbone (the image and text encoder), which it reads but
-  does not predict;
-- the state tokens, the robot's state at control steps t-1 and t;
-- the **action-step tokens**: the previous action, given without noise, and the **chunk** being
-  generated, 15 actions from control step t on.
+1. one **noise-level token** for the flow-matching time, that is, how noisy the actions being
+   generated currently are (not the control step);
+2. the **conditioning**, the tokens the backbone (the image and text encoder) hands over, which the
+   action head reads but does not predict;
+3. the state tokens, the robot's joint state at control steps t-1 and t;
+4. the **action-step tokens**: the previous action, given without noise, and the **chunk** being
+   generated, 15 actions from control step t on.
 
 The previous frame, state and action are the policy's **history**.
-[`dp_vit_lang_reactive.yaml`](../../sim/pickup/configs/dp_vit_lang_reactive.yaml), the config that
-solves the harder task below, has none (`image_indices: [0]`, `lowdim_past_timesteps: 0`) and adds
-the instruction as 32 token slots (`text_tokens: 32`).
+[`dp_vit_lang_reactive.yaml`](../../sim/pickup/configs/dp_vit_lang_reactive.yaml), the patch-token
+config that later solves the three-object task, has none (`image_indices: [0]`,
+`lowdim_past_timesteps: 0`) and adds the instruction as 32 token slots (`text_tokens: 32`).
 
 | | `dp_clip` (pooled) | `dp_vit` (patch tokens) | `dp_vit_lang_reactive` |
 |---|---|---|---|
 | Conditioning | `[B, 5, 512]` (1 text + 4 images) | `[B, 784, 256]` (4 x 196) | `[B, 424, 256]` (32 text slots + 2 x 196) |
-| Time + state + action-step tokens | 1 + 2 + 16 | 1 + 2 + 16 | 1 + 1 + 15 |
+| Noise-level + state + action-step tokens | 1 + 2 + 16 | 1 + 2 + 16 | 1 + 1 + 15 |
 | Sequence length | 24 | 803 | 441 |
+| Positions of the action-step tokens | 8-23 | 787-802 | 426-440 |
 | Token pairs per attention layer | 576 | 644,809 | 194,481 |
+
+The fourth row follows from the order above: in `dp_vit_lang_reactive` the noise-level token is at
+position 0, the conditioning at 1-424, the joint state at 425, so 426 tokens precede the action-step
+tokens: the ones the head denoises sit after every patch.
 
 ### The cost of tokens
 
@@ -131,7 +127,7 @@ sequence length, and so does its memory whenever the attention matrix is materia
 layer. The number of patch tokens is cameras x frames per camera x (image size / patch size)².
 When actions are generated the cost is paid once per flow step: `DiffusionPolicy.generate_actions`
 computes the backbone output once and then runs the action transformer for every flow step (10 by
-default in `sim/pickup/eval.py`).
+default, `eval.py --flow_steps`).
 
 These are sequence lengths, not measured speed; the pooled policy's throughput was not recorded.
 On machine B (L40S GPUs, 128 CPU cores) the patch-token policies trained at about 540 samples/s
@@ -145,7 +141,8 @@ wraps the Hugging Face `CLIPModel`. In `CLIPHF.forward`, images go through
 then reshaped from `[B*N, D]` to `[B, N, D]` and L2-normalised. The instruction becomes one vector
 too: the text model's `pooler_output`, normalised and passed through `self.model.text_projection`.
 Background: in `transformers`, the vision model's `pooler_output` is the class token's final state
-after a layer norm; `CLIPHF.forward` never reads the patch tokens.
+after a layer norm; `CLIPHF.forward` never reads the patch tokens, which the same output holds in
+`last_hidden_state` (for ViT-B/32 at 224 pixels, 49 patch tokens plus the class token).
 `CLIPBackboneWrapper._concatenate_for_conditioning` in
 [`vla_foundry/models/vision_language_backbones/clip_hf_backbone.py`](../../vla_foundry/models/vision_language_backbones/clip_hf_backbone.py)
 returns the text vector followed by the image vectors, `[B, 1+N, D]`.
@@ -155,9 +152,11 @@ returns the text vector followed by the image vectors, `[B, 1+N, D]`.
 calls the `ViT` of [`vla_foundry/models/vit.py`](../../vla_foundry/models/vit.py), which returns
 `[B, N, num_patches, hidden_dim]`, and flattens cameras and patches into one sequence. With
 `text_tokens` above 0, `_embed_text` turns the instruction's token ids into that many slots, placed
-in front of the patch tokens ([Language conditioning](51-language-conditioning.md)). The ViT can
+in front of the patch tokens ([chapter 51](51-language-conditioning.md)). The ViT can
 pool as well: with `cls_flag` set (`ViTParams` defaults it to `False`; no config under
-`sim/pickup/configs/` sets it), `ViT.forward` keeps only the class token's state.
+`sim/pickup/configs/` sets it), `ViTPatchEmbeddings` prepends a class token and `ViT.forward` keeps
+only its final state, `x[:, 0]`: one flag turns the token path into a pooled one, everything else
+equal.
 
 **Config keys.** `model.vision_language_backbone.type` selects the path: `clip_backbone` in
 `dp_clip.yaml` (from the preset `vla_foundry/config_presets/models/diffusion_policy.yaml`),
@@ -175,8 +174,9 @@ done
 ```
 
 That is a comparison, not a recipe. The first real run the [README](../../README.md) recommends is
-the same patch-token policy trained on demonstrations with random start poses and recoveries, which
-reached 94% / 94% after the position fix:
+the same patch-token policy with the instruction as tokens and no history, trained on
+demonstrations with random start poses and recoveries
+([Which Demonstrations Teach What](72-which-demonstrations-teach.md)):
 
 ```bash
 sim/pickup/scripts/make_dataset.sh pick_target 4000 pick_target_4k --random_start --disturb_prob 0.5
@@ -208,52 +208,39 @@ What the comparison does not show:
 
 - A controlled ablation of pooling. The policies also differ in pretraining, patch size (32 against
   16), encoder and action-transformer size, text input and image preprocessing. CLIP's own patch
-  tokens were not tested ([Pretrained Vision Encoders](22-pretrained-vision-encoders.md)).
+  tokens were not tested ([Pretrained Vision Encoders](22-pretrained-vision-encoders.md)), nor was
+  `dp_vit` with `cls_flag` set, the test that would change pooling alone.
 - That one vector cannot carry position. CLIP was trained with the policy, and after 300k samples
   the policy still missed. A longer run, a frozen encoder and a direct test of what the vector
   holds were not tried, and the slope defined below was not recorded.
-- A working policy. With 1000 demonstrations and 1.5M samples the patch-token recipe (with
-  history) reached 37/50 = 74% (60-84%) on machine A and 62% / 70% on machine B (100 layouts; raw /
-  EMA: trained weights / their running average). The position table, not history, held it there:
-  trained again after the fix it ends at 96% / 98% ([chapter 52](52-history-and-shortcuts.md)).
+- A working policy. With 1000 demonstrations and 1.5M samples the patch-token recipe reached
+  37/50 = 74% (60-84%).
 
-### Three objects: the same tokens from 0% to 85%, before the position fix
+### Three objects: patch tokens are not sufficient
 
-`pick_target` puts three of four objects on the table and the instruction names one. Machine B, 100
-unseen layouts per row, raw / EMA weights; in every row the action head receives the patch tokens
-of the small ViT above.
+`pick_target` puts three of four objects on the table and the instruction names one. On machine B
+every policy of the second round of runs (all trained before the position fix of
+[chapter 12](12-positions.md)) received the patch tokens of the small ViT above, and most failed. Two
+numbers read how: **closed at the named object**, how often the object nearest the gripper when it
+first closed was the named one (chance 33%), and the **slope**, the least-squares slope of where
+the gripper first closed against where the named object was: 1 if it closes where the object is,
+0 if where it closes does not depend on the scene.
 
-| Policy | Demos | Training samples | Success | Closed at the named object | Slope |
-|---|---|---|---|---|---|
-| `dp_vit`: no language, history | 1500 | 1.0M | 0% / 0% | 31% / 37% | 0.11 / 0.17 |
-| `dp_vit_lang`: language, history | 4000 | 3.0M (stopped) | 2% / 2% | 30% / 35% | 0.11 / 0.08 |
-| `dp_vit_lang_reactive`: language, no history | 1500 | 1.0M | 3% / 5% | 49% / 41% | 0.29 / 0.18 |
-| same | 1500 | 3.0M | 64% / 62% | 99% / 100% | 0.96 / 0.97 |
-| same | 4000 | 5.0M | 83% / 85% | 100% / 100% | 0.98 / 0.98 |
+The failing runs had slopes near 0 and closed at the named object at about chance: they had every
+patch token, and where they closed did not depend on the scene
+([Measuring How a Policy Fails](92-measuring-failure.md) reads those runs). The image tokens were
+the same in every run; what separated failure from success was the rest of the recipe:
 
-**Closed at the named object**: the object nearest the gripper when it first closed was the named
-one (chance 33%). **Slope**: the least-squares slope of where the gripper first closed against
-where the named object was; 1 if it closes where the object is, 0 if where it closes does not
-depend on the scene.
+- the instruction as tokens ([The Instruction Has to Reach the Action Head](51-language-conditioning.md));
+- no previous action as an input, which a policy otherwise reads the target from instead of the
+  patches ([History and the Shortcut It Opens](52-history-and-shortcuts.md));
+- training past the late, abrupt start of looking: with both of the above, 4000 demonstrations and
+  5M samples gave 83% / 85% (trained weights / **averaged weights**: their running average,
+  saved by the run)
+  ([How Much Data, How Much Training](71-how-much-data-and-training.md)).
 
-- The failing rows had every patch token and did not use them. With slopes of 0.29 and below they
-  were neither near misses nor reaches between the objects: where the gripper closed depended
-  little or not at all on the scene
-  ([Measuring How a Policy Fails](92-measuring-failure.md)).
-- So patch tokens were not sufficient. The policy also needed the instruction as tokens, no
-  history, training that outlasts the late start of looking (the last row's run was at 4% / 36%
-  after 2.0M samples) and, raising 83% to 93%, a position table in float32
-  ([How much data and training](71-how-much-data-and-training.md); the whole route is the
-  [`pick_target` case study](101-case-pick-target.md)).
-- The history row reads the target from its previous action: at 2.5M samples it succeeded in
-  77/100 layouts when the scripted expert drove the first 10 control steps, against 1/100 as served
-  ([chapter 52](52-history-and-shortcuts.md)).
-- That patch tokens were necessary is measured on `pick_cube` only. The first-round policies with
-  one conditioning vector scored 0/100, 1/100 and 6/100 here (machine A), but with history and at
-  most 1.0M samples on 1500 demonstrations, where the third row stood at 3% / 5%. Handed every token,
-  with no history and 4000 demonstrations, the same VLAs reach 86% / 87% (from scratch, 3M samples)
-  and 70% / 72% (Qwen, 0.5M), but history and demonstrations changed too
-  ([chapter 50](50-what-the-action-head-sees.md)).
+That patch tokens were necessary is measured on `pick_cube` only. No pooled image encoder was
+trained on `pick_target`; the closest test is the VLA in "Where it goes wrong".
 
 ## Where it goes wrong
 
@@ -268,36 +255,49 @@ PICKUP_OUT=results/pickup/dp_clip_pick_cube_200/pick_cube_train \
 
 Near-zero success there too rules out generalisation. Then read how it failed: `eval.py` prints
 how often the gripper closed at the named object and the median miss, and
-`.venv/bin/python -m sim.pickup.summarize` the slope. A slope near 1 is an imprecise policy. A slope near 0
-is a policy that is not looking: check that the conditioning is more than a few vectors, that the
-policy is not given its previous action, and that training did not end before the slope moved.
+`.venv/bin/python -m sim.pickup.summarize` the slope. A slope near 1 is an imprecise policy. A
+slope near 0 is a policy that is not looking: check that the conditioning is more than a few
+vectors (print its shape, as in the first exercise below), that the policy is not given its
+previous action, and that training did not end before the slope moved.
 
 **The same bottleneck under another name.** A vision-language-action model (VLA) can pass hundreds
 of image tokens through its language model and still hand the action head one vector. Both VLA
 recipes here do so by default: `_prepare_inputs_for_action_token` in `VLMHFBackboneWrapper` and in
-`VLMFoundryBackboneWrapper` adds one special token, the action token, after the prompt, and only
-its hidden states reach the action head, shape `[B, 1, lm_hidden_dim * num_vlm_layers_to_use]`:
-the class-token method again. [Chapter 50](50-what-the-action-head-sees.md) has the wiring and the
-`conditioning: all_tokens` alternative, measured above.
+`VLMFoundryBackboneWrapper` places one special token, the action token, directly after the last
+real token of the prompt, and only its hidden states reach the action head, shape
+`[B, 1, lm_hidden_dim * num_vlm_layers_to_use]`: the class-token method again.
+`conditioning: all_tokens` hands over every real token's states instead. On
+`pick_target` the Qwen VLA went from 5% with one vector to 70% / 72% with every token, but history
+and the number of demonstrations changed with it
+([A Backbone From Scratch Against a Pretrained One](102-case-pretrained-backbones.md);
+[chapter 50](50-what-the-action-head-sees.md) has the wiring).
 
-**The tokens arrive and are read once.** Sent the first frame's images for the whole episode
-(`eval.py --stale_images`), the 85% policy still closed at the named object in 99% of episodes,
-17 mm off (median) against 7 mm, and succeeded in 1/100. It chooses where to go from its first
-look and then follows its own arm; the images matter again only for the last centimetres
-([What a policy looks at](95-what-a-policy-looks-at.md)).
+**The tokens arrive and are read once.** Having every patch token is not reading them at every
+step: a policy can choose its target from the first frames and then follow its own arm.
+`eval.py --stale_images` keeps sending the first frame's images and shows whether later frames
+matter ([Probing a Policy That Works](95-what-a-policy-looks-at.md)).
 
 **Tokens that are too coarse.** Patch tokens help only as far as position survives the patch
 embedding. One edge of the cube is about 10 to 15 pixels long, about one 16-pixel patch (estimated
 in [Images Become Tokens](20-images-to-tokens.md)), so its position has to be read from how its
-pixels split between neighbouring patches; the policies above learned to. Whether the 32-pixel
-patches of CLIP ViT-B/32 would be enough was not measured. Before choosing a patch size, compute
-the object's width in pixels.
+pixels split between neighbouring patches; the policies above learned to. A 32-pixel patch, as in
+CLIP ViT-B/32, spans two to three cube widths, and a 224-pixel frame becomes a 7x7 grid; whether
+that is enough was not measured. Before choosing a patch size, compute the object's width in
+pixels.
 
 **The sequence outgrows memory or time.** A camera, a frame of history or a finer patch grid
 multiplies the token count, and attention cost grows with its square. No length check stops such a
 run: `max_seq_len: 2048` in `dp_vit.yaml` only sizes the rotary tables built at construction
 ([chapter 12](12-positions.md)). Compute the sequence length first; otherwise expect an
 out-of-memory error or a fall in samples/s.
+
+**A longer sequence is a different test of the position code.** Adding tokens moves the
+action-step tokens to higher positions. The rotary table of every run under "What we measured" was
+computed in bfloat16 and was inexact above position 256 ([chapter 12](12-positions.md) has the
+mechanism and the fix): the pooled policy's 24 tokens never reach that range, and
+every patch-token sequence here crosses it. A comparison of pooled against patch tokens therefore
+also compares two ranges of the position table. After changing the token count, compute where the
+action-step tokens now sit.
 
 ## Background and further reading
 
@@ -317,9 +317,9 @@ out-of-memory error or a fall in samples/s.
 ## Check yourself
 
 1. Compute by hand the conditioning shape `dp_vit` would produce with three cameras and one frame
-   each, and the sequence length in the action transformer with the 19 time, state and action-step
-   tokens unchanged (`[B, 588, 256]` and 607). Then confirm the four-image case in code (expected
-   output `torch.Size([1, 784, 256])`):
+   each, and the sequence length in the action transformer with the 19 noise-level, state and
+   action-step tokens unchanged (`[B, 588, 256]` and 607). Then confirm the four-image case in code
+   (expected output `torch.Size([1, 784, 256])`):
 
    ```bash
    .venv/bin/python -c "
@@ -331,8 +331,23 @@ out-of-memory error or a fall in samples/s.
    print(out.embeddings.shape)"
    ```
 
-2. In `CLIPHF.forward`, find the line that discards the patch tokens. Name the attribute of the
-   vision model's output that still holds them.
-3. A policy reaches a training loss of 0.04 and 4% success. Write the evaluation command that
+2. In `CLIPHF.forward`, find the line that discards the patch tokens. Then see both outputs of a
+   CLIP vision model of the ViT-B/32 shape, with random weights so nothing is downloaded (expected
+   `torch.Size([1, 50, 768]) torch.Size([1, 768])`). Which of the 50 tokens is the class token, and
+   how many patches does the grid have per side?
+
+   ```bash
+   .venv/bin/python -c "
+   import torch
+   from transformers import CLIPVisionConfig, CLIPVisionModel
+   m = CLIPVisionModel(CLIPVisionConfig(image_size=224, patch_size=32)).eval()
+   out = m(pixel_values=torch.rand(1, 3, 224, 224))
+   print(out.last_hidden_state.shape, out.pooler_output.shape)"
+   ```
+
+3. Using the order in which `_build_transformer_input` concatenates its parts, work out the
+   positions of the action-step tokens for `dp_vit_lang` (the same as `dp_vit` plus 32 instruction
+   slots) and say whether any of them lies below position 256. (Answer: 819-834; none.)
+4. A policy reaches a training loss of 0.04 and 4% success. Write the evaluation command that
    separates "cannot generalise" from the other causes, and name the number that separates
    "imprecise" from "not looking".

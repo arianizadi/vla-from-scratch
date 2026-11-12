@@ -38,7 +38,8 @@ Demonstrations set how many **layouts** the policy has seen (a layout is what a 
 objects, their places, the named one, the arm's start pose); samples, how long the optimiser works.
 
 For the policy that solves `pick_target` here, success does not climb steadily. Before the
-position fix (a bug that gave neighbouring tokens the same position; see below), on
+position fix (a bug that gave neighbouring tokens the same position;
+[Positions](12-positions.md)), on
 demonstrations from one start pose in which nothing moves, the slope and the share closed at the
 named object (defined below) stay at chance for a million samples or more, then rise to 1 and to
 100% within about a million: the **transition**, in which the policy goes from not using the scene
@@ -98,7 +99,7 @@ The plain recipe of the runs below, with ten checkpoints evaluated while the run
 # demonstrations: the second argument (collect.py --episodes, the successful episodes to keep)
 sim/pickup/scripts/make_dataset.sh pick_target 4000 pick_target_4k
 # the README's recommended recipe adds --random_start --disturb_prob 0.5 (the notebook's
-# pick_target_4k_rs_recover, 275,550 windows); see chapter 72 (coming)
+# pick_target_4k_rs_recover, 275,550 windows); see 72-which-demonstrations-teach.md
 # the other datasets of this chapter:
 sim/pickup/scripts/make_dataset.sh pick_target 1500 pick_target_1500
 .venv/bin/python -m sim.pickup.boost_early_windows --shards data/preprocessed/pick_target_4k/shards \
@@ -119,10 +120,11 @@ PICKUP_WATCH=1 sim/pickup/scripts/eval_checkpoints.sh experiments/pickup/my_run 
 .venv/bin/python -m sim.pickup.monitor --runs my_run
 ```
 
-As the code is now, this trains with the fixed position table (93% and 96% at the end, two seeds).
-To train as the three runs below were (before the fix), add `--model.transformer.positional_embedding_type
-rotary_legacy_autocast` to the training command; with another seed that table ended at 90% / 89%,
-not 83% / 85%.
+As the code is now, this trains with the fixed position table. To train as the three runs below
+were (before the fix), add `--model.transformer.positional_embedding_type rotary_legacy_autocast`
+to the training command; what the two tables give is compared in [Positions](12-positions.md). Do
+not expect to land on the same success rate as a run here: the transition falls at a different
+point with another seed (below), and the plateau of one run is a single measurement (one seed).
 
 `train_resilient.sh` restarts a run that dies or hangs ([Surviving long
 runs](81-surviving-long-runs.md)); [`summarize.py`](../../sim/pickup/summarize.py) tabulates the
@@ -145,8 +147,9 @@ EOF
 *Figure: one run's training loss against samples, with the closed-loop success of each evaluated
 checkpoint; compare where success rises with what the loss does there.*
 
-The loss is no substitute: similar final losses gave 74% on `pick_cube` (0.058) and 1/100 on
-`pick_target` (0.069) with `dp_vit` ([Loss is not success](91-loss-is-not-success.md)).
+The loss is no substitute for these evaluations: it does not mark the transition ([Loss is not
+success](91-loss-is-not-success.md)). Read `monitor`'s loss column only to see that a run is still
+training; read `summarize`'s slope column to see where it is in the transition.
 
 ## What we measured
 
@@ -214,41 +217,34 @@ trained weights throughout.
   epochs) and at 1.5M with 4000 (5.7 epochs), and passed 0.9 at 1.5M and 2.5M: a gap that a
   second seed with 4000 closes (below).
 
-**The position fix moved the transition earlier.** The runs above used a rotary position table
-computed in bfloat16, in which neighbouring action-step tokens shared a position
-([Positions](12-positions.md)). Trained weights, before / after (the run with the corrected table,
-`dp_vit_lang_reactive_pt4k_posfix`, saved no averaged weights):
+**Where the transition falls varies.** Three more runs of the same design on the same 4000
+demonstrations and budget show how far the crossing (the point where the trained weights' slope
+first reaches 0.9) moves. What they show about the position table itself is in
+[Positions](12-positions.md): in both pairs the fixed table made the policy start to look earlier
+(in the second pair the slope after 1.0M samples was 0.77 against 0.25, although both crossed 0.9
+at 1.5M). The crossings (notebook, "The same run before and after the fix" and "A second seed,
+with and without the fix"):
 
-| Samples | Success, before / after | Closed at the named object, before / after | Slope, before / after | Median miss (mm), before / after |
-|---|---|---|---|---|
-| 1.0M | 0% / 8% | 35% / 65% | 0.11 / 0.58 | 138 / 80 |
-| 1.5M | 4% / 58% | 61% / 98% | 0.47 / 0.94 | 102 / 14 |
-| 2.0M | 4% / 40% | 95% / 98% | 0.81 / 0.97 | 32 / 16 |
-| 5.0M | 83% / 93% | 100% / 99% | 0.98 / 0.98 | 7 / 6 |
-
-The slope passes 0.9 a million samples earlier. Success fell from 58% to 40% between 1.5M and
-2.0M while the slope held (0.94, 0.97): do not judge a run, or rank two, from a single checkpoint.
-
-A second pair with other seeds (`--data.seed 43 --hparams.seed 43`), differing in the table alone,
-agrees: closed at the named object after 1.0M samples 83% / 72% with the fixed table against
-44% / 39% with the old, and 96% / 96% against 90% / 89% at the end (notebook, "A second seed, with
-and without the fix"). Its old-table run passed a slope of 0.9 at 1.5M, a million samples earlier
-than the first: the crossing varies that much between seeds.
-
-**What the demonstrations contain moves it too.** Same policy, 4000 episodes, 5M samples, after
-the fix (notebook, "What the demonstrations contain"):
-
-| Demonstrations | Success at 1.0M | Closed at the named object, slope at 1.0M | Final |
+| Run | Position table | Seeds | Slope reached 0.9 at |
 |---|---|---|---|
-| one instruction per layout | 8% / - | 65%, 0.58 | 93% / - |
-| early windows repeated | 5% / - | 99%, 0.93 | 96% / - |
-| random start poses | 56% / 76% | 91%, 0.81 | 98% / 98% |
-| the object moved, the expert recovers | 38% / 79% | 81%, 0.96 | 89% / 84% |
-| every object named | 41% / 38% | 98%, 1.02 | 91% / 89% |
-| random starts and recoveries | 68% / 86% | 100%, 1.02 | 94% / 94% |
+| `dp_vit_lang_reactive_pt4k` | old | first | 2.5M (0.94) |
+| `dp_vit_lang_reactive_pt4k_seed43_legacy` | old | 43 | 1.5M (0.92) |
+| `dp_vit_lang_reactive_pt4k_posfix` | fixed | first | 1.5M (0.94) |
+| `dp_vit_lang_reactive_pt4k_seed43_posfix` | fixed | 43 | 1.5M (0.90) |
 
-The field notes read this as one effect: the more windows need the scene, the sooner the policy
-looks. More in [the `pick_target` case study](101-case-pick-target.md).
+"First" means the seeds of the original run; "43" means `--data.seed 43 --hparams.seed 43`.
+The two old-table runs differ only in their seeds and in
+the version of the code they were trained from, and cross a million samples apart: one comparable
+run gives the order of magnitude of a crossing, not its place. In
+`dp_vit_lang_reactive_pt4k_posfix`, success fell from 58% at
+1.5M to 40% at 2.0M while the slope held (0.94, 0.97): do not judge a run, or rank two, from a
+single checkpoint.
+
+**What the demonstrations contain moves it too.** Every change to the demonstrations that made
+more training windows depend on the scene brought the transition forward, and the runs are in
+[Which demonstrations teach what](72-which-demonstrations-teach.md). For a budget this means that
+a comparable run has the same kind of demonstrations, not only as many: a crossing measured on
+demonstrations with random start poses need not carry over to demonstrations from one start pose.
 
 **One object.** In the first round (machine A, one RTX 4090, 24 GB; final checkpoints, 50
 episodes each), `dp_vit` with history on 1000 `pick_cube` demonstrations reached 40% (28-54%) after
@@ -268,10 +264,11 @@ low (step 5 below).
    1.5M (4000, two seeds) after. With no comparable run, give the first a generous budget (5M
    samples here) and evaluate every checkpoint; it becomes your reference.
 2. **Budget at least what the comparable run had**, and no less than twice the sample count at
-   which its slope reached 0.9. In the five long runs here success levelled off
-   between 0.5M and 2.0M samples after that point (the two long runs above, both seed pairs). A
-   shorter budget lowers the learning rate earlier, and the 1M run stopped climbing as its rate fell
-   (one seed): do not shorten a budget because a crossing came early. A rule of thumb from five runs.
+   which its slope reached 0.9. In the five long runs here (the 3M run on 1500 demonstrations and
+   the four of the crossing table) success levelled off between 0.5M and 2.0M samples after that
+   point. A shorter budget lowers the learning rate earlier, and the 1M run stopped climbing as its
+   rate fell (one seed): do not shorten a budget because a crossing came early. A rule of thumb
+   from five runs.
 3. **Save ten checkpoints, not the default 6**, and evaluate both sets of weights at each.
 4. **Read the slope before the success**, over the last two or three checkpoints together (the 1M
    run's slope went 0.36, 0.19, 0.29).

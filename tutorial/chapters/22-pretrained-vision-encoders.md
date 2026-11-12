@@ -168,7 +168,7 @@ sim/pickup/scripts/train.sh dp_vit  pick_cube_200 dp_vit_pick_cube_200  300000
 ```
 
 The recommended first real run uses the from-scratch ViT, on demonstrations with random start poses
-and the object moved once in about a third of them. The config saves a running average of
+and the object moved once in 1456 of the 4000 episodes (`--disturb_prob 0.5`). The config saves a running average of
 the weights (EMA) next to the trained (raw) ones, and `eval_checkpoints.sh` evaluates both:
 
 ```bash
@@ -179,47 +179,41 @@ sim/pickup/scripts/eval_checkpoints.sh experiments/pickup/my_run pick_target
 
 ## What we measured
 
-From the [lab notebook](../lab-notebook.md), one run per policy, closed-loop on unseen layouts;
-"raw / EMA" are the trained and the averaged weights.
+From the [lab notebook](../lab-notebook.md), closed-loop on unseen layouts; "raw / EMA" are the
+trained and the averaged weights. Each result is told in full in the chapter linked; here only
+what bears on the choice of encoder.
 
-1. `pick_cube`, 200 demonstrations, 300k training samples (23 epochs), machine A: CLIP ViT-B/32
-   with one pooled vector per image and one for the text (245M parameters) scored 2/50 = 4% (95% CI
-   1-14%); the from-scratch ViT with every patch a token (`dp_vit`, 36M) scored 15/50 = 30%
-   (19-44%).
-2. `pick_target`, 1500 demonstrations, machine A: the `vla_qwen` policy (frozen tower, 306M of 2.2B
-   parameters trained, one conditioning vector, history) scored 6/100 after 400k samples. A second
-   run of the same recipe on machine B ended at 5% after 0.4M samples. It closed at the named
-   object (the object nearest the gripper when it first closed) 71% of the time, a median 83 mm
-   off (notebook, "Qwen3-VL-2B backbone").
-3. The same Qwen backbone, tower still frozen, with `conditioning: all_tokens`, no history and 4000
-   demonstrations (`vla_qwen_tokens_reactive.yaml`, machine B): 70% / 72% after 0.5M samples.
-4. `pick_target`, 4000 demonstrations, 5M samples, machine B: `dp_vit_lang_reactive` (from-scratch
-   ViT, instruction tokens, no history) scored 83% / 85%, a median 7 mm from the named object; it
-   was at 0% / 1% after 1M samples ([How much data and training](71-how-much-data-and-training.md)).
-   This run was trained before
-   the position-table fix; the same recipe after the fix ends at 93% (trained weights), and a
-   second seed at 96% / 96% (notebook, "After the position fix").
-5. The from-scratch VLA with `conditioning: all_tokens`, no history, 4000 demonstrations, 3M
-   samples, machine B: 86% / 87% with the stage-2 VLM pretrained on captions (its ViT included),
-   75% / 85% with the same architecture from random weights. The
-   pretrained one starts to look after 0.25M samples, the other after about 1.0M
-   ([notes](../notes.md): "Pretraining a backbone: mainly an earlier start").
+1. `pick_cube`, 200 demonstrations, 300k training samples, machine A: CLIP ViT-B/32 with one pooled
+   vector per image and one for the text (245M parameters) scored 2/50 = 4%, the from-scratch ViT
+   with every patch a token (`dp_vit`, 36M) 15/50 = 30%
+   ([Pooled vs patch tokens](21-pooled-vs-patch-tokens.md)).
+2. `pick_target`, 4000 demonstrations, 5M samples, machine B: the from-scratch ViT of
+   `dp_vit_lang_reactive`, trained by the action loss alone, ends at 93% (trained weights) once the
+   rotary position table (the rotation angles that encode each token's position) is corrected: it
+   had been computed in bfloat16, which merged neighbouring positions ([Positions](12-positions.md)).
+   Item 1 and the one-vector Qwen run below were trained before that fix, the other runs after it.
+3. The Qwen3-VL-2B backbone, tower frozen in both runs: 5% with one conditioning vector, 70% / 72%
+   with `conditioning: all_tokens` (`vla_qwen_tokens_reactive.yaml`)
+   ([Case: pretrained backbones](102-case-pretrained-backbones.md)).
+4. The from-scratch VLA with `conditioning: all_tokens`: with the stage-2 VLM pretrained on
+   captions, its ViT included, the policy starts to look after 0.25M samples and ends at 86% / 87%
+   after 3M; with the same architecture from random weights, it starts after about 1.0M and ends at
+   75% / 85% (same chapter; [notes](../notes.md):
+   "Pretraining a backbone: mainly an earlier start").
 
 What these numbers show: on a one-object task, one pooled vector from a pretrained encoder lost to
-the patch tokens of a from-scratch one ([Pooled vs patch tokens](21-pooled-vs-patch-tokens.md)).
-With fixed cameras and four known objects, tokens trained from random weights by the action loss
-alone found the named object. Pretraining on captions bought mainly an earlier start.
+the patch tokens of a from-scratch one. With fixed cameras and four known objects, tokens trained
+from random weights by the action loss alone found the named object. A frozen pretrained tower
+worked once every token reached the action head, and pretraining on captions bought mainly an
+earlier start.
 
 What they do not show:
 
-- Whether CLIP's patch tokens would have worked. They never reached the action head, and the two
-  policies also differ in size and in whether they receive text.
-- Whether the frozen tower limited the first Qwen policy. The run of item 3 kept it frozen and
-  reached 70% / 72%; conditioning, history and demonstrations changed together, so this does not
-  isolate the tower, but the frozen tower did not prevent success. History alone keeps the
-  from-scratch policy at 2% / 2% after 3M samples on 4000 demonstrations (trained before the
-  position fix; after it, on demonstrations that begin with a hold frame, a history policy ends at
-  0% / 4% after 5M samples; [History and shortcuts](52-history-and-shortcuts.md)).
+- Whether CLIP's patch tokens would have worked. `CLIPHF.forward` never lets them out of the
+  encoder, and the two policies also differ in size and in whether they receive text.
+- Whether the frozen tower limited the first Qwen policy. Between the two Qwen runs the
+  conditioning, the history input and the number of demonstrations changed together, so the tower
+  is not isolated; what the runs show is that a frozen tower did not prevent success.
 - Whether a published encoder (CLIP, SigLIP, DINOv2) brings the start forward as the
   caption-pretrained backbone did: none was isolated. Nor were resolutions other than 224 px, or
   frozen against fine-tuned encoders.
@@ -228,8 +222,8 @@ What they do not show:
 
 | Situation | Choice | Basis |
 |---|---|---|
-| One simulator, fixed cameras, known objects | from-scratch `ViT`, all patch tokens (`dp_vit_lang_reactive.yaml`) | measured here on machine B, after the position fix: `pick_target` 93% (trained weights), 96% / 96% on a second seed, 98% / 98% with random start poses (4000 demonstrations, 5M samples); `pick_cube` 91% (1000 demonstrations, 1.5M samples) |
-| The policy is built on a pretrained VLM | that VLM's own tower, every token to the action head (`conditioning: all_tokens`) | Qwen: 70% / 72% with every token, 5% with one vector |
+| One simulator, fixed cameras, known objects | from-scratch `ViT`, all patch tokens (`dp_vit_lang_reactive.yaml`) | measured here, item 2 above; what the demonstrations must contain is in [Which demonstrations teach](72-which-demonstrations-teach.md) |
+| The policy is built on a pretrained VLM | that VLM's own tower, every token to the action head (`conditioning: all_tokens`) | measured here, item 3 above |
 | New objects, new scenes, real cameras | SigLIP, possibly fused with DINOv2, with patch tokens kept | background (Prismatic, OpenVLA); not measured here |
 
 The third row is not a config change here. No route gives a published encoder's raw patch tokens
@@ -249,6 +243,7 @@ each image and text token, not the encoder's own. For a `vlm` on a timm encoder,
 | `AssertionError` in `VLM.forward` | the `simple_vlm` processor writes `data.img_num_tokens` placeholders per image, and the encoder returns another number; a class token or register tokens add to the patch count | print the encoder's output shape (exercise 2) and set `img_num_tokens` to its second dimension, divided by the shuffle factor squared |
 | no error, but pretrained features are fed inputs they were not trained on | `SimpleVLMProcessor` normalises with mean 0.5 and std 0.5 per channel. timm's configurations list those values for SigLIP, ImageNet statistics for DINOv2 and a third set for OpenAI CLIP | compare with `timm.create_model(name).pretrained_cfg['mean']`. No config key sets them: `get_processor` (`vla_foundry/data/processor/__init__.py`) passes only `image_size`, so DINOv2 or OpenAI CLIP needs `image_mean` and `image_std` passed there in code |
 | a size error on the first batch | the image is not the encoder's size; timm's DINOv2 models default to 518 px | set `data.image_size` to the encoder's size |
+| the tower's weights never change, although you meant to train it | any value of `num_trainable_vlm_layers`, 0 included, makes `_train_only_last_layers` set `requires_grad = False` on the whole VLM before it re-enables the last language-model layers; the tower and the input embeddings stay frozen, so with `conditioning: action_token` the action token keeps the mean embedding it was initialised with | read the log line `VLM backbone: training last ... parameters` at start-up; leave the key unset to train the whole VLM. No key trains the tower alone |
 
 ## Background and further reading
 

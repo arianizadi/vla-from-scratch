@@ -46,7 +46,7 @@ joint angles that put the gripper at a given pose.
 
 This repository uses both. The scripted expert plans in end-effector space, and
 `ScriptedExpert.solve_ik` in [`expert.py`](../../sim/pickup/expert.py) converts every set-point
-(the gripper position the plan asks for at that control step) to joint angles with damped least
+(the gripper position the plan asks for) to joint angles with damped least
 squares, an iterative IK method, plus a pull toward `HOME_Q`, because a 7-joint arm reaches one
 pose with many configurations. The recorded action is the joint result. The policy needs no IK,
 and has to learn the arm's geometry from data: "1 cm to the left" is a different change of seven
@@ -83,7 +83,7 @@ pulls the mean finger position toward `0.04 * ctrl / 255` metres with a stiffnes
 
 The **state** is what the arm reports back: `PickupEnv.state` returns the 7 measured joint angles
 `qpos[:7]` and the gripper opening `(qpos[7] + qpos[8]) / 0.08`, a fraction of the 80 mm span.
-It has the action's 8 slots but says where the arm is, not where it is told to go. The damping
+It has the action's 8 slots, measured rather than commanded. The damping
 term makes the position trail a steadily moving target by about $k_v / k_p$ = 0.1 s of motion, two
 control steps (an estimate that ignores inertia and torque limits). At rest a gap
 remains: that model file has no gravity compensation, so a servo of this form holds the arm up
@@ -120,8 +120,8 @@ in `solve_ik`).
 ### The gripper channel
 
 The expert's gripper command takes two values: 1.0 for the approach and descent waypoints, 0.0 for
-close and lift (`ScriptedExpert._plan`). The model outputs a real number, which `PickupEnv.step`
-clips to [0, 1] and uses as it is. As an estimate from geometry:
+close and lift (`ScriptedExpert._plan`). The model may output anything in [0, 1] after clipping.
+As an estimate from geometry:
 the cube's collision box is 45 mm wide and the fingers span 80 mm, so a command over 45/80 = 0.56
 asks for an opening wider than the cube and presses on nothing. Below that the actuator's closing
 force, shared by the two fingers, grows as the command falls: 0.25 N at a command of 0.5, 2.25 N
@@ -220,29 +220,38 @@ is an estimate, not a measurement: the offset as an error of the base joint targ
 So the budget depends on the object: about 2 cm (0.04 rad on the base joint) for the cube and the
 T block, between 1 and 2 cm for the can and the hex nut. It also depends on the simulator build:
 on machine A (one RTX 4090, 24 GB), with an earlier MuJoCo 4.0 build and the same seeds, the can
-and the hex nut succeed in only 60% and 61% at 10 mm (the build is the one known difference, not
-isolated as the cause).
+and the hex nut succeed in only 60% and 61% at 10 mm (the one known difference, not tested as
+the cause).
 
-The policies that solve `pick_target` are inside that budget. Before the position-table fix (the
-table had been computed in bfloat16, [12-positions.md](12-positions.md)), `dp_vit_lang_reactive`
-(every image patch and the instruction as tokens, and no **history**: no previous frame, state or
-action as input) on 4000 demonstrations ended at 83% / 85% after 5.0M
-training samples (trained / averaged weights, the second a running average of the first; 100 unseen
-layouts, machine B), closing 7 / 7 mm (median) from the named object (the expert: 5 mm), an
-estimated 0.014 rad at the base joint. After 1.0M samples it closed 138 / 154 mm away, at 0% / 1%:
-it was not yet looking. The **slope** of where the gripper closed against where the named object
-was, which `sim/pickup/summarize.py` prints (1: it closes at the object; 0: regardless of the
-scene), was 0.11 / 0.14 then and 0.98 / 0.98 at the end. With the table fixed, the same recipe has
-a slope of 0.58 at 1.0M samples and ends at 93% (trained weights), 6 mm from the named object
-([71-how-much-data-and-training.md](71-how-much-data-and-training.md),
-[101-case-pick-target.md](101-case-pick-target.md)).
+The policy that solves `pick_target` (three of the four objects on the table, and an instruction
+such as "pick up the green can" that names one of them) works inside that budget.
+`dp_vit_lang_reactive` (every image patch and the instruction as tokens, no previous frame, state
+or action as input), trained on 4000 demonstrations before the position-table fix
+([12-positions.md](12-positions.md)), closed 7 / 7 mm (median; trained / averaged weights, the
+second a running average of the first) from the named object after 5.0M training samples, on 100
+unseen layouts (the objects, their poses, the named one and the arm's start pose, fixed by the
+seed) on machine B; the expert closes 5 mm away. Through the lever-arm table, 7 mm is an
+estimated 0.014 rad on the base joint: under the 10 mm at which even the can and the hex nut still
+succeed in 94% and 97%. Each episode record of `eval.py` holds the miss itself
+(`close_xy_err_target`). The training it took is in
+[71-how-much-data-and-training.md](71-how-much-data-and-training.md).
 
-Before the fix, the failures were mostly angle errors. From 3.0M samples on (12 evaluations of 100
-layouts) the can and the hex nut, which can be grasped at any yaw, succeeded in 93% and 94%, the
-cube in 82% and the T block in 55%; on failed grasps of the last two the median miss was 16 and
-15 mm, inside their budget, and the median yaw error 32° and 64°. Most of that was the position
-bug: after the fix (last three checkpoints pooled) the T block succeeds in 87% and the cube in 94%
-with clean demonstrations, 92% and 100% with random start poses.
+The cube and the T block must also be met at the right **yaw**, the gripper's rotation about its
+vertical axis, set mostly by joint 7. `GraspProbe.update` in
+[`diagnostics.py`](../../sim/pickup/diagnostics.py) records it at the first close command as the
+angle to the nearest valid grasp, using `grasp_sym` in `env.py`: the cube's grasps repeat every
+90°, so the worst error is 45°; the T block's every 180°, worst 90°; the can and the hex nut have
+none.
+
+For that policy before the fix (`dp_vit_lang_reactive`, 4000 demonstrations), pooled over the
+checkpoints from 3.0M samples on (12 evaluations of 100 layouts), the can and the hex nut
+succeeded in 93% and 94%, the cube in 82% and the T block in 55%. On failed grasps of the last
+two the median miss was 16 and 15 mm, inside their budget, and the median yaw error 32° and 64°:
+an estimated 0.56 and 1.1 rad on joint 7. Those failures were angle errors. Most went with the
+fix: on the same demonstrations (one instruction per layout), pooled over the last three
+checkpoints, the T block goes from 54% to 87% and the cube from 85% to 94% (by object and kind of
+demonstration:
+[72-which-demonstrations-teach.md](72-which-demonstrations-teach.md)).
 
 ## Where it goes wrong
 
@@ -260,25 +269,25 @@ with clean demonstrations, 92% and 100% with random start poses.
   input. The lab notebook records one such bug: `lowdim_past_timesteps or default` treated 0, the
   setting of the `*_reactive` configs, as unset, and the proprioception input contained the state
   one control step in the future. An `is None` check fixed it.
-- **A previous-action slot that holds the answer.** A policy with history (`dp_vit_lang.yaml`) is
-  given `action[t-1]`. At row 0 there is none, and the slot holds a copy of `action[0]`: the
-  expert's first command, which already points at the named object. When served, it holds the
-  hold command. On 4000 demonstrations, before the position fix, such a policy was at 2% / 2% after
-  3.0M samples (81% / 75% without history). It takes its target from that slot: one checkpoint
-  (2.5M samples, averaged weights) succeeded on 1/100 layouts as served, 22/100 with the expert's
-  first command as its first previous action (`eval.py --first_prev_action expert`) and 77/100
-  after the expert drove the first 10 control steps (`--expert_prefix 10`). Beginning every
-  demonstration with a hold frame (`collect.py --hold_steps 1`) did not repair it: trained that way
-  with the table fixed, it ends at 0% / 4% after 5M samples, and where it closes still does not
-  depend on the scene ([52-history-and-shortcuts.md](52-history-and-shortcuts.md)).
+- **A previous-action slot that holds the answer.** A policy with **history**, inputs from the
+  previous control step (`dp_vit_lang.yaml`), is given `action[t-1]`. At row 0 there is none, and
+  the slot holds a copy of `action[0]`: the expert's first command, which already points at the
+  named object. When served, the robot is
+  under the hold command, and the slot holds that. A policy can read its target from the slot
+  instead of the cameras; on three objects one did, and a hold frame at the start of every
+  demonstration (`collect.py --hold_steps 1`) did not repair it
+  ([52-history-and-shortcuts.md](52-history-and-shortcuts.md)). To test your own, compare `eval.py`
+  as served with `--first_prev_action expert` (what a padded training window contains) and
+  `--expert_prefix 10` (the expert drives the first 10 control steps): a large gap says the slot,
+  not the scene, sets the target.
 - **A state that stands in for the cameras.** Episodes start near `HOME_Q` and the expert's
   set-point travels straight, so a few control steps in, the joint angles say where the reach is
-  heading. Sent the first frame's images for a whole episode (`eval.py --stale_images`), so that
-  only its state changed, the 85% policy (before the fix) still closed 17 mm (median) from the
-  named object (1/100 successes). Random start poses alone (`collect.py --random_start`) do not
-  change this: with frozen cameras that policy still closes at the named object 98% of the time.
-  Adding recoveries (`--disturb_prob 0.5`) brings that to 0 of 100 episodes
-  ([95-what-a-policy-looks-at.md](95-what-a-policy-looks-at.md)).
+  heading. `eval.py --stale_images` sends the first frame's images for the whole episode, so only
+  the state changes; a policy that still closes near the named object looked once and then
+  followed its own arm. The policy above did
+  ([95-what-a-policy-looks-at.md](95-what-a-policy-looks-at.md)); demonstrations with recoveries
+  (`collect.py --disturb_prob 0.5`) took that away
+  ([103-case-self-correction.md](103-case-self-correction.md)).
 
 ## Background and further reading
 
@@ -287,8 +296,8 @@ with clean demonstrations, 92% and 100% with random start poses.
 - Zhao, *Learning Fine-Grained Bimanual Manipulation with Low-Cost Hardware* (ACT), 2023,
   <https://arxiv.org/abs/2304.13705>. Absolute joint-position targets, 14-D, at 50 Hz, tracked by
   the motors' own PID controllers.
-- Brohan, *RT-1*, 2022, <https://arxiv.org/abs/2212.06817>. End-effector actions plus three base
-  dimensions, each discretised into 256 uniform bins, and a three-way mode switch, at 3 Hz.
+- Brohan, *RT-1*, 2022, <https://arxiv.org/abs/2212.06817>. End-effector and base actions, each
+  dimension discretised into 256 bins, at 3 Hz.
 - Black, *π0*, 2024, <https://arxiv.org/abs/2410.24164>. Generates chunks of 50 actions by flow
   matching, for control at up to 50 Hz.
 - MuJoCo Menagerie, Franka Emika Panda model,

@@ -9,9 +9,10 @@ status: draft
 # The Model Families Today
 
 A robot manipulation policy takes camera images, an instruction and the robot's own state, and
-returns motor commands. The published systems that do this differ in a few design choices, and the
-same choices separate the ten policy configs in this repository. Which of them works depended on
-two things off the map: history and training budget.
+returns motor commands. The published systems that do this differ in five design choices, and these
+choices, a map on which any policy can be placed, also separate the ten policy configs in this
+repository. Which of them works here depended on two things off that map: history and training
+budget.
 
 ## The idea
 
@@ -204,70 +205,68 @@ fixed by the seed).
 
 `pick_cube` on machine A (one RTX 4090, 24 GB), 50 episodes. With 200 demonstrations and 300k
 samples, the 245M `dp_clip` policy succeeded in 2/50 = 4% (95% CI 1-14%) and the 36M `dp_vit` in
-15/50 = 30% (19-44%). The two also differ in pretraining, size and language input, so this does not
-isolate pooling.
+15/50 = 30% (19-44%) ([21-pooled-vs-patch-tokens.md](21-pooled-vs-patch-tokens.md)). The two also
+differ in pretraining, size and language input, so this does not isolate pooling.
 
-`pick_target`, 100 layouts per evaluation. The table is the second round, on machine B (L40S GPUs,
-128 CPU cores): the final checkpoints of the patch-token policies, as raw weights / EMA weights (an
-exponential moving average of the trained weights). Every run in it used a rotary position table
-computed in bfloat16, since fixed ([12-positions.md](12-positions.md)); after the fix the same
-recipe ends at 93% (trained weights), and a second pair of seeds differing in the table alone at
-96% / 96% against 90% / 89%. **Slope** is the least-squares slope of where the gripper first closed
-against where the named object was: 1 if it closes where the object is, 0 if where it closes does
-not depend on the scene.
+`pick_target`, 100 layouts per evaluation. Two things off the map, budget and history, decided as
+much as the map's choices did; each result below is told in full in its own chapter:
 
-| Policy | Demos | Samples | Success (raw / EMA) | Slope |
-|---|---|---|---|---|
-| `dp_vit`: no language, history | 1500 | 1.0M | 0% / 0% | 0.11 / 0.17 |
-| `dp_vit_lang`: language, history | 1500 | 1.0M | 3% / 2% | 0.13 / 0.04 |
-| `dp_vit_reactive`: no language, no history | 1500 | 1.0M | 1% / 1% | 0.01 / 0.04 |
-| `dp_vit_lang_reactive`: language, no history | 1500 | 1.0M | 3% / 5% | 0.29 / 0.18 |
-| same | 1500 | 3.0M | 64% / 62% | 0.96 / 0.97 |
-| same | 4000 | 5.0M | 83% / 85% | 0.98 / 0.98 |
-| `dp_vit_lang`: language, history | 4000 | 3.0M (stopped) | 2% / 2% | 0.11 / 0.08 |
+- **Training budget.** After 1500 demonstrations and 1.0M samples, all four `dp_vit` variants, with
+  and without language and history, were between 0% and 5%. Given 4000 demonstrations and 5M
+  samples, `dp_vit_lang_reactive` (language, no history) ended at 83% / 85% (trained / averaged
+  weights): a policy starts to use the scene late, then quickly
+  ([71-how-much-data-and-training.md](71-how-much-data-and-training.md)). That run used the rotary
+  position table computed in bfloat16, since fixed; the fixed table helps
+  ([12-positions.md](12-positions.md)).
+- **History.** The same config with history, on 4000 demonstrations, stayed at 2% / 2% after 3.0M
+  samples: it read the target from its own previous action (trained before the position fix; what
+  holds after it is in [52-history-and-shortcuts.md](52-history-and-shortcuts.md)).
+- **The reading, choice 3.** Read through the action token, one vector, the VLAs stayed near zero:
+  `vla_custom` 0/100 after 1.0M samples (machine A) and `vla_qwen` 5% after 0.40M samples (machine
+  B, L40S GPUs, 128 CPU cores), both with history and 1500 demonstrations. Read through every token,
+  with no history and 4000 demonstrations, the from-scratch VLA (`vla_custom_tokens_reactive`, 3M
+  samples) ends at 86% / 87% and Qwen (`vla_qwen_tokens_reactive`, 0.5M samples) at 70% / 72%.
+  History and the number of demonstrations changed with the reading, so this does not isolate it;
+  what pretraining the backbone adds is in
+  [102-case-pretrained-backbones.md](102-case-pretrained-backbones.md).
 
-- Rows 5 and 6 are the fourth row's config given more samples and, in row 6, more demonstrations
-  ([71-how-much-data-and-training.md](71-how-much-data-and-training.md)).
-- The last row is that config with history. It reads the target from its previous action: at 2.5M
-  samples (EMA) it scored 1/100 as served and 22/100 when its first previous action was the scripted
-  expert's first command ([52-history-and-shortcuts.md](52-history-and-shortcuts.md)). On
-  `pick_cube`, where nothing has to be chosen, history costs nothing: retrained after the position
-  fix, `dp_vit` (1000 demonstrations, 1.5M samples) ends at 96% / 98%; its earlier 62% / 70% was the
-  position bug ([100-case-pick-cube.md](100-case-pick-cube.md)).
-- In the five failing rows the slope is at most 0.29: those policies were neither imprecise nor
-  reaching between the objects; where they closed hardly depended on the scene
-  ([101-case-pick-target.md](101-case-pick-target.md)).
-
-The table does not rank the families. The one-vector VLAs were measured with history on 1500
-demonstrations: in the first round (machine A) `vla_qwen` scored 6/100 after 400k samples and
-`vla_custom` 0/100 after 1.0M; a second `vla_qwen` run on machine B reached 5% after 0.40M samples.
-With every token, no history and 4000 demonstrations, the from-scratch VLA
-(`vla_custom_tokens_reactive`, 3M samples) ends at 86% / 87% with its VLM pretrained on captions and
-75% / 85% with a randomly initialised one, and Qwen (`vla_qwen_tokens_reactive`, 0.5M samples) at
-70% / 72%. History and the number of demonstrations changed with the conditioning, so this does not
-isolate the reading ([field notes](../notes.md), "Pretraining a backbone: mainly an earlier start";
-chapter 102, to come). No autoregressive head was measured here.
-
-The 85% policy still looks at the scene only once: with the named object moved 80 mm at control
-step 20 it succeeded in 0/96 ([95-what-a-policy-looks-at.md](95-what-a-policy-looks-at.md)).
-Trained on demonstrations with random start poses and recoveries, the same policy succeeds in
-89-94% under every disturbance ([field notes](../notes.md), "Self-correction has to be in the
-data"; chapter 103, to come).
+None of this ranks the families of the published map: one task, one seed per run, and no
+autoregressive head was measured here. Success on unmoved layouts also does not say what a policy
+does when the object moves during the reach; that is measured in
+[95-what-a-policy-looks-at.md](95-what-a-policy-looks-at.md), and it depends on the demonstrations
+([103-case-self-correction.md](103-case-self-correction.md)).
 
 ## Where it goes wrong
 
 **A budget that ends before the policy starts to look.** What you see: every variant between 0%
-and 5%. Why: a policy starts to use the scene late, then quickly: the run that ended at 83% / 85%
-was at 0% / 1% after 1.0M samples and at 4% / 36% after 2.0M. How to check: evaluate every
-checkpoint and read the slope, which moves first (0.47 / 0.37 at 1.5M samples, with success at
-4% / 2%). What to do: judge a design only on a budget at which a comparable run has begun to look.
+and 5%, so every family looks equally bad. Why: a policy starts to use the scene late, then
+quickly; the run that ended at 83% / 85% was at 0% / 1% after 1.0M samples. How to check: evaluate
+every checkpoint (`sim/pickup/scripts/eval_checkpoints.sh`, then `sim.pickup.summarize`) and read
+the **slope**, the least-squares slope of where the gripper first closed against where the named
+object was: 1 if it closes where the object is, 0 if where it closes does not depend on the scene.
+It rises before success does. What to do: compare two designs only at a budget at which a
+comparable run has begun to look.
 
 **A large backbone hiding a one-vector bottleneck.** What you see: a complete, plausible grasp in
-the wrong place. Measured here on `vla_custom`: the gripper closed in 100% of episodes, at the named
-object in 33%, which is chance (the run also had history and a short budget). How to check: print
-`get_action_conditioning(...).embeddings.shape[1]`. What to do: pass tokens
-(`conditioning: all_tokens`), as the 86% / 87% VLA above does with no history and more data
+the wrong place. Measured here on `vla_custom`: the gripper closed in every episode, at the named
+object no more often than chance
+([92-measuring-failure.md](92-measuring-failure.md); the run also had history and a short budget).
+Why: the config name does not say the reading. Both VLM wrappers read
+`model.vision_language_backbone.conditioning`, whose default in
+[`vla_foundry/params/model_params.py`](../../vla_foundry/params/model_params.py) is
+`action_token`; only the `*_tokens*` configs set `all_tokens`. How to check: grep the configs for
+`conditioning:` and print `get_action_conditioning(...).embeddings.shape[1]`. What to do: pass
+tokens (`conditioning: all_tokens`), as the from-scratch VLA above does
 ([50-what-the-action-head-sees.md](50-what-the-action-head-sees.md)).
+
+**A prompt longer than `conditioning_len`.** What you see: `ValueError: A prompt has N tokens but
+conditioning_len is M.` Why: with `all_tokens`, `conditioning_from_hidden_states` in
+`vla_foundry/models/vision_language_backbones/base.py` pads the real tokens in front to a fixed
+`conditioning_len` (1040 in `vla_custom_tokens`, 528 in `vla_custom_tokens_reactive`, 128 in
+`vla_qwen_tokens_reactive`), so the conditioning's length does not depend on what else is in the
+batch. A longer instruction or more images push a prompt past it. What to do: raise
+`conditioning_len` before training, and evaluate a checkpoint with the value it was trained with,
+since it sets where the state and action-step tokens sit in the head's sequence.
 
 **Memory for a pretrained VLM.** Training all 2.2B parameters of `vla_qwen` needs about 36 GB by
 the estimate in its config comment, so for a 24 GB GPU it sets `num_trainable_vlm_layers: 4` and

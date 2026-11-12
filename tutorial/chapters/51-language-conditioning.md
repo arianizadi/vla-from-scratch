@@ -53,8 +53,8 @@ differ; a VLM config shows its prompt with the action token behind it.*
 
 Being in the sequence is not being used. After 1.0M training samples (a **sample** is one
 **window**, the observations at one frame plus the actions that follow, drawn by the data loader)
-on 4000 demonstrations (before the position fix, below) this policy closed at the named object no
-more often than chance; after 5.0M, every time.
+on 4000 demonstrations (before the position fix, described under What we measured) this policy
+closed at the named object no more often than chance; after 5.0M, every time.
 
 ## How it works
 
@@ -300,63 +300,50 @@ The control (row one) has only 1500 demonstrations and 1.0M samples.
   ([How much data and training](71-how-much-data-and-training.md); notes: "Looking at the scene
   arrives late, and all at once").
 
-The failing first-round policies (machine A, one RTX 4090, 24 GB) are close to the reference
-table's last line: `dp_vit` 32% at the named object, 110 mm (median) from the *nearest* one; the
-two `vla_custom` VLAs 33% and 29%, 89 mm. Where such policies closed did not depend on the scene
-(per-axis slopes 0.00-0.09 in the three second-round runs that never started to look, every
-evaluation pooled; notebook, "Does the closing position depend on the scene?"; notes: "A failing
-policy ignores the scene; it does not average").
+The failing policies of the notebook's first round (machine A, one RTX 4090, 24 GB; 1500
+demonstrations, 1.0M samples, one conditioning vector for the VLAs) sit on the reference table's last line: `dp_vit` 32% at the named object, 110 mm (median)
+from the nearest one; the two `vla_custom` VLAs 33% and 29%, 89 mm
+([Measuring failure](92-measuring-failure.md); notes: "A failing policy ignores the scene; it does
+not average").
 
 <!-- interactive: grasp-map -->
 *Figure: where the gripper first closed relative to the named object, one dot per episode, for
 rows one, two and six.*
 
-**After the position fix** (notebook, "The same run before and after the fix", trained weights)
-the recipe reads the instruction earlier, as does a pair with other seeds that differs in the table
-alone (notebook, "A second seed, with and without the fix"; closed at the named object after 1.0M
-samples: 44% with the old table, 83% with the fixed one; final 90% / 89% against 96% / 96%):
+**What the two numbers do not separate.** The rate counts the nearest object at the moment of
+closing, so it rises before the gripper is close enough to grasp: row five closes at the named
+object in 95% / 98% of episodes and still fails most of them. The slope is pooled over both table
+axes and all four objects. Neither says *when* in the episode the instruction was read; the
+handover test does.
 
-| Samples | Success, before / after | Closed at the named object, before / after | Slope, before / after |
-|---|---|---|---|
-| 1.0M | 0% / 8% | 35% / 65% | 0.11 / 0.58 |
-| 1.5M | 4% / 58% | 61% / 98% | 0.47 / 0.94 |
-| 5.0M | 83% / 93% | 100% / 99% | 0.98 / 0.98 |
+**Reading the instruction earlier.** Several changes made the rate rise sooner with 4000
+demonstrations (repeating the early windows, random start poses and recoveries did too; all in
+the chapter linked below); two bear on the instruction.
+With the position table fixed ([Positions](12-positions.md)) the 4000-demonstration recipe of rows
+four to six (one instruction per layout) closes at the named object in 65% of episodes after 1.0M
+samples, against 35% with the old table (slope 0.58 against 0.11; notebook, "The same run before
+and after the fix", trained weights). With one instruction per layout, remembering which object was picked in each
+training scene fits the data as well as reading the instruction; naming every object of a layout
+in turn removes that solution, and the rate after 1.0M samples is 98% (slope 1.02) against 65%
+([Which demonstrations teach what](72-which-demonstrations-teach.md)). With 1500 demonstrations and 1.0M
+samples, naming every object did not help (notebook, "Which demonstrations").
 
-**Every object named.** With one instruction per layout, remembering which object was picked in
-each training scene fits the data as well as reading the instruction; naming each object of a
-layout in turn removes that solution. With 1500 demonstrations and 1.0M samples it did not help
-(notebook, "Which demonstrations"). With 4000, after the fix, it closes at the named object in 98%
-of episodes after 1.0M samples (slope 1.02), against 65% (0.58) with one instruction per layout,
-and ends no higher: 91% / 89% against 93% (notes: "What the demonstrations contain").
-
-**The handover** (notebook, "What the no-history policy depends on" and "What the same policies
-depend on"; 100 layouts each; averaged weights where a run saved them):
-
-| Policy | Success (closed at the expert's object), expert drives 10 steps | the same, 25 steps |
-|---|---|---|
-| before the fix (row six above; 85/100 without a handover) | 12/100 (16/100) | 0/100 (100/100) |
-| after the fix, one instruction per layout | 18/100 (24/100) | 0/100 (100/100) |
-| after the fix, every object named | 20/100 (22/100) | 0/100 (100/100) |
-| after the fix, demonstrations with recoveries | 79/100 (1/97) | 56/100 (28/80) |
-| after the fix, random start poses | 98/100 (0/100) | 14/100 (57/98) |
-| after the fix, random start poses and recoveries | 89/100 (0/99) | 89/100 (3/100) |
-
-Brackets count out of the episodes in which the gripper closed. Although the instruction is in
-every query and the policy plans again every 8 control steps, the first three policies (home pose,
-nothing moving) finish the expert's 25-step reach every time: they read the instruction at the
-start, then follow their own arm ([What a policy looks at](95-what-a-policy-looks-at.md)).
-Recoveries make the policy turn back, most reliably with random start poses too (notes:
-"Self-correction has to be in the data").
+**The handover.** The row-six policy reads the instruction at the start and then follows its own
+arm: when the expert drives the first 25 control steps toward another object, it closes at the
+expert's object in 100 of 100 episodes, although the instruction is in every query and it plans
+again every 8 control steps (notebook, "What the no-history policy depends on";
+[What a policy looks at](95-what-a-policy-looks-at.md)). Which demonstrations make it turn back is
+the subject of [A policy that corrects itself](103-case-self-correction.md).
 
 **Through a VLM, one action token.** `vla_qwen_pt1500` (notebook, "Qwen3-VL-2B backbone": history,
 1500 demonstrations, trained weights; trained before the position fix, which did not affect its
 20-token action head) closed at the named object in 71% of episodes after 0.40M samples, from 33%
 after 0.10M: the instruction and a rough position got through one vector (slope 0.68), not a
-precise one: it pointed at the object, 83 mm off, and did not grasp it (5% success). With every
-token (`conditioning: all_tokens`), no history and 4000 demonstrations, both VLAs work: the from-scratch one ends at 86% / 87% after 3M samples, Qwen at
-70% / 72% after 0.5M (notebook, "After the position fix"). History and the number of demonstrations
-changed too, so the effect of the conditioning alone was not measured (notes: "One pooled vector is
-not enough for grasping").
+precise one: it pointed at the object, 83 mm off, and rarely grasped it. With every token
+(`conditioning: all_tokens`), no history and 4000 demonstrations, both VLAs work
+([A backbone from scratch against a pretrained one](102-case-pretrained-backbones.md)). History and
+the number of demonstrations changed with the conditioning, so the effect of the conditioning
+alone was not measured (notes: "One pooled vector is not enough for grasping").
 
 ## Where it goes wrong
 
@@ -365,7 +352,8 @@ not enough for grasping").
 | The rate stays near 33% at every checkpoint | No instruction in the input: `text_tokens` is 0 or `data.processor` is `"none"` (no error with `text_tokens: 32`) | Read both in `experiments/pickup/<run>/config.yaml` |
 | The same, with `processor: simple_vlm` | `img_num_tokens` left at the preset's 64: the 32 slots fill with template and placeholders, the instruction is cut off silently | `img_num_tokens: 1`; longest prompt (13 ids, 15 with history) within `text_tokens` |
 | Near 33%, slope near 0, although the slots differ | Too little training, or history: `dp_vit_lang`, 4000 demonstrations, 3.0M samples (before the position fix): 30% / 35% | Evaluate every checkpoint; start without history ([History and shortcuts](52-history-and-shortcuts.md)) |
-| Well above 33%, slope well below 1, misses of centimetres | Reads the instruction, cannot place the object precisely (the Qwen run with one vector: 71%, 0.68, 83 mm) | Spatial tokens: text slots next to patches, or `conditioning: all_tokens` (from-scratch VLA 86% / 87%, Qwen 70% / 72%); start without history |
+| Well above 33%, slope well below 1, misses of centimetres | Reads the instruction, cannot place the object precisely (the Qwen run with one action token) | Spatial tokens: text slots next to patches, or `conditioning: all_tokens`; start without history |
+| A reworded instruction ("grab the green can") followed less often than the training wording (expected, not measured here) | Its new ids select rows of `text_embedding` that never got a gradient (an inference from the code) | Compare the prompt's ids with those of the training instructions (exercise 1); train with the wordings you will serve |
 | 100% at the named object, the wrong object after a handover | Follows the instruction only until its arm has a direction | The handover test; random start poses and recoveries in the data (`--random_start --disturb_prob 0.5`) |
 
 ## Background and further reading

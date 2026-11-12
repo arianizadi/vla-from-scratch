@@ -73,10 +73,9 @@ waiting forever, and the run sits at 0% GPU.
 
 `get_wds_dataloader` (`vla_foundry/data/dataloader.py`) builds its `wds.WebLoader` without a
 `timeout` argument. Background, from the PyTorch `DataLoader` documentation and source: the default
-`timeout` of 0 puts no limit on the wait for a batch, while a worker that has exited is noticed
-within seconds and reported as `RuntimeError: DataLoader worker (pid(s) ...) exited unexpectedly`. A
-wait without end is therefore also consistent with a worker that is still present but stuck. The lab
-notebook records the symptom, not the worker's state.
+`timeout` of 0 puts no limit on the wait for a batch, while a worker that has exited is reported
+within seconds (`DataLoader worker (pid(s) ...) exited unexpectedly`). A wait without end fits a
+worker that is present but stuck just as well; the lab notebook records the symptom only.
 
 The liveness signal is the training log. `train.sh` filters the trainer's output through
 `grep --line-buffered -vE "step/s|^$"`, which drops the progress-bar lines, so between checkpoints
@@ -199,7 +198,10 @@ evaluator as well: with `PICKUP_WATCH=1` it polls until the log reports the end 
 3. **Shared memory.** Compare `df -h /dev/shm` with `num_workers x prefetch_factor x` one batch.
 4. **Disk.** Every checkpoint writes `checkpoint_N.pt`, `optimizer_N.pt` and, with EMA,
    `ema_N.pt` (`save_checkpoint`, `vla_foundry/file_utils.py`); none is deleted
-   (`max_checkpoint_limit` defaults to `None`).
+   (`max_checkpoint_limit` defaults to `None`). For `dp_vit_lang_reactive` (48.9M parameters,
+   float32 under the default `amp_bfloat16` autocast): 196 MB of weights, 391 MB for AdamW's two
+   moment estimates per parameter, 196 MB of averaged weights; about 0.8 GB per checkpoint, 9 GB for
+   the eleven of a run with `PICKUP_NUM_CHECKPOINTS=10` (arithmetic).
 5. **Run name.** `experiments/pickup/<name>` must not exist unless you mean to resume it, and
    `pgrep -af "main.py.*--name <name>"` must print nothing.
 6. **GPU and port.** Pass a free GPU as `PICKUP_GPU`; keep `MUJOCO_EGL_DEVICE_ID` and
@@ -221,20 +223,24 @@ In `monitor.py`:
 closed against where the named object was (1: at the object; 0: independent of the scene),
 against training samples, for several runs side by side.*
 
-A success of 0% at the first checkpoints does not mean a broken run. The machine B runs in the lab
-notebook set `PICKUP_NUM_CHECKPOINTS=10` (ten checkpoints over the budget, plus a final one); with the default 6
-the transition between 1M and 2M samples is covered by a single checkpoint, at about 1.67M
-(arithmetic). In the lab notebook `dp_vit_lang_reactive` on 4000 demonstrations, before the
-position-table fix ([Positions](12-positions.md)), was at 0% / 1% (trained / averaged weights) after
-1.0M samples, at 4% / 36% after 2.0M and at 83% / 85% at the end, 5.0M. The same policy with history
-(previous frame, state and action as inputs) was at 1% / 1% after 1.0M and at 2% / 2% when it was
-stopped at 3.0M. At 1.5M success did not tell them apart (4% / 2% against 1% / 1%); the slope did
-(0.47 / 0.37 against 0.10 / 0.07). `.venv/bin/python -m sim.pickup.summarize --runs my_run` prints
-it for every checkpoint ([How much data and training](71-how-much-data-and-training.md)). After the
-fix the policy without history was at 8% after 1.0M samples, at 58% after 1.5M and at 93% at the end
-(trained weights). A second pair of runs with other seeds, differing in the table alone, ends at
-96% / 96% with the fixed table and 90% / 89% with the old one. The history policy is not blind: it
-reads its target from the previous action ([History and shortcuts](52-history-and-shortcuts.md)).
+A success near 0% at the first checkpoints does not mean a broken run: the 4000-demonstration run
+that went on to solve the task in [How much data and training](71-how-much-data-and-training.md) was
+at 4% / 2% (trained / averaged weights) after 1.5M samples, when its slope had already reached
+0.47 / 0.37.
+
+**Space the checkpoints.** `main.py` divides the budget evenly, so the default
+`PICKUP_NUM_CHECKPOINTS=6` checkpoints a 5M run about every 0.83M samples (arithmetic), and the
+stretch from 1M to 2M samples, where that run's slope rose from 0.11 to 0.81 (trained weights), gets
+one checkpoint, at about 1.67M. The machine B runs set
+`PICKUP_NUM_CHECKPOINTS=10`: one every 0.5M samples, about every 7.6 minutes at 1100 samples/s
+(arithmetic). More checkpoints cost disk (pre-flight item 4) and evaluation time, and shorten what a
+crash loses.
+
+**Judge a young run by the slope.** While success is near 0, the slope and how often the gripper
+closed at the named object are the columns that move; a slope that stays near 0 is a reason to check
+the inputs and the data before buying more samples ([Measuring failure](92-measuring-failure.md)).
+`.venv/bin/python -m sim.pickup.summarize --runs my_run` prints all of them for every evaluated
+checkpoint; the dashboard shows the best checkpoint's only.
 
 ## What we measured
 

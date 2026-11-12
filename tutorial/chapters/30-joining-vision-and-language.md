@@ -172,14 +172,10 @@ actions ([What the Action Head Sees](50-what-the-action-head-sees.md)). The VLM 
 
 Without history (`image_indices: [0]`, as in
 [`vla_custom_tokens_reactive.yaml`](../../sim/pickup/configs/vla_custom_tokens_reactive.yaml)) the
-same prompt holds the two current frames: 522 positions. Start there. In the patch-token policies,
-which have no language model ([Language conditioning](51-language-conditioning.md)), 3M samples
-on 4000 demonstrations on machine B (L40S GPUs, 128 CPU cores) took the one without history
-(`dp_vit_lang_reactive`) to 81% / 75% of `pick_target` episodes (trained / averaged weights)
-and the one with it (`dp_vit_lang`) to 2% / 2%: it had learned to read the target from
-its previous action ([History and shortcuts](52-history-and-shortcuts.md)). Both predate the
-position fix; after it, a history policy trained on demonstrations that begin with a hold frame
-still ends at 0% / 4% after 5M samples.
+same prompt holds the two current frames: 522 positions, with the instruction at 515 instead of
+1,027. Start there: a policy that is also given its previous action can learn to read the target
+from that action rather than from the images
+([History and the Shortcut It Opens](52-history-and-shortcuts.md) has the runs).
 
 `SimpleVLMProcessor` flattens the per-sample image lists, so a batch of `B` samples gives
 `pixel_values` of `[4B, 3, 224, 224]`, the ViT returns `[4B, 256, 256]`, the assert checks for
@@ -201,17 +197,26 @@ Applied to the sequences above:
   view" is formed at text positions.
 - **The last position sees the whole prompt.** This is why next-token prediction can caption an
   image, and why the action token, placed last, can summarise the prompt for the action head.
-- **Padding goes on the right**, after the text, so no real token can attend to it, and
-  `Transformer.forward` drops the attention mask in a causal pass without a key-value cache (the
-  keys and values stored during generation, [Generating Text](14-generation.md)). The side is the
-  SmolVLM2 tokenizer's default. A token appended after the padding would attend to it, as the action token did until
-  it was moved ([train/inference skew](93-train-inference-skew.md)).
+- **Padding goes on the right** (the SmolVLM2 tokenizer's default), after the text, so no real
+  token can attend to it, and `Transformer.forward` drops the attention mask in a causal pass
+  without a key-value cache ([Generating Text](14-generation.md)). A token appended after the
+  padding would attend to it, as the action token did until it was moved
+  ([train/inference skew](93-train-inference-skew.md)).
 
 This decides what `VLMFoundryBackboneWrapper` can hand to the action head as **conditioning**, a
 tensor `[batch, tokens, width]`. With `conditioning: action_token` the head gets one vector that
 has seen everything. With `conditioning: all_tokens` it gets every position's hidden states: the
 image states (1,024 with history, 512 without) are blind to the instruction, and only the few
 text states depend on it.
+
+The shapes: `num_vlm_layers_to_use: 4` concatenates the last four layers' states along the
+width, so each conditioning vector is 4 x 512 = 2,048 wide. With `action_token` the conditioning is
+`[B, 1, 2048]`, taken at the action token. With `all_tokens` (`vla_custom_tokens_reactive.yaml`) no
+action token is added; `conditioning_from_hidden_states` in
+[`base.py`](../../vla_foundry/models/vision_language_backbones/base.py) moves every row's real
+tokens to the end, zeroes the padding and pads in front to `conditioning_len: 528`, so the
+conditioning is `[B, 528, 2048]` in training batches and when served alike, and the last real
+token sits at the same place whatever the length of the instruction.
 
 ## In this repository
 
@@ -254,7 +259,7 @@ Tests, on a CPU:
 
 From the lab notebook. The stage-2 VLM (96.5M parameters, 91.4M of them stage 1) after 400k
 samples on 40,000 captioned sim renders on machine A (one RTX 4090, 24 GB), and the same stage
-trained again on machine B, before and after the position-table fix described below (same data
+trained again on machine B (L40S GPUs, 128 CPU cores), before and after the position-table fix described below (same data
 and budget):
 
 | 300 held-out scenes | Machine A | Machine B | Machine B, after the fix |
@@ -268,35 +273,28 @@ must read where things are from the image positions. It does not show that posit
 survives at the precision a grasp needs. It was measured on renders from the caption generator,
 and no other shuffle factor or projector was trained.
 
-Nor does it show that a policy built on this VLM uses the image. The first-round `vla_custom`
-policy scored 0/100 on `pick_target` (machine A) and **closed at the named object** (the object
-nearest the gripper when it first closed was the one the instruction named) in 33% of episodes,
-chance with three objects: where it closed did not depend on the scene. That does not test the
-join: one action-token vector, history, and 1M samples on 1500 demonstrations, a budget that left
-even `dp_vit_lang_reactive` at 3% / 5% (trained / averaged weights;
-[How much data and training](71-how-much-data-and-training.md)). Rerun with
-every token passed to the action head (`vla_custom_tokens_reactive.yaml`), no history, 4000
-demonstrations and 3M samples, the same VLA ends at 86% / 87% on the retrained stage-2 backbone and
-at 75% / 85% on a randomly initialised one. The pretrained backbone starts to look after 0.25M
-samples, the random one after about 1.0M ([field notes](../notes.md), "Pretraining a backbone:
-mainly an earlier start"). History and data changed with the conditioning, so this does not test
-the conditioning alone.
-
-With 5M samples on 4000 demonstrations `dp_vit_lang_reactive` solved `pick_target`: 83% / 85% of
-100 unseen layouts before the position-table fix and 93% (trained weights) after it
-([the `pick_target` case study](101-case-pick-target.md)).
+Nor does it show that a policy built on this VLM uses the image. The first `vla_custom` policy
+(1500 demonstrations, 1.0M samples), conditioned on one action-token vector with history, did
+not: where it closed did not depend on the scene ([Measuring How a Policy Fails](92-measuring-failure.md)).
+That run changed too much at once to test the join, with a training budget too small even for
+the patch-token policy `dp_vit_lang_reactive` (3% / 5% after 1M samples on 1500 demonstrations;
+[How Much Data, How Much Training](71-how-much-data-and-training.md)). The same VLA with
+`conditioning: all_tokens`, no history, 4000 demonstrations and 3M samples does use the image:
+86% / 87% (trained / averaged weights) on `pick_target` on the retrained stage-2 backbone
+([A Backbone From Scratch Against a Pretrained One](102-case-pretrained-backbones.md) compares it
+with a randomly initialised one). History, the number of demonstrations, the training budget and
+the position table all changed with the conditioning, so this does not test the conditioning alone.
 
 ## Where it goes wrong
 
 **`AssertionError` in `VLM.forward`.** The number of placeholders differs from the number of
-projected patch tokens. Causes: `data.img_num_tokens` does not match the ViT and the shuffle factor;
-or truncation cut placeholders off. The limit is `seq_len + 1` in `ImageCaptionPipeline` and
-`data.max_text_seq_len` in the robotics pipeline; when that is unset (the default), the
-tokenizer's own `model_max_length`, 8192, since `SimpleVLMProcessor.__call__` always truncates
-(`seq_len` plays no part there). The SmolVLM2 tokenizer truncates from the left, so an over-long
-sample loses the prompt start and its first placeholders, not the end of its text. The config check in
-`vla_foundry/params/train_experiment_params.py` only requires `seq_len >= img_num_tokens`; it
-ignores the three prompt tokens and the text.
+projected patch tokens. Either `data.img_num_tokens` does not match the ViT and the shuffle
+factor, or truncation cut placeholders off. The limit is `seq_len + 1` in `ImageCaptionPipeline`;
+in the robotics pipeline it is `data.max_text_seq_len` or, when that is unset (the default), the
+tokenizer's `model_max_length`, 8192, since `SimpleVLMProcessor.__call__` always truncates. The
+SmolVLM2 tokenizer truncates from the left, so an over-long sample loses its prompt start and first
+placeholders. The config check in `vla_foundry/params/train_experiment_params.py` only requires
+`seq_len >= img_num_tokens`, ignoring the prompt tokens and the text.
 
 **Shapes are right and the image is ignored.** Nothing raises an error and the model answers from
 the text alone. A train/inference skew in the pixel range did this here: the stage-2 model scored
@@ -308,13 +306,12 @@ carrying information ([Testing a VLM](32-testing-a-vlm.md)).
 **Text positions that share a rotation.** Images push text past position 256: the caption example
 ends at 284, the four-image prompt at 1,033. Until it was fixed, the language model's table of
 position angles (`vla_foundry/positional_embedding.py`) was computed in bfloat16, a 16-bit float
-exact for whole numbers only up to 256: of 2048 positions, 641 distinct ones remained (lab
-notebook, bug table), and the 24 caption tokens of the worked example shared 12 (exercise 4).
-Nothing looked wrong, because training and inference built the same table.
-[Telling Tokens Where They Are](12-positions.md) has the fix and `rotary_legacy_autocast`, the
-setting for weights trained before it. The fix took the patch-token policy from 83% to 93%
-(trained weights; above), and a second pair of runs that differ in the table alone from 90% / 89%
-to 96% / 96%; in both pairs the policy starts to look earlier.
+exact for whole numbers only up to 256. Above that, neighbouring positions rounded to the same
+value and so got the same rotation: the 24 caption tokens of the worked example shared 12, and
+beyond 1,024, where the spacing is 8, all seven text positions of the four-image prompt shared two
+(exercise 4). Nothing looked wrong, because training and inference built the same table. [Telling Tokens Where They Are](12-positions.md) has the fix,
+`rotary_legacy_autocast` (the setting for weights trained before it) and what the fix changed for
+the policies; the VLM retrained after it is the last column of the table above.
 
 **`ValueError` from `pixel_shuffle`.** With a factor above 1 the token count must be a perfect
 square, which an encoder that adds a class token (one extra learned token next to the patch
@@ -397,15 +394,16 @@ conditioning on image positions alone leaves the instruction out (exercise 3).
    EOF
    ```
 
-4. The old position table rounded positions to bfloat16. Count the distinct ones it left to
-   caption tokens 259 to 282 and to all 2048. (12 and 641.)
+4. The old position table rounded positions to bfloat16. Count the distinct ones it left to the
+   caption tokens 259 to 282, to the text positions 1,027 to 1,033 of the four-image prompt, and
+   to all 2048. (12, 2 and 641.)
 
    ```bash
    .venv/bin/python - <<'EOF'
    import torch
 
    rounded = torch.arange(2048).float().to(torch.bfloat16).float()
-   for first, last in [(259, 282), (0, 2047)]:
+   for first, last in [(259, 282), (1027, 1033), (0, 2047)]:
        print(first, last, rounded[first : last + 1].unique().numel())
    EOF
    ```

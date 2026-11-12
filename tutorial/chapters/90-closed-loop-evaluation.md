@@ -23,10 +23,11 @@ names, and the arm's start pose. Here a layout is generated from one integer **s
 names a layout exactly.
 
 To measure a policy, take $n$ layouts it was not trained on, run one episode on each and count the
-successes $k$. The **success rate** is $\hat p = k/n$. From the lab notebook: the
-`dp_vit_lang_reactive` policy ([51-language-conditioning.md](51-language-conditioning.md)) trained
-on 4000 `pick_target` demonstrations for 5M samples, after the position fix, succeeded in 93 of
-100 episodes with its trained weights, so $\hat p = 0.93$.
+successes $k$. The **success rate** is $\hat p = k/n$. The running example of this chapter is the
+reference policy, `dp_vit_lang_reactive` ([51-language-conditioning.md](51-language-conditioning.md))
+on 4000 `pick_target` demonstrations and 5M samples, trained after the position fix
+([12-positions.md](12-positions.md)): it succeeded in 93 of 100 episodes with its trained weights,
+so $\hat p = 0.93$.
 
 That 93% is an estimate. Each episode passes or fails, so $k$ follows a **binomial
 distribution**: the number of successes in $n$ independent trials that each succeed with
@@ -116,11 +117,14 @@ shrink to zero width at 0 or $n$ successes.
 ### Comparing two policies
 
 **Overlapping intervals.** If the intervals of two evaluations do not overlap, the difference is
-larger than evaluation noise explains. The same recipe trained before a bug fix ("What we
-measured") read 83/100 against 93/100. The intervals, 74-89% and 86-97%, overlap, yet the gap is
-2.2 standard deviations of the difference between two independent readings
-($\sqrt{(0.83 \cdot 0.17 + 0.93 \cdot 0.07)/100} = 4.5$ points). Overlap is never evidence that
-two policies are equal.
+larger than evaluation noise explains: on the averaged weights (a running average of the weights
+that training keeps next to the trained ones) of the same recipe trained before the position fix,
+one flow step read 61/100 (51-70%) against 85/100 (77-91%) with ten
+([41-flow-matching.md](41-flow-matching.md)). The converse does not hold. The trained weights of
+that run read 83/100 against the 93/100 above; the intervals, 74-89% and
+86-97%, overlap, yet the gap is 2.2 standard deviations of the difference between two independent
+readings ($\sqrt{(0.83 \cdot 0.17 + 0.93 \cdot 0.07)/100} = 4.5$ points). Overlap is never
+evidence that two policies are equal.
 
 **The same seeds for every policy.** Two evaluations with the same task, `--seed_start` and
 episode count face identical layouts, so their outcomes can be compared in **pairs**. Background:
@@ -129,8 +133,12 @@ detect differences that overlapping intervals hide. Its **p-value** is the proba
 at least as lopsided as the observed one if each disagreement were equally likely to go either way.
 
 **One training seed against several.** A Wilson interval describes one weights file. Another
-**training seed** (`hparams.seed`, default 42) trains another policy, and a claim about a method
-needs several (background: Agarwal et al., 2021).
+**training seed** (`hparams.seed`, default 42; `data.seed` sets the order of the windows) trains
+another policy, and a claim about a method needs several (background: Agarwal et al., 2021). The
+close call above was settled that way: a second pair of runs with other seeds, differing in the
+position table alone, ends at 96/100 (96/100 averaged) with the fixed table against 90/100
+(89/100) with the old one, and the fixed table again starts to look earlier
+([12-positions.md](12-positions.md)).
 
 ## In this repository
 
@@ -155,7 +163,7 @@ Arguments after the episode count (default 50) go to `eval.py`.
 | `--exec_horizon`, `--flow_steps`, `--seed_start`, `--max_steps`, `--videos` | actions executed per chunk (8), flow steps (10), first seed, timeout, rollouts saved as mp4 (5) |
 | `--stale_images`, `--expert_prefix`, `--prefix_target`, `--first_prev_action` | probes: frozen cameras; the expert drives the first control steps, toward the named or another object; the expert's first command as first previous action ([95](95-what-a-policy-looks-at.md)) |
 | `--random_start` | a random gripper start pose, drawn from the seed, in place of the home pose ([95](95-what-a-policy-looks-at.md)) |
-| `--disturb reach\|grasp` | the named object is moved once per episode, 80 mm (`--disturb_mm`): at control step `--disturb_step` (default 15) of the reach, or as the gripper first closes ([95](95-what-a-policy-looks-at.md)) |
+| `--disturb reach\|grasp\|drift` | the named object is moved once per episode, 80 mm (`--disturb_mm`): at control step `--disturb_step` (default 15) of the reach, or as the gripper first closes; with `drift` it slides on a smooth random path at `--drift_cm_s` (2 cm/s) until held ([95](95-what-a-policy-looks-at.md)) |
 | `--expert` | `ScriptedExpert` through the same loop, no server; run `eval.py` itself, not `eval.sh` |
 
 `results.json`, written through a temporary file (`write_json`) so that no reader sees half of it,
@@ -221,43 +229,18 @@ training seed per run. Intervals in brackets apply the formula to the notebook's
 on machine B (L40S GPUs, 128 CPU cores), 99/100 on machine A (one RTX 4090, 24 GB), and 49/50 on
 `pick_cube`: the task is solvable and the success test fires.
 
-**Final results on `pick_target`** (machine B, 100 layouts, raw / EMA weights). The fix is to the
-rotary position table, which had been computed in bfloat16 ([12-positions.md](12-positions.md));
-the run after it saved raw weights only.
-
-| Policy | Demos | Samples | Success | Closed at the named object | Slope |
-|---|---|---|---|---|---|
-| `dp_vit_lang_reactive`, no history, after the fix | 4000 | 5.0M | 93% | 99% | 0.98 |
-| same, before the fix | 4000 | 5.0M | 83% / 85% | 100% / 100% | 0.98 / 0.98 |
-| same, before the fix | 1500 | 3.0M | 64% / 62% | 99% / 100% | 0.96 / 0.97 |
-| same, before the fix | 1500 | 1.0M | 3% / 5% | 49% / 41% | 0.29 / 0.18 |
-| `dp_vit_lang`, history, before the fix | 4000 | 3.0M (stopped) | 2% / 2% | 30% / 35% | 0.11 / 0.08 |
-
-The first two rows are the close call of "Overlapping intervals", on one training seed each; their
-curves (trained weights) read 88% to 94% against 81% to 86% from 3.0M samples on. A second pair
-with other seeds (`--data.seed 43 --hparams.seed 43`), differing in the position table alone, ends
-at 96% / 96% with the fixed table and 90% / 89% with the old one, and again the fixed table starts
-to look earlier (closed at the named object after 1.0M samples: 83% against 44%;
-[101-case-pick-target.md](101-case-pick-target.md)). The fourth row is the third row's policy and
-data on a budget that ended too early
-([71-how-much-data-and-training.md](71-how-much-data-and-training.md)). Nor is the last row blind:
-it reads the target from its previous action, and at 2.5M samples succeeds on 1/100 as served,
-22/100 when its first previous action is the expert's first command and 77/100 when the expert
-drives the first 10 control steps ([52-history-and-shortcuts.md](52-history-and-shortcuts.md)).
-Trained after the fix on demonstrations that begin with a hold frame (`collect.py --hold_steps 1`),
-the history policy ends at 0% / 4% after 5M samples, and where it closes still does not depend on
-the scene.
-
-**A curve, raw against EMA.** The second row by checkpoint (raw / EMA): 0% / 1% at 1.0M samples,
-4% / 2% at 1.5M, 4% / 36% at 2.0M, 56% / 70% at 2.5M, 81% / 75% at 3.0M, then 80% to 86%; the
-slope had already reached 0.81 / 0.96 at 2.0M. At 2.0M the two weights files differ by more than
-evaluation noise (1.6-9.8% and 27.3-45.8%); before the rise and after it they agree within noise.
-Not every run shows this: in the 3M-sample run on 1500 demonstrations the two stay within 9 points
-of each other. Save and evaluate both.
+**Raw against EMA, one checkpoint.** `eval_checkpoints.sh` evaluates both weights files of every
+checkpoint, and the intervals say when they differ. In the 4000-demonstration run before the fix,
+at 2.0M samples, in the middle of the transition, in which the policy starts to use the scene
+([71-how-much-data-and-training.md](71-how-much-data-and-training.md)), the trained weights read
+4/100 (1.6-9.8%) and the averaged ones 36/100 (27.3-45.8%): separated. Before the transition and
+after it the two agree within noise, and not every run shows the gap: in the 3M-sample run on 1500
+demonstrations they stay within 9 points of each other. Save and evaluate both.
 
 **A second set of 100 layouts.** The final checkpoints of eight runs (averaged weights where the
-run saved them; [95-what-a-policy-looks-at.md](95-what-a-policy-looks-at.md)), evaluated again
-on seeds 1,000,100 to 1,000,199:
+run saved them; the demonstrations are described in
+[72-which-demonstrations-teach.md](72-which-demonstrations-teach.md)), evaluated again on seeds
+1,000,100 to 1,000,199:
 
 | Demonstrations | Seeds from 1,000,000 | Seeds from 1,000,100 |
 |---|---|---|
@@ -274,14 +257,12 @@ The same weights differ by 1 to 12 points between the sets, and the order change
 poses with recoveries lead recoveries alone by 10 points, then trail by 6. A gap of a few points on
 100 layouts is not a ranking.
 
-**Flow steps and actions per chunk.** Before the fix, 1 flow step read 61/100 (51-70%) against
-85/100 (77-91%) with 10: separated. Two steps matched ten before the fix (89/100) and on four of
-the seven trained after it (94 against 93, 84 against 84, 98 against 98, 94 against 94), but cost
-19 points with early windows repeated (77 against 96), 12 with every object named (77 against 89)
-and 12 with random start poses, recoveries and early windows repeated (74 against 86): measure it
-on the policy that will run ([41-flow-matching.md](41-flow-matching.md)).
-Executing 2 or 4 actions per chunk in place of 8 did not help: 76 and 84 against 85 of 100
-([42-chunks-and-execution.md](42-chunks-and-execution.md)).
+**Inference settings are part of the test.** `--flow_steps` and `--exec_horizon` change what is
+measured, so a reading holds for the settings stored in its `results.json`. Two flow steps read
+89/100 against 85/100 with ten on the policy before the fix, matched ten on most policies after
+it and cost 12 to 19 points on three of the seven; executing fewer actions per chunk did not help
+([41-flow-matching.md](41-flow-matching.md), [42-chunks-and-execution.md](42-chunks-and-execution.md)).
+Compare two settings on the same seeds, on the policy that will run.
 
 ## Where it goes wrong
 
@@ -294,18 +275,23 @@ Executing 2 or 4 actions per chunk in place of 8 did not help: 76 and 84 against
   another weights file, and `summarize.py` and the
   monitors leave out `ckpt_*` results whose `server.checkpoint` does not match their directory.
   Run by hand, `eval.py` checks only what `--expect_*` asks for.
-- **A flat 0% is read as a failed design.** The run of the curve above read 0% to 4% up to 1.5M
-  samples and ended at 83% / 85%. Evaluate every
-  checkpoint and watch the slope ([71-how-much-data-and-training.md](71-how-much-data-and-training.md)).
-- **A success rate is read as a policy that watches the scene.** With the cameras frozen on the
-  first frame, the 93% policy succeeds on 1/100 yet closes at the named object in 94% of
-  episodes. With the named object moved 80 mm at control step 20 it succeeds on 0/97; the policy
-  trained on recoveries, on 79/96 ([95-what-a-policy-looks-at.md](95-what-a-policy-looks-at.md)).
+- **A flat 0% is read as a failed design.** Looking at the scene can arrive late and all at once
+  ([71-how-much-data-and-training.md](71-how-much-data-and-training.md)), so the first checkpoints
+  of a run that ends well can all read near 0. Evaluate every checkpoint and watch the slope,
+  which moves before success does.
+- **A success rate is read as a policy that watches the scene.** With nothing moving, one look at
+  the first frame can be enough to succeed. The probes in the settings table test it: frozen
+  cameras, expert handover and disturbances
+  ([95-what-a-policy-looks-at.md](95-what-a-policy-looks-at.md),
+  [103-case-self-correction.md](103-case-self-correction.md)). Give each probe its own
+  `PICKUP_OUT`, check `interventions` in its `results.json`, and run the expert with the same flags
+  (`--expert --disturb reach`; with `--expert_reactive` it plans again when the object has moved)
+  to know what the task allows.
 - **Picking the best checkpoint.** `summarize.py --best` and the `best` column of `monitor.py`
   take the maximum over a run's evaluations, which is biased upward: from 3.0M samples on, the 12
-  readings of the curve above lie between 75% and 86% and pool to 983/1200 = 82%, at which one
-  reading has a standard deviation of 3.8 points. Re-evaluate the chosen checkpoint on fresh
-  layouts (`--seed_start 1000100`) and report that.
+  readings of the 4000-demonstration run before the fix lie between 75% and 86% and pool to
+  983/1200 = 82%, at which one reading has a standard deviation of 3.8 points. Re-evaluate the
+  chosen checkpoint on fresh layouts (`--seed_start 1000100`) and report that.
 - **Seeds below 1,000,000.** `--seed_start 0` evaluates on layouts that have demonstrations: a
   deliberate check, not a generalisation number.
 - **Nothing is evaluated on macOS.** `eval_checkpoints.sh` calls GNU `stat -c %Y`; BSD `stat`

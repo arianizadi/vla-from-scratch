@@ -2,7 +2,7 @@
 title: Setup and a First Run
 part: 0 Orientation
 order: 01
-summary: Install the repository, run the whole loop once on the single-cube task as a smoke test, then start the three-object run (93% here after the position fix; 83% / 85% before it) and read its success curve and grasp map.
+summary: Install the repository, run the whole loop once on the single-cube task as a smoke test, then start the three-object run and read its success curve with `summarize.py` and its grasp map.
 status: draft
 ---
 
@@ -11,7 +11,7 @@ status: draft
 A robot policy is judged by what the robot does, so the unit of work in this repository is a loop:
 collect demonstrations, train, run the trained policy in the simulator, count successes. This
 chapter installs the environment, runs that loop once on the easiest task as a smoke test, a quick
-check that every stage works, and then starts the three-object run, which reached 93% here.
+check that every stage works, and then starts the three-object run that later chapters build on.
 Later chapters change one thing in this loop and measure the difference, so it has to run on
 your machine first.
 
@@ -177,6 +177,31 @@ near 1 is imprecise; one with a slope near 0 is not looking
 first closed: green for success, red for failure, rings at 1 cm and 2 cm. One map is relative to the
 named object, one to the nearest object.*
 
+### Reading a run while it trains
+
+`summarize.py` turns the evaluations of one run into a curve. `eval_checkpoints.sh` names each
+result directory `ckpt_<N>_raw` or `ckpt_<N>_ema`; `checkpoint_samples` reads every
+`Samples: X / Y` line of `experiments/pickup/<run>.train.log*` and maps checkpoint N to the count
+logged when it was written, and the last checkpoint to the total. That count fills the Samples
+column, so the rows of one run sort into success against training. A row whose `server` entry
+names other weights than its directory is left out (`served_checkpoint_matches`).
+
+`close_slope` computes the slope from `per_episode`. For each table axis, x and y, it pairs the
+named object's position with the gripper's position at the first close, over every episode that
+closed; it then divides the covariance summed over both axes by the summed variance of the object
+positions. With fewer than three such episodes on an axis the column shows `-`.
+
+```bash
+.venv/bin/python -m sim.pickup.summarize --task pick_target --runs dp_vit_lang_reactive_pt4k
+.venv/bin/python -m sim.pickup.summarize --task pick_target --best
+.venv/bin/python -m sim.pickup.summarize --task pick_target --json results/pickup/summary.json
+```
+
+`--runs` keeps the runs named exactly (the monitor's `--runs` matches substrings), `--best` keeps
+each run's best evaluation, and `--json` also writes the rows to a file for plotting. On a run in progress, read the
+Slope and "At named object" columns before Success: they say whether a low success rate is a policy
+that has not started to look or one that looks and misses.
+
 ### The first real run: three objects
 
 ```bash
@@ -187,8 +212,10 @@ PICKUP_WATCH=1 sim/pickup/scripts/eval_checkpoints.sh experiments/pickup/dp_vit_
 ```
 
 This is the plain version of the recipe in the repository's [`README.md`](../../README.md), under
-the lab notebook's run name; the README adds `--random_start --disturb_prob 0.5` to the dataset
-(see below). It is the same loop with three changes.
+the lab notebook's run name. The README adds `--random_start --disturb_prob 0.5` for `collect.py`:
+episodes start from a random gripper pose, and in half of them the named object is moved once and
+the expert recovers ([72-which-demonstrations-teach.md](72-which-demonstrations-teach.md)). The
+three-object run is the smoke test's loop with three changes.
 
 1. **Data.** 4000 layouts of `pick_target`, one demonstration each.
 2. **The instruction is an input.** `sim/pickup/configs/dp_vit_lang_reactive.yaml` adds it as 32
@@ -210,8 +237,9 @@ PICKUP_OUT=results/pickup/dp_vit_lang_reactive_pt4k/pick_target/disturb_reach \
 ```
 
 `--stale_images` sends the first frame's images for the whole episode. `--disturb reach` moves the
-named object once, 80 mm by default, at control step `--disturb_step`
-([95-what-a-policy-looks-at.md](95-what-a-policy-looks-at.md)).
+named object once by `--disturb_mm` (default 80 mm) at control step `--disturb_step` (default 15);
+`--disturb grasp` moves it as the gripper first closes. Without `PICKUP_OUT`, a probe would
+overwrite the plain evaluation in `results/pickup/<run>/<task>/`.
 
 ### Environment variables
 
@@ -241,15 +269,12 @@ CPUs for preprocessing.
 ## What we measured
 
 All numbers are from [`lab-notebook.md`](../lab-notebook.md): machine A (one RTX 4090, 24 GB) and
-machine B (L40S GPUs, 128 CPU cores), unseen layouts, one training seed per run. Two numbers,
-`62% / 70%`, are the trained (raw) and the averaged (EMA) weights.
+machine B (L40S GPUs, 128 CPU cores), unseen layouts, one training seed per run. A pair such as
+`a% / b%` gives the trained (raw) and the averaged (EMA) weights.
 
-Most runs below were trained with a bug, since fixed, in the transformer's table of position
-angles: computed in bfloat16, a 16-bit float format, it held 641 distinct positions where 2048
-were meant ([12-positions.md](12-positions.md)). Trained again after the fix, the same
-three-object recipe ends at 93% (trained weights), and on the single cube the policy with history
-ends at 96% / 98% (lab notebook, "After the position fix"). In both pairs of runs that compare the
-tables, the fixed table makes the policy start to look earlier.
+Most runs in the notebook were trained before a bug in the transformer's table of position angles
+was fixed ([12-positions.md](12-positions.md)); the code you install has the fix, so the rows
+marked "after the fix" are the ones to compare your own runs with.
 
 **Cost.** `dp_vit` trains at about 620 samples/s on machine A: 1.5M samples in about 40 minutes
 (arithmetic on the throughput). On machine B, with every checkpoint evaluated on the same GPU as it
@@ -259,57 +284,37 @@ single-cube runs 33 minutes without history and 53 with.
 **The smoke test.** `pick_cube`, 1000 demonstrations, 65,391 windows; 1.5M samples are 22.9
 epochs, an **epoch** being one pass over the training windows.
 
-| Policy, 1.5M samples | Machine, layouts | Success |
+| `dp_vit`, 1.5M samples | Machine, layouts | Success |
 |---|---|---|
-| `dp_vit`, the command above, before the fix | A, 50 | 37/50 = 74% (interval 60-84%) |
-| same, before the fix | B, 100 | 62% / 70% |
-| same, after the fix | B, 100 | 96% / 98% |
-| `dp_vit_lang_reactive`, no history, before the fix | B, 100 | 95% / 91% |
-| same, after the fix | B, 100 | 91% (trained weights) |
+| before the fix | A, 50 | 37/50 = 74% (interval 60-84%) |
+| before the fix | B, 100 | 62% / 70% |
+| after the fix | B, 100 | 96% / 98% |
 
 **What it shows.** Every stage of the loop works, and the policy uses the scene: before the fix,
 on machine B, its slope was 1.03 / 1.03 and its median miss 14 / 14 mm, imprecise and not blind.
+The gap between the second and third rows is the position table alone.
 
 **What it does not show.** A precise rate: the interval on the 74% is 24 points wide. That a
 policy picks the object it is told to: there is one object, and `dp_vit` does not read the
-instruction at all. Or that history hurts here: the second and fourth rows differ in history,
-instruction input and pixel range, and the gap between them was the position bug, as the third row
-shows ([100-case-pick-cube.md](100-case-pick-cube.md)).
+instruction at all. Or anything about history, which this policy has
+([52-history-and-shortcuts.md](52-history-and-shortcuts.md)).
 
-**The real run.** `dp_vit_lang_reactive_pt4k` on machine B, 263,289 windows (5M samples are 19.0
-epochs), 100 layouts per evaluation, raw / EMA, before the fix; the last column is the same
-recipe after it (`dp_vit_lang_reactive_pt4k_posfix`, trained weights). Chance for "closed at the
-named object" is 33%.
-
-| Samples | Success | Closed at the named object | Slope | Median miss to named | Success after the fix |
-|---|---|---|---|---|---|
-| 1.0M | 0% / 1% | 35% / 32% | 0.11 / 0.14 | 138 / 154 mm | 8% |
-| 2.0M | 4% / 36% | 95% / 98% | 0.81 / 0.96 | 32 / 18 mm | 40% |
-| 2.5M | 56% / 70% | 98% / 100% | 0.94 / 0.98 | 14 / 13 mm | 77% |
-| 5.0M (final) | 83% / 85% | 100% / 100% | 0.98 / 0.98 | 7 / 7 mm | 93% |
+**The real run.** `dp_vit_lang_reactive_pt4k`: 4000 demonstrations, 263,289 windows, so 5M
+samples are 19.0 epochs. After the fix this recipe ends at 93% (trained weights,
+`dp_vit_lang_reactive_pt4k_posfix`). Its early checkpoints are not a guide to that end: for about the first million samples
+the policy rarely succeeds, and then the slope, the miss and success change quickly
+([71-how-much-data-and-training.md](71-how-much-data-and-training.md) has the curve). With the
+default of 6 checkpoints the evaluations are about 0.83M samples apart; the notebook's runs on
+machine B saved 10 (`PICKUP_NUM_CHECKPOINTS=10`), 0.5M apart.
 
 <!-- interactive: onset -->
 *Figure: success, closed at the named object and slope against training samples for this run and
 its 1500-demonstration counterparts: flat for about a million samples, then all three rise.*
 
-Looking at the scene arrives late and all at once. After 1.0M samples where the gripper closes
-still barely depends on the scene; then the slope moves, the miss shrinks and success follows,
-the averaged weights leading in this run ([101-case-pick-target.md](101-case-pick-target.md)).
-The notebook's rows are 0.5M samples apart (`PICKUP_NUM_CHECKPOINTS=10`); the default of 6 puts
-them about 0.83M apart.
-
-The 85% has two limits.
-
-- **The policy looks once.** With `--stale_images` the final EMA weights scored 1/100 and still
-  closed at the named object in 99% of episodes. With the object moved at control step 20 they
-  succeeded in 0 of the 96 episodes in which it could be moved, closing 8 mm (median) from its
-  old place. The README's demonstrations, with random start poses and recoveries, change this:
-  89-94% under every disturbance, against 0-18% for every policy trained on clean demonstrations
-  ([95-what-a-policy-looks-at.md](95-what-a-policy-looks-at.md)).
-- **The grasp angle.** Per object, same weights, before the fix: can 26/28, hex nut 24/25, cube
-  20/24, T block 15/23. After the fix the same recipe's final checkpoint has cube 23/24 and T block
-  20/23: most of this limit was the position bug, not the grasp angle
-  ([12-positions.md](12-positions.md)).
+Trained on these clean demonstrations, the policy looks at the scene once and then follows its own
+arm: the probes introduced above show it when run
+([95-what-a-policy-looks-at.md](95-what-a-policy-looks-at.md) has the results); the README's
+dataset changes that ([103-case-self-correction.md](103-case-self-correction.md)).
 
 ## Where it goes wrong
 
@@ -320,10 +325,11 @@ The 85% has two limits.
 | A dataset disappears | `make_dataset.sh` starts with `rm -rf` on `data/lerobot/<name>` and `data/preprocessed/<name>` | use a new name for a new dataset |
 | A new run's log starts with a `Samples:` count above 0 | `train_resilient.sh` resumes from any `checkpoint_*.pt` in `experiments/pickup/<run_name>/checkpoints` | use a new run name |
 | `policy server exited before it was ready` with `Address already in use`, or `eval.py` stops because the server "is serving" another checkpoint | two evaluations share a port (`PICKUP_PORT`, or 6200 when both programs are started by hand) | leave `PICKUP_PORT` unset; `server` in `results.json` names the weights file served |
+| `summarize.py` prints `left out N evaluations that were served by another checkpoint` | those evaluations reached another run's policy server, so their numbers belong to the wrong weights | delete the listed `results.json` files and run `eval_checkpoints.sh` again; it redoes only what is missing |
 | `nvidia-smi` shows an evaluation's processes on a GPU other than `PICKUP_GPU` | `MUJOCO_EGL_DEVICE_ID` was set by hand, and EGL's order is not `nvidia-smi`'s | unset it |
-| Low loss, low success | on 200 `pick_cube` demos (machine A), one pooled CLIP vector per image: loss 0.040, 2/50; `dp_vit`, every patch a token: 0.091, 15/50 | judge by `results.json` ([91-loss-is-not-success.md](91-loss-is-not-success.md)) |
-| The real run is near 0% after 1M samples | the transition comes later (table above). On 1500 demonstrations the same policy scored 3% / 5% with a budget of 1.0M samples and 64% / 62% with 3.0M | watch the slope in `summarize.py`; let the run reach its budget ([71-how-much-data-and-training.md](71-how-much-data-and-training.md)) |
-| A `pick_target` policy with history stays near 0% | `dp_vit_lang`, same 4000 demonstrations: 2% / 2% after 3.0M samples. It takes the target from its previous action: one checkpoint scored 1/100 as served, 22/100 with the expert's first command as its first previous action, 77/100 with the expert driving the first 10 control steps (trained before the position fix; after it, on demonstrations that begin with a hold frame, `collect.py --hold_steps 1`, it ends at 0% / 4% after 5M samples) | `eval.py --first_prev_action expert`, `--expert_prefix 10`; start without history ([52-history-and-shortcuts.md](52-history-and-shortcuts.md)) |
+| Low loss, low success | on the same 200 `pick_cube` demonstrations a policy given one pooled vector per image reached a lower loss and a lower success than `dp_vit` ([21-pooled-vs-patch-tokens.md](21-pooled-vs-patch-tokens.md)) | judge by `results.json` ([91-loss-is-not-success.md](91-loss-is-not-success.md)) |
+| The real run's first checkpoints score near 0%, with a Slope near 0 | it has not started to look yet; the turn comes later (see "The real run" above) | let the run reach its budget before judging it ([71-how-much-data-and-training.md](71-how-much-data-and-training.md)) |
+| A `pick_target` policy with history (`dp_vit_lang`) stays near 0% | it reads the target from its own previous action instead of from the images ([52-history-and-shortcuts.md](52-history-and-shortcuts.md)) | probe it with `eval.py --first_prev_action expert` or `--expert_prefix 10`; start without history |
 
 ## Background and further reading
 
@@ -357,6 +363,19 @@ Background, not measured here.
 2. Read the Slope column that `summarize.py` prints for the last checkpoint of the smoke test. Is
    that policy imprecise or not looking?
 
-3. Before running the `--stale_images` probe on the real run, write down what you expect for
-   `success_rate` and for `closed_nearest_is_target_rate`. Run it and compare with the numbers
-   above.
+3. Compute the slope of the smoke test's final evaluation for the x axis alone, from
+   `per_episode`, and compare it with the pooled value in the Slope column. When would the two
+   differ much?
+
+   ```python
+   import json
+   r = json.load(open("results/pickup/dp_vit_pick_cube_1k/pick_cube/results.json"))
+   pairs = [(e["close_object_xy"][e["target"]][0], e["close_tcp_xy"][0])
+            for e in r["per_episode"] if e.get("close_tcp_xy") and e["target"] in (e.get("close_object_xy") or {})]
+   mx = sum(x for x, _ in pairs) / len(pairs); my = sum(y for _, y in pairs) / len(pairs)
+   print(sum((x - mx) * (y - my) for x, y in pairs) / sum((x - mx) ** 2 for x, _ in pairs))
+   ```
+
+4. Before running the `--stale_images` probe on the real run, write down what you expect for
+   `success_rate` and for `closed_nearest_is_target_rate`. Run it and compare with what
+   [95-what-a-policy-looks-at.md](95-what-a-policy-looks-at.md) reports for the same policy.

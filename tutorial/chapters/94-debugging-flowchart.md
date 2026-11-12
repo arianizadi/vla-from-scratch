@@ -31,7 +31,8 @@ them:
    checked before the policy and the serving path before the behaviour.
 2. **Every answer must change what is done next.** The training loss fails this rule: on
    `pick_cube` a final loss of 0.040 went with 2/50 (pooled CLIP, 200 demonstrations) and a higher
-   one, 0.058, with 37/50 (`dp_vit`, 1000 demonstrations).
+   one, 0.058, with 37/50 (`dp_vit`, 1000 demonstrations;
+   [Loss Is Not Success](91-loss-is-not-success.md)).
 
 Worked example, from the [lab notebook](../lab-notebook.md): `dp_vit` scored 1/100 on `pick_target`
 on machine A (one RTX 4090, 24 GB), on unseen **layouts** (which objects are on the table, where,
@@ -46,14 +47,13 @@ refer to the chart below.
   height: it learned the motion.
 - **Decision 4.** The nearest object was the named one in 32% of episodes, where chance is 33%; the
   median miss was 185 mm to the named object and 110 mm to the *nearest*. It did not reach between
-  the objects; it did not look.
+  the objects; it did not look ([Measuring failure](92-measuring-failure.md)).
 - **Decision 6.** [`sim/pickup/configs/dp_vit.yaml`](../../sim/pickup/configs/dp_vit.yaml) has no
   `text_tokens` key, and `ViTBackboneWrapper` (`vla_foundry/models/vision_language_backbones/vit_backbone.py`)
   embeds the instruction only when `text_tokens > 0`: leaf D.
 
-Three checks and a config found a cause no training removes, but not the only one: What we
-measured follows the task through leaves F to I, to 83% / 85% (trained / averaged weights) before
-the position-table fix, 93% after it and 98% / 98% with random start poses.
+Three checks and a config found a cause no training removes. It was not the last one on this
+task: What we measured follows `pick_target` on through leaves F, G, H and I, one fix at a time.
 
 ## How it works
 
@@ -91,9 +91,9 @@ flowchart TD
 | H | a fault both paths share, such as the position table; then finger yaw, height at the close, lift | [Positions](12-positions.md), [Measuring failure](92-measuring-failure.md) |
 | I | one start pose, nothing moves, no grasp fails; remedy: random start poses and recoveries in the data | [Probing a policy that works](95-what-a-policy-looks-at.md) |
 
-No policy here landed on leaf C. On `pick_target` the two VLAs given every token
-reach 86% / 87% and 70% / 72%, against 0-6% with one vector, but history and the number of
-demonstrations changed too (field notes, "One pooled vector is not enough for grasping").
+No policy here landed on leaf C. Leaves D and E need no evaluation of their own: decision 6
+reads them off the config ([the backbone case study](102-case-pretrained-backbones.md) shows what handing the
+action head every token changes).
 
 **1. The expert in the same evaluation loop.** `eval.py --expert` replaces the served policy with
 `ScriptedExpert`; the environment, the seeds from `EVAL_SEED_START = 1_000_000`, the `GraspProbe`
@@ -155,10 +155,14 @@ side by side. The slope leaves zero before success does.*
 
 **Leaf H: the shared fault first.** A policy that looks and misses inside the tolerance fails at
 the grasp or carries a fault that training and serving share, which decision 2 cannot see. The
-rotary position table was one: computed in bfloat16 under autocast, it held 641 distinct positions
-out of 2048, and the 15 action-step tokens of the no-history policy shared 8.
-`tests/essential/models/test_rotary_precision.py` checks that every position gets its own rotation.
-Run such tests first; then `grasp.by_target` gives the yaw error and height at the close per object.
+rotary position table was one: computed in bfloat16 under autocast, it gave many positions the same
+rotation, in training and in serving alike ([Positions](12-positions.md)). Such a fault is found by
+stating a property the tensors must have and checking it where they are made, at the precision
+training uses. `tests/essential/models/test_rotary_precision.py` does this for the table: it builds
+it under autocast and asserts that the number of distinct (cos, sin) rows equals the number of
+positions. The setting `positional_embedding_type: rotary_legacy_autocast` rebuilds the old table,
+for evaluating checkpoints trained before the fix with the table they were trained on. Run such
+tests first; then `grasp.by_target` gives the yaw error and height at the close per object.
 
 **8. An object that is moved.** `eval.py --disturb reach` moves the named object once, at control
 step `--disturb_step` (default 15), by `--disturb_mm` millimetres (default 80); `--disturb grasp`
@@ -249,44 +253,38 @@ From the [lab notebook](../lab-notebook.md); pairs are trained / averaged weight
 exponential moving average of the trained ones). The first two rows and the VLM are machine A, the
 rest machine B (L40S GPUs, 128 CPU cores); 100 unseen layouts per evaluation.
 
-| Policy | Readings | Leaf | What followed |
+| Policy | Readings | Leaf | Fix, and where it is told |
 |---|---|---|---|
-| Pooled CLIP, `pick_cube`, 2/50 | 0/20 on its own training layouts; closes a few centimetres from the cube | E | patch tokens, same 200 demonstrations: 15/50 |
-| `vla_custom`, pretrained VLM, 0/100 | closed at the named object 33%, misses 175 / 89 mm (named / nearest); one conditioning vector, history, 1.0M samples | E; F and G possible | `conditioning: all_tokens`, no history, 4000 demonstrations, 3.0M samples: 86% / 87% (random-init backbone 75% / 85%) |
-| `dp_vit_lang` (history), 4000 demonstrations, stopped at 3.0M samples, 2% / 2% | closed at the named object 30% / 35%, slope 0.11 / 0.08 | F | the probes below |
-| `dp_vit_lang_reactive` (no history), 1500 demonstrations, 1.0M samples, 3% / 5% | closed at the named object 49% / 41%, slope 0.29 / 0.18 | G | 3.0M samples: 64% / 62%; 4000 demonstrations, 5.0M: 83% / 85% |
-| the same, 4000 demonstrations, 5.0M, 83% / 85% | slope 0.98 / 0.98; failed T-block grasps inside the tolerance | H | position table fixed: 93% (trained weights) |
-| `dp_vit` (history), `pick_cube`, 62% / 70% | slope 1.03 / 1.03, miss 14 / 14 mm | H | position table fixed: 96% / 98% |
-| `dp_vit_lang_reactive` after the fix, 93% | object moved at step 20: 0/97; at the grasp: 0/100 | I | random start poses: 98% / 98%; recoveries: 89% / 84%, follows a moved object |
+| Pooled CLIP, `pick_cube`, 2/50 | 0/20 on its own training layouts; closes a few centimetres from the cube | E | patch tokens, same 200 demonstrations ([One Vector or Many Tokens](21-pooled-vs-patch-tokens.md)) |
+| `vla_custom`, pretrained VLM, 0/100 | closed at the named object 33%, misses 175 / 89 mm (named / nearest); one conditioning vector, history, 1.0M samples | E; F and G possible | `conditioning: all_tokens`, no history, more demonstrations and samples ([the backbone case study](102-case-pretrained-backbones.md)) |
+| `dp_vit_lang` (history), 4000 demonstrations, stopped at 3.0M samples, 2% / 2% | closed at the named object 30% / 35%, slope 0.11 / 0.08 | F | the two probes of decision 7 (below) |
+| `dp_vit_lang_reactive` (no history), 1500 demonstrations, 1.0M samples, 3% / 5% | closed at the named object 49% / 41%, slope 0.29 / 0.18 | G | more samples, then more demonstrations ([How Much Data, How Much Training](71-how-much-data-and-training.md)) |
+| the same, 4000 demonstrations, 5.0M, 83% / 85% | slope 0.98 / 0.98; failed T-block grasps inside the tolerance | H | the position table fixed ([Positions](12-positions.md)) |
+| `dp_vit` (history), `pick_cube`, 62% / 70% | slope 1.03 / 1.03, miss 14 / 14 mm | H | the position table fixed; history was not the cause ([History and shortcuts](52-history-and-shortcuts.md)) |
+| `dp_vit_lang_reactive` after the fix, 93% | object moved at step 20: 0/97; at the grasp: 0/100 | I | random start poses and recoveries in the demonstrations ([Which Demonstrations Teach What](72-which-demonstrations-teach.md)) |
 
 Leaf B was met on the stage-2 VLM: a pixel-range skew left it at 1/300 on exact ordering of
 held-out scenes, 256/300 after the fix (machine A; [Train/inference skew](93-train-inference-skew.md)).
 
-**Leaf F in detail.** The history policy at 2.5M samples (averaged weights, trained before the
-position fix) scored 1/100 as served, closing at the named object in 30% of episodes. With the
-expert's first command as its first previous action: 22/100 and 97%; with the expert driving the
-first 10 control steps: 77/100 and 100%. Without history the same data gave 81% / 75% at 3.0M
-samples. Trained after the fix on demonstrations that begin with a hold frame (`collect.py
---hold_steps 1`), the history policy ends at 0% / 4% after 5.0M samples, its slope between -0.11 and
-0.12 throughout: from the second step on, the previous action still predicts the next one.
-On the single cube history costs nothing (the table above).
+Read the table by its leaf, not its success: the pooled CLIP policy and `dp_vit_lang` fail alike
+and needed different fixes, while the two H rows share one cause across task, history and
+language input.
 
-**Leaf G in detail.** `dp_vit_lang_reactive` on 4000 demonstrations, by checkpoint, and the same
-run after the position fix (trained weights):
+**Leaf F in detail.** The history policy, probed at 2.5M samples (averaged weights, before the
+position fix), went from 1/100 as served to 22/100 with the expert's first command as its first
+previous action and 77/100 with the expert driving the first 10 control steps
+([History and shortcuts](52-history-and-shortcuts.md), which also tries demonstrations that begin
+with a hold frame). What sends it to leaf F is where the change was made: only the first previous
+action, or only the first steps, differed from the plain run, so what the policy lacked was its
+first decision, not the reach or the grasp.
 
-| Samples | Success | Slope | After the fix: success, slope |
-|---|---|---|---|
-| 1.0M | 0% / 1% | 0.11 / 0.14 | 8%, 0.58 |
-| 1.5M | 4% / 2% | 0.47 / 0.37 | 58%, 0.94 |
-| 2.0M | 4% / 36% | 0.81 / 0.96 | 40%, 0.97 |
-| 5.0M (final) | 83% / 85% | 0.98 / 0.98 | 93%, 0.98 |
+**Leaf G in detail.** `dp_vit_lang_reactive` on 4000 demonstrations, read by checkpoint: at 1.0M
+samples the slope was 0.11 / 0.14; at 1.5M success was 4% / 2% and the slope 0.47 / 0.37. Success
+says nothing has happened; the slope says the policy has started to look, and the run should go
+on. How that run ended, and how to choose a budget before it starts, is in
+[How Much Data, How Much Training](71-how-much-data-and-training.md).
 
-At 1.5M success says nothing has happened; the slope says the policy has started to look. The 1500-demonstration run ended at 1.0M samples inside this transition; with 3.0M samples
-the same policy on the same data crossed it between 1.2M (3% / 0%, slope 0.52 / 0.14) and 1.8M
-(44% / 43%, slope 1.00 / 0.95). Averaged
-weights led during this transition, not in every run ([The training loop](80-the-training-loop.md)).
-
-**Leaf H in detail.** Over the 85% policy's checkpoints from 3.0M samples on, the T block is lifted
+**Leaf H in detail.** Over the checkpoints of the first H row from 3.0M samples on, the T block is lifted
 in 153/276 episodes (55%). Its failed grasps closed 15 mm (median) from the object, where a 15 mm
 offset leaves the expert at 100%, with a median yaw error of 64 degrees against 35 on the
 successes: it looked like the grasp angle. Most of it was the position table: the recipe trained
@@ -294,30 +292,26 @@ after the fix, pooled over its last three checkpoints, lifts the T block in 60/6
 ([the `pick_target` case](101-case-pick-target.md); the single cube in
 [the `pick_cube` case](100-case-pick-cube.md)).
 
-**Leaf I in detail.** The 85% policy (averaged weights), object moved 80 mm at control step 20:
-0/96, closing 8 mm (median) from the old place, 78 mm from the new. Moved as the gripper first
-closed: 1/99, a second attempt in 29/99. The expert with one plan per episode also fails (0/99,
-0/100); planning again, 96/96 and 100/100. Trained after the fix on other demonstrations:
-
-| Demonstrations | Unchanged task | Random start | Moved at step 10 / 20 / 30 | Moved at the grasp |
-|---|---|---|---|---|
-| one clean pass per layout | 93/100 | 9/100 | 12/100, 0/97, 0/100 | 0/100, 8 retried |
-| random start poses | 98/100 | 97/100 | 94/100, 50/98, 0/100 | 0/100, 2 retried |
-| recoveries | 84/100 | 68/100 | 88/100, 79/96, 85/100 | 78/99, 99 retried |
-| random start poses and recoveries | 94/100 | 91/100 | 92/100, 89/98, 94/100 | 89/100, 100 retried |
-
-Random start poses make the policy follow an early move; only recoveries make it follow a late one
-and try again. Both in the same demonstrations give both: 89-94% under every disturbance, also from
-a random start pose (the README's recipe).
+**Leaf I in detail.** The policy of the first H row (85%, averaged weights, before the position
+fix), with the object moved 80 mm at control step 20, closed 8 mm (median) from the old place and
+78 mm from the new: it went where the object had been
+([Probing a policy that works](95-what-a-policy-looks-at.md)); after the fix the same recipe still
+failed, 0/97 (the table above). Run the expert both ways first:
+with one plan per episode it fails the same disturbances and planning again it succeeds, so the
+probe asks for something clean demonstrations never show. The fix is therefore in the data: random
+start poses for an early move, recoveries for a late one and a second attempt
+([Which Demonstrations Teach What](72-which-demonstrations-teach.md),
+[the self-correction case](103-case-self-correction.md)).
 
 ## Where it goes wrong
 
 | What you see | Why | What to do |
 |---|---|---|
-| One checkpoint or one set of weights picks the wrong leaf | In the 4000-demonstration table the leaf changes between 1.0M and 2.0M samples; at 2.0M success is 4% trained against 36% averaged | Evaluate every checkpoint, both sets of weights |
+| One checkpoint or one set of weights picks the wrong leaf | During the transition the leaf changes from checkpoint to checkpoint, and the two sets of weights can disagree: `dp_vit_lang_reactive` on 4000 demonstrations (leaf G in detail, before the position fix) at 2.0M samples succeeded in 4% trained against 36% averaged (averaged weights led there, not in every run) | Evaluate every checkpoint, both sets of weights |
+| An evaluation files another run's result under this run's name | Two evaluations on one port both reach whichever policy server bound it first | `eval.sh` picks a free port and passes `--expect_run`; when calling `eval.py` yourself, pass `--expect_run`, and `--expect_number` and `--expect_weights` for one checkpoint |
 | The height reading is off while the policy goes to other objects | `close_z_above_grasp` is measured against the *named* object, and object heights differ | Read it on episodes where `close_nearest` equals `target` |
 | `open_loop_check` stops with "no window without padding among the samples read" | Every window it read was padded in the rows the policy reads | Raise `--samples` |
-| A policy that looks ends at leaf H, and decision 2 finds nothing | Training and serving share the fault, as the old position table did | Run the invariant tests ([Positions](12-positions.md)) before working on the grasp |
+| A policy that looks ends at leaf H, and decision 2 finds nothing | Training and serving share the fault | Run the invariant tests before working on the grasp |
 
 ## Background and further reading
 

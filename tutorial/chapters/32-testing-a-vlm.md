@@ -212,7 +212,9 @@ captioned sim renders for 400k samples.
 **The first result.** The check gave 1/300 on exact ordering and 70/300 on the leftmost object; the
 notebook's bug table rounds this to "captioning 0%". By arithmetic 70/300 is 23%, close to the 25%
 that naming one of four labels at random would give. That comparison is an interpretation: how
-often each object is leftmost in the held-out set was not measured.
+often each object is leftmost in the held-out set was not measured. Exact ordering sits below
+guessing too: drawing one of the 24 ordered lists of three at random would be right about 12 times
+in 300.
 
 **First suspect: the prompt.** A prompt in a format the model was not trained on can fail this
 way. `vlm_check.py` builds its prompt with `apply_chat_template`, as training does, which leaves
@@ -249,34 +251,24 @@ few percent between single runs as noise.
 
 What this does not show: which errors make up the remaining 44 captions of the machine A model,
 how the model does on the other caption forms, or that a policy built on the model uses what it
-learned. In the first round the stage-3 policy built on stage 2 scored 0/100 on `pick_target`, and
-the same architecture with a randomly initialised VLM 1/100
-([The From-Scratch Path](62-the-from-scratch-path.md),
-[Loss Is Not Success](91-loss-is-not-success.md)). The [field notes](../notes.md) ("Pretraining a
-backbone: mainly an earlier start") say that pair told nothing about pretraining: with one vector
-handed to the action head (the network that generates the actions;
-[50](50-what-the-action-head-sees.md)), history as inputs ([52](52-history-and-shortcuts.md)) and
-1.0M samples on 1500 demonstrations ([71](71-how-much-data-and-training.md)), neither policy could
-have found the object. Rerun on machine B with every token handed to the action head, no history,
-4000 demonstrations and 3M samples, the policy on the caption-pretrained backbone (stage 2
-retrained with the fix) ends at 86% / 87% and the one on a randomly initialised backbone at
-75% / 85% (trained / averaged weights). The pretrained one starts to look after 0.25M samples, the
-other after about 1.0M; chapter 102, still to come, compares the two.
+learned. A captioning score measures the backbone alone; whether the pretraining it reflects helps
+a policy is a separate experiment, told in
+[102-case-pretrained-backbones.md](102-case-pretrained-backbones.md). The first policy built on
+this stage 2 (one conditioning vector, history, 1500 demonstrations, 1M samples) scored 0/100, and
+its recipe alone rules it out, so that result says nothing about the backbone (field notes,
+"Pretraining a backbone: mainly an earlier start").
 
-**The same questions, asked of a policy.** For a policy the behavioural measure is the **slope** of
-where the gripper first closed against where the named object was (`sim/pickup/summarize.py`
-prints it): 1 if it closes where the object is, 0 if the place does not depend on the scene. The
-counterfactual input is the frozen-camera probe, `eval.py --stale_images`, which keeps sending the
-first frame's images. On machine B, `dp_vit_lang_reactive` (4000 demonstrations, 5.0M samples,
-averaged (EMA) weights) has a slope of 0.98 and succeeds on 85/100 unseen layouts. With frozen
-images it succeeds on 1/100, yet it still closes at the named object in 99% of episodes, 17 mm
-away (median) against 7 mm with live images: the first look
-decides where it goes, and later frames matter only for the last centimetres
-([95-what-a-policy-looks-at.md](95-what-a-policy-looks-at.md)). A check that passes shows that an
-input is used, not when. A check that fails may be early: the same run had a slope of 0.11 / 0.14
-after 1.0M samples and 0.81 / 0.96 after 2.0M (trained / averaged weights;
-[71-how-much-data-and-training.md](71-how-much-data-and-training.md)), so check every checkpoint
-before judging a design.
+**The same questions, asked of a policy.** Two of the three checks carry over to a policy,
+with other instruments. The behavioural measure is the **slope** of where the gripper first closed against
+where the named object was (`close_slope` in `sim/pickup/summarize.py`): 1 if it closes where the
+object is, 0 if the place does not depend on the scene. The counterfactual input is the
+frozen-camera probe, `eval.py --stale_images`, which keeps sending the first frame's images. Two
+lessons from the policies apply back to the VLM check. A check that passes shows that an input is
+used, not when: a policy can close at the named object with frozen cameras and still fail
+([95-what-a-policy-looks-at.md](95-what-a-policy-looks-at.md)). A check that fails may be early:
+the slope of a policy stays near 0 until, late in training, it starts to look
+([71-how-much-data-and-training.md](71-how-much-data-and-training.md)), so run the check on every
+checkpoint before judging a design, not only on the last one.
 
 ## Where it goes wrong
 
@@ -289,12 +281,13 @@ was 0.10. What to do: feed the check the way the served model is fed
 **A fault that training and inference share.** All three checks pass, because an error made
 identically on both paths shows in none of them while the model can still learn the task. Here the
 language model's table of rotary position angles was computed in bfloat16 under autocast, and
-positions above 256 collapsed onto even numbers (641 distinct positions out of 2048 in all;
-notebook, bug table; [Telling Tokens Where They Are](12-positions.md)). A stage-2 caption starts
-at position 259, so neighbouring caption tokens shared a rotation on both paths. A test of the
-component itself does find it (`tests/essential/models/test_rotary_precision.py`). The table is
-now computed in float32; the stage-2 VLM retrained with it scores 267/300 against 249/300 before
-(machine B, one seed each; "What we measured"). Check a model trained before that fix with
+positions above 256 collapsed onto even numbers ([Telling Tokens Where They Are](12-positions.md)
+tells the bug in full). A stage-2 caption starts at position 259, behind the chat-template tokens
+and the 256 image placeholders, so neighbouring caption tokens shared a rotation on both paths, and
+every check fed the model the same merged positions it had been trained on. A test of the component itself does
+find it (`tests/essential/models/test_rotary_precision.py`): for faults of this kind, test the
+part, not the whole. The table is now computed in float32, and the stage-2 VLM retrained
+with it on machine B (267/300 exact ordering) is the last one in "What we measured". Check a model trained before that fix with
 `positional_embedding_type: rotary_legacy_autocast` under `transformer` in its `config_model.yaml`, or the check itself gives old weights a table they were not trained on
 ([Generating Text](14-generation.md)).
 

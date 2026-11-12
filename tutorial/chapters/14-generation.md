@@ -220,17 +220,16 @@ From the [lab notebook](../lab-notebook.md), `vlm_check.py` on 300 held-out scen
 | machine A, before the pixel-range fix | 1/300 | 70/300 |
 | machine B, retrained after the position fix | 267/300 = 89% | 286/300 = 95% |
 
-Before that fix the check fed images scaled to [0, 1] to a model trained on pixel values of 0-255
+Before the pixel-range fix the check fed images scaled to [0, 1] to a model trained on pixel values of 0-255
 ([93-train-inference-skew.md](93-train-inference-skew.md) tells it in full).
 
 What this shows: a greedy captioning check with an exact-match score detects a model that ignores
 its image. The two machines' models differ by 7 and 6 scenes, which the lab notebook treats as noise
-between single runs.
+between single runs. The last row was retrained with the corrected position table on the same data
+and budget (lab notebook, "From-scratch stages on machine B"); the other rows used the old table.
 
-The machine B model retrained with the corrected position table (same data and budget) scores
-267/300 = 89% and 286/300 = 95% (lab notebook, "From-scratch stages on machine B"); the other rows
-were trained with the old table. Also not measured: how temperature,
-top-k and top-p change these scores, and how long generation takes with and without the cache.
+Not measured: how temperature, top-k and top-p change these scores, and how long generation takes
+with and without the cache.
 
 ## Where it goes wrong
 
@@ -287,16 +286,15 @@ the padding in front of it, on whichever side the prompt was padded. Cached and 
 can therefore differ on a padded batch; `test_kv_cache_transformer` compares them on one unpadded
 prompt only.
 
-**A model trained before the position fix.** Nothing fails. Until it was fixed, the rotary position
-table was computed in bfloat16 under autocast, which left 641 distinct positions out of 2048 and,
-between 256 and 512, only the even ones (lab notebook, bug table;
-[12-positions.md](12-positions.md) tells it in full). The check's prompt is at least 270 tokens, so
-every token it generates sits above position 256, where neighbouring positions shared a rotation.
-Training and the check built the same table, so nothing looked wrong.
+**A model trained before the position fix.** Nothing fails. The rotary table used to keep
+only the even positions between 256 and 512, so neighbouring positions shared a rotation
+([12-positions.md](12-positions.md) has the mechanism). The check's prompt is at least 270 tokens,
+so the tokens it generates sat where the table had collapsed, with or without the cache: `RotaryEmbedding.forward` slices the same table from
+`offset=past_length`. Training and the check built the same table, so nothing looked wrong.
 `RotaryEmbedding._update_cos_sin_tables` in
 [`vla_foundry/positional_embedding.py`](../../vla_foundry/positional_embedding.py) now computes the
-angles in float32, and a model trained with the old table meets rotations it was not trained with;
-what that does to the scores was not measured here. To run such a model as it was trained, set
+angles in float32, so a model trained with the old table meets rotations it was not trained with;
+what that does to its scores was not measured here. To run such a model as it was trained, set
 `positional_embedding_type: rotary_legacy_autocast` under `transformer` in the `config_model.yaml`
 that `vlm_check.py` reads; never train a new model with that value.
 

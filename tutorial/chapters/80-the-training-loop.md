@@ -24,10 +24,12 @@ the learning-rate schedule are derived from that number.
 
 Worked example, used throughout: `dp_vit_lang_reactive` on the plain `pick_target_4k` (4000
 demonstrations made without `--random_start` or `--disturb_prob`, 263,289 windows), trained
-before the position fix with `total_train_samples = 5_000_000` and batch 64, which the
-[lab notebook](../lab-notebook.md) records at 83% / 85% success on `pick_target` (trained /
-averaged weights, section 6). The [README](../../README.md)'s recipe adds
-`--random_start --disturb_prob 0.5` to the dataset and reaches 94% / 94%. The example's budget is
+before the position fix (the corrected rotary position table: "Where it goes wrong" and
+[12-positions.md](12-positions.md)) with `total_train_samples = 5_000_000` and batch 64; it ends at 83% / 85%
+success on `pick_target` (trained / averaged weights, section 6;
+[71-how-much-data-and-training.md](71-how-much-data-and-training.md) follows it checkpoint by
+checkpoint). The [README](../../README.md)'s recipe changes the dataset, not the loop
+([72-which-demonstrations-teach.md](72-which-demonstrations-teach.md)). The example's budget is
 5,000,000 // 64 = 78,125 **optimiser steps** (one update of the weights on one batch each) and
 19.0 **epochs** (passes over the dataset). With 10 **checkpoints**, a **checkpoint interval**, the slice of the budget
 after which one is written, is 500,000 samples.
@@ -213,8 +215,10 @@ PICKUP_WEIGHTS=raw PICKUP_OUT=results/pickup/my_run/pick_target/final_raw \
 Repeat with `ema` and `final_ema` (without `PICKUP_OUT` both write to one directory).
 `eval_checkpoints.sh` does this for every checkpoint and both kinds of weights (`ckpt_<N>_raw`,
 `ckpt_<N>_ema`), and with `PICKUP_WATCH=1` keeps doing so while the run trains. `summarize.py`
-prints one row per evaluation, with the samples seen at that checkpoint and the slope ("What we
-measured"):
+prints one row per evaluation, with the samples seen at that checkpoint and the **slope**: the
+least-squares slope of where the gripper first closed against where the named object was, 1 if it
+closes where the object is, 0 if the scene makes no difference
+([92-measuring-failure.md](92-measuring-failure.md)):
 
 ```bash
 PICKUP_WATCH=1 sim/pickup/scripts/eval_checkpoints.sh experiments/pickup/my_run pick_target
@@ -253,47 +257,33 @@ RTX 4090, 24 GB) and about 540 on machine B (L40S GPUs, 128 CPU cores); the no-h
 (`*_reactive`, two images) at about 1100 alone on a machine B GPU and 570-700 while 4-5 policy
 servers evaluated on the same GPU.
 
-**The example run at every checkpoint** (machine B, 100 unseen layouts each, raw / EMA weights).
-**Slope** is the least-squares slope of where the gripper first closed against where the named
-object was: 1 if it closes where the object is, 0 if the scene makes no difference
-([92-measuring-failure.md](92-measuring-failure.md)).
+**Raw against EMA in the example run.** `eval_checkpoints.sh` evaluated both weights files of
+every checkpoint (machine B, 100 unseen layouts each). The run goes from not using the scene to
+using it late, between 1.5M and 2.5M samples (its **transition**;
+[71-how-much-data-and-training.md](71-how-much-data-and-training.md) has the table), the slope
+first: 0.47 / 0.37 at 1.5M while success was 4% / 2%. Inside the transition the EMA weights were far ahead: 36% against 4% at 2.0M samples (median miss to the named
+object 18 mm against 32 mm), 70% against 56% at 2.5M. Before and after it the two differ by at
+most 6 points, in either direction: equal within noise (field notes, "Averaged weights and the
+sampler's settings"). At 2.0M samples the average spans about the last 150,000 samples (section
+6's table); why averaging helps there and not elsewhere was not measured.
 
-| Samples | Success | Slope |
-|---|---|---|
-| 0.5M | 0% / 0% | 0.02 / -0.06 |
-| 1.0M | 0% / 1% | 0.11 / 0.14 |
-| 1.5M | 4% / 2% | 0.47 / 0.37 |
-| 2.0M | 4% / 36% | 0.81 / 0.96 |
-| 2.5M | 56% / 70% | 0.94 / 0.98 |
-| 3.0M | 81% / 75% | 0.98 / 0.97 |
-| 3.5M | 83% / 82% | 0.99 / 0.99 |
-| 4.0M | 86% / 80% | 1.00 / 0.98 |
-| 4.5M | 81% / 84% | 0.99 / 0.99 |
-| 5.0M | 81% / 82% | 0.98 / 0.99 |
-| 5.0M (final) | 83% / 85% | 0.98 / 0.98 |
+**The eleventh file.** Checkpoints 10 and 11 of section 3, under 1% of the budget apart at the
+minimum learning rate, differ by 2 and 3 points (raw, EMA). The final EMA weights alone scored
+85% on one set of 100 layouts and 83/100 on a second set (lab notebook). A difference of a few
+points between neighbouring checkpoints is within that spread, not progress.
 
-**The budget.** Success stays at 0% or 1% for the first million samples; between 1.5M and 2.5M the
-policy goes from not using the scene to using it, the slope moving first
-([field notes](../notes.md), "Looking at the scene arrives late, and all at once"). On 1500
-demonstrations the same policy ended at 3% / 5% (slope 0.29 / 0.18) with a 1M budget, 10.1 epochs,
-and at 64% / 62% (slope 0.96 / 0.97) with a 3M budget, 30.4 epochs. The 1M run had ended inside
-the transition, its learning rate at the minimum, and read as a design that does not work. The two
-budgets differ in samples and in schedule (section 5); no run here separates the two. See
-[71-how-much-data-and-training.md](71-how-much-data-and-training.md) and
-[101-case-pick-target.md](101-case-pick-target.md).
-
-**Raw against EMA.** During the transition the EMA weights were far ahead: 36% against 4% at 2.0M
-samples (median miss to the named object 18 mm against 32 mm), 70% against 56% at 2.5M. Before and
-after it the two differ by at most 6 points, in either direction: equal within noise (field notes,
-"Averaged weights and the sampler's settings"). Checkpoints 10
-and 11, under 1% of the budget apart at the minimum learning rate, differ by 2 and 3 points.
+**The budget and the schedule.** On 1500 demonstrations a run with a 1M budget ended inside its
+transition with its learning rate already at the minimum (section 5) and read as a design that
+does not work; a 3M budget on the same demonstrations went through the transition and ended at
+64% / 62% (raw / EMA). The two budgets differ in samples
+and in schedule; no run here separates the two
+([71-how-much-data-and-training.md](71-how-much-data-and-training.md)).
 
 **What this does not show.** Each run has one training seed. The EMA lead is not a rule: in the
 1500-demonstration 3M run the two stayed within 9 points at every checkpoint, the raw weights
 ahead at 1.5M (21% / 18%) and 2.1M (59% / 50%). The supported conclusion: save both, which costs
 one extra copy of the model, and evaluate both. Nor is success on static layouts all a robot
-needs: with the named object moved at control step 20 of the reach, the final EMA weights
-succeeded in 0 of 96 episodes ([95-what-a-policy-looks-at.md](95-what-a-policy-looks-at.md)).
+needs ([103-case-self-correction.md](103-case-self-correction.md)).
 
 ## Where it goes wrong
 
@@ -301,7 +291,8 @@ succeeded in 0 of 96 episodes ([95-what-a-policy-looks-at.md](95-what-a-policy-l
   `grep "Samples in this checkpoint" experiments/pickup/<run>.train.log` prints what each
   interval selected.
 - **Success is still 0% when the budget ends.** That says nothing about what comes next; a slope
-  that has left zero does. Do not judge a design on a budget that ends before the transition of a
+  that has left zero does (the example's slope was 0.47 / 0.37 at 4% / 2% success, "What we
+  measured"). Do not judge a design on a budget that ends before the transition of a
   comparable run.
 - **Two evaluations of one run disagree.** One served raw weights, the other EMA. `results.json`
   records the served weights file under `server`; set `PICKUP_WEIGHTS` explicitly.
@@ -309,14 +300,17 @@ succeeded in 0 of 96 episodes ([95-what-a-policy-looks-at.md](95-what-a-policy-l
   policy server that had bound it first: about 40 results here were filed under the wrong run and
   redone. `eval.sh` now takes a free port, and `eval.py` stops unless the server reports the run
   it was started for ([90-closed-loop-evaluation.md](90-closed-loop-evaluation.md)).
-- **No symptom: the loss falls, and training agrees with serving.** The rotary position table was
-  computed in bf16 under the autocast of item 4, which left 641 distinct positions out of 2048. It
-  is now computed in float32 and then cast ([12-positions.md](12-positions.md)). Every success
-  rate in this chapter comes from a run trained before that fix. Trained again with the fixed
-  table, the example recipe ends at 93% (trained weights). A second pair of runs with other
-  seeds, differing in the table alone, ends at 96% / 96% with the fixed table and 90% / 89% with
-  the old one; in both pairs the fixed table makes the policy start to look earlier (lab
-  notebook, "After the position fix").
+- **No symptom: the loss falls, and training agrees with serving.** Whatever a module computes
+  inside its forward pass runs under the `autocast()` of item 4, cached tables included.
+  `RotaryEmbedding._update_cos_sin_tables` (`vla_foundry/positional_embedding.py`) builds the
+  rotary position table on the first forward call; it used to form the angles in bf16 there, so
+  neighbouring positions shared a rotation. `sim/pickup/policy_server.py` serves under the same `get_autocast`,
+  so the server rebuilt the same flawed table and nothing disagreed. The function now switches
+  autocast off and computes in float32 before casting; `positional_embedding_type:
+  rotary_legacy_autocast` reproduces the old table for old checkpoints. Every success rate in this
+  chapter comes from a run trained before that fix, the position fix; the mechanism and what the fix changed are in
+  [12-positions.md](12-positions.md). When you add a module that caches a tensor on first use,
+  build that tensor with autocast off.
 - **The log stops and GPU use is 0%.** A data-loader worker died and the trainer waits for it
   forever. `train_resilient.sh` kills and resumes a run whose log has not moved for 420 seconds.
 - **`ValueError: Zero batches`.** An interval holds fewer samples than
@@ -358,7 +352,16 @@ succeeded in 0 of 96 episodes ([95-what-a-policy-looks-at.md](95-what-a-policy-l
    .venv/bin/python -c "import math; T=5_000_000//64; s=15_625; print(1e-5+0.5*(1+math.cos(math.pi*(s-1000)/(T-1000)))*4.9e-4)"
    ```
 
-3. After the example run, list its evaluations. For each kind of weights, which is the first
+3. Compute the EMA decay of section 6 at the last update of a 1M-budget run (15,625 optimiser
+   steps, so $n$ = 15,623) and its averaging window in samples, then compare with the example's
+   last row. A short budget averages over fewer samples as well as decaying its learning rate
+   sooner:
+
+   ```bash
+   .venv/bin/python -c "n=15_623; d=1-(1+n)**-0.75; print(d, 1/(1-d), 64/(1-d))"
+   ```
+
+4. After the example run, list its evaluations. For each kind of weights, which is the first
    checkpoint with a slope above 0.5, and what is its success?
 
    ```bash

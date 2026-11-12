@@ -121,7 +121,14 @@ Training pads instead, and the two agree only partly. Image 0 twice and state 0 
 anchor-0 window contains, but its slot 0 is a copy of the expert's first command, which already
 points at the target, where a served policy gets the hold command. For a policy that is given its
 previous action this train/inference skew
-([93-train-inference-skew.md](93-train-inference-skew.md)) decides where the gripper goes (below).
+([93-train-inference-skew.md](93-train-inference-skew.md)) decides where the gripper goes
+([52-history-and-shortcuts.md](52-history-and-shortcuts.md)).
+
+At every later re-plan the previous action is `env.last_action`, the last action of the queue just
+executed: the $k$-th action of the previous chunk. A policy with history therefore receives a piece
+of its own previous chunk as an input at every re-plan, once every $k$ control steps. A policy
+without history gets nothing from the previous chunk: each re-plan starts from the cameras and the
+joint state alone, and the $15 - k$ actions it discarded leave no trace.
 
 ### Latency
 
@@ -131,7 +138,7 @@ world stands still. The lab notebook gives 20-65 ms per chunk for the 36M-parame
 about 190 ms for the Qwen VLA (`vla_qwen`, 2.2B parameters) on machine A (one RTX 4090, 24 GB). On
 machine B (L40S GPUs, 128 CPU cores), on a GPU that was also training another model, the
 48.9M-parameter `dp_vit_lang_reactive` measured below took a median of 71 ms at 10 flow steps and
-25 ms at 2, which scored no lower (89/100 against 85/100; [41-flow-matching.md](41-flow-matching.md)).
+25 ms at 2 ([41-flow-matching.md](41-flow-matching.md) on what fewer flow steps cost).
 
 On a real robot the world keeps moving, and a control step at 20 Hz is 50 ms: a robot waiting 190 ms
 would stall for almost four control steps at every re-plan, and one that kept moving would get a
@@ -188,7 +195,9 @@ All numbers are from the [lab notebook](../lab-notebook.md).
 
 **Actions executed per chunk.** `dp_vit_lang_reactive` after 5.0M samples on 4000 `pick_target`
 demonstrations, EMA weights, machine B, 10 flow steps, 100 unseen layouts per cell, 23 of which
-name the T block:
+name the T block. It was trained before the position-table fix (the rotary position table was
+computed in bfloat16; see *Where it goes wrong* and [12-positions.md](12-positions.md)), as was
+every policy whose numbers this chapter gives:
 
 | Actions executed per chunk | Success | T block | Same starting noise for every chunk of an episode |
 |---|---|---|---|
@@ -201,8 +210,8 @@ name the T block:
   second set of 100 layouts, so one or two episodes are noise.
 - Re-planning more often did not help: at 2 actions per chunk nine episodes are lost against the
   default, seven of them on the T block, the object this policy fails on most (grasps off in angle,
-  mostly from the position bug: after the fix it reaches 87-93%;
-  [101-case-pick-target.md](101-case-pick-target.md)).
+  and the object the position fix helps most: [12-positions.md](12-positions.md)). Why re-planning
+  often costs the T block most was not measured.
 - The same noise for every chunk, meant to make successive chunks choose alike, cost success, the
   more so the more chunks an episode has, for a cause not measured.
 
@@ -211,35 +220,16 @@ cannot show what re-planning is for. An earlier sweep on `pick_cube` (`dp_vit`, 
 demonstrations, 1.5M samples, machine A, 50 layouts each) gave 84%, 74% and 78% at 4, 8 and 15
 actions; all intervals overlap.
 
-**Re-planning is not looking.** Three probes (evaluations with one condition changed) of the same
-weights, 8 actions per chunk ([95-what-a-policy-looks-at.md](95-what-a-policy-looks-at.md)):
-
-- With the first frame's images sent at every re-plan (`--stale_images`; the state stays current)
-  success is 1/100, yet the policy still **closed at the named object** (the object nearest the
-  gripper when it first closed was the one the instruction names) in 99% of episodes, a median of
-  17 mm from it; as trained, 100% and 7 mm.
-- With the named object moved 80 mm at control step 20 (`--disturb reach --disturb_step 20`) it
-  succeeded in 0 of the 96 episodes in which the object could be moved, and closed a median of 8 mm
-  from the old place. A policy that closes around control step 40, as the expert does, re-plans at
-  control steps 24 and 32 from images that show the new place.
-- With the expert driving the first 25 control steps toward another object
-  (`--expert_prefix 25 --prefix_target distractor`) it closed at that object in 100/100 episodes.
-
-The policy takes its goal from its first look and then from its own arm. No run combines a
-disturbance with a shorter execution horizon. The demonstrations change this: trained on random
-start poses with recoveries (after the position fix), a policy scores 89-94% under every
-disturbance and, cameras frozen on the first frame, no longer finds the named object: it looks
-throughout ([field notes](../notes.md), "Self-correction has to be in the data"; chapter 103,
-coming).
-
-**The previous action at the first control step.** `dp_vit_lang` (with history) on the same 4000
-demonstrations (machine B) is at 2% / 2% (raw / EMA) after 3.0M samples. Its checkpoint at
-2.5M samples (EMA) scored 1/100 as served, 22/100 with the expert's first command as the previous
-action of the first query (`--first_prev_action expert`) and 77/100 with the expert driving the
-first 10 control steps (`--expert_prefix 10`), closing at the named object in 30% (chance is 33%),
-97% and 100% of episodes. It read the target from its previous action, which carries a decision
-from chunk to chunk well enough to replace the cameras
-([52-history-and-shortcuts.md](52-history-and-shortcuts.md)).
+**Re-planning is not looking.** A re-plan sends fresh images; nothing makes the policy use them.
+With the named object moved 80 mm at control step 20 (`--disturb reach --disturb_step 20`), the same
+weights at 8 actions per chunk succeeded in 0 of the 96 episodes in which the object could be moved,
+and closed a median of 8 mm from the old place. A policy that closes around control step 40, as the
+expert does, re-plans at control steps 24 and 32 from images that show the new place; this one kept
+heading for the old one. Its other probes (evaluations with one condition changed: frozen cameras,
+the expert driving the first control steps) agree: it takes its goal from its first look and then
+follows its own arm ([95-what-a-policy-looks-at.md](95-what-a-policy-looks-at.md)). No run combines
+a disturbance with a shorter execution horizon. What changed the behaviour was the demonstrations,
+not the loop ([103-case-self-correction.md](103-case-self-correction.md)).
 
 ## Where it goes wrong
 
@@ -256,31 +246,37 @@ slice has the same shape and is one control step old. Training once had the mirr
 `lowdim_past_timesteps: 0` was read as unset and added the next step's state
 ([93-train-inference-skew.md](93-train-inference-skew.md)).
 
-**A policy with history that stays near 0%.** Check: `--first_prev_action expert` and
-`--expert_prefix 10`; a policy that scores far better with them leans on its own past. What to do:
-start without history. `collect.py --hold_steps 1` begins every demonstration with a frame of the
-robot at rest, so that the anchor-0 window holds what serving provides. It did not help: a history
-policy trained on such demonstrations after the position fix ends at 0% / 4% after 5M samples, and
-where it closes never depends on the scene, because from the second step on the previous action
-still predicts the next one ([52-history-and-shortcuts.md](52-history-and-shortcuts.md)).
+**A policy with history that stays near 0%.** The previous action is the one input that links one
+chunk to the next, and it can carry the decision instead of the cameras. Check: evaluate with
+`--first_prev_action expert` (the expert's first command as the previous action of the first query)
+and with `--expert_prefix 10` (the expert drives the first 10 control steps); a policy that scores
+far better with them leans on its own past. What to do: start without history. Beginning every
+demonstration with a frame of the robot at rest (`collect.py --hold_steps 1`), so that the anchor-0
+window holds what serving provides, did not cure it
+([52-history-and-shortcuts.md](52-history-and-shortcuts.md)).
 
 **Blaming the re-plan for a miss.** A gripper closing on empty table looks like successive chunks
 heading for different objects. The failing policies here did not do that: where they closed did
-not depend on the scene. The policy that works was one of them after 1.0M samples:
-success 0% / 1% and a **slope** of 0.11 / 0.14 (of where the gripper first closed against where the
-named object was: 1 if it closes where the object is, 0 if the scene makes no difference). After
-5.0M samples, with the same settings, the slope is 0.98 / 0.98
-([71-how-much-data-and-training.md](71-how-much-data-and-training.md)). Check: read the slope,
-which `sim/pickup/summarize.py` prints, before changing `--exec_horizon`
+not depend on the scene. Check: read the **slope** of where the gripper first closed against where
+the named object was (1 if it closes where the object is, 0 if the scene makes no difference),
+which `sim/pickup/summarize.py` prints, before changing `--exec_horizon`. A slope near 0 is a
+policy that is not looking, and no execution horizon fixes that
 ([92-measuring-failure.md](92-measuring-failure.md)).
 
 **Action-step tokens that share a position.** Each action of a chunk is one token, an action-step
-token, in the transformer that generates it, and rotary position tells them apart. The position
-table was computed in bfloat16: without history the 15 action-step tokens shared 8 positions, with
-history 16 shared 4. Unless stated, every policy in this chapter was trained before the fix. After
-it the same recipe ends at 93% against 83% (trained weights), and a second pair of seeds differing
-in the table alone ends at 96% / 96% against 90% / 89%; in both the policy starts to look earlier
-([12-positions.md](12-positions.md)).
+token, in the transformer that generates it, and rotary position is what tells row 3 of the chunk
+from row 4. The position table was computed in bfloat16: without history the 15 action-step tokens
+(positions 426-440) shared 8 positions, with history 16 shared 4, so neighbouring rows could be told
+apart only by their noisy content; this is the fix the measurements above predate
+([12-positions.md](12-positions.md)). Check: the first rotary frequency is 1, so its angle
+is the position itself; rounding the action-step positions to bfloat16 prints 8.
+`RotaryEmbedding._update_cos_sin_tables` in
+[`positional_embedding.py`](../../vla_foundry/positional_embedding.py) now forms the angles in
+float32.
+
+```bash
+.venv/bin/python -c "import torch; print(torch.arange(426, 441, dtype=torch.float32).to(torch.bfloat16).unique().numel())"
+```
 
 ## Background and further reading
 
