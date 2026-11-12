@@ -78,27 +78,29 @@ samples. Not done: a longer Qwen run, and a run that changes the conditioning al
 
 ## Phase 4: toward flower trimming  (started 2026-11-12)
 
-The end goal is a robot that trims agricultural flowers: it has to find one flower among similar
-ones, among leaves that move and hide it, and cut its stem in the right place, correcting itself as
-things move. Each step below adds one of those properties to the pick-up task, in order, and asks the
-same three questions: can the scripted expert do it, does the best policy so far (random start poses
-and recoveries, 94%) cope without new data, and what do the demonstrations need to contain for a
-policy to learn it. Every step reports the probes of chapter 95, not only a success rate.
+**The final goal.** A robot that turns a flower to see it from the side it needs, moves the other
+leaves out of the way, and cuts exactly the part it was asked to cut, correcting itself as leaves
+spring back and the plant sways. One arm; the plant stands on a turntable (or in a pot) that the arm
+can turn.
 
-- [ ] **A target that keeps moving.** The named object slides on a smooth random path at a set speed
-      while the arm reaches (`eval.py --disturb drift`, and the same in `collect.py`), as a stem sways.
-      Expert one plan / planning again, the current best policy, then a policy trained on drifting
-      demonstrations; success against speed.
-- [ ] **Look-alikes.** A task in which the objects share a shape and differ in colour by a small step
-      (`pick_lookalike`), as flowers of one plant do. Does the instruction still pick the right one,
-      and where does the policy close when it is wrong (the slope and the confusion between
-      neighbouring colours)?
-- [ ] **Clutter and occlusion.** More objects, and thin upright plates that stand in for leaves and
-      hide the target from one camera or the other (`pick_clutter`).
-- [ ] **Cutting.** A stem with a flower on it; success is closing on the named stem inside a height
-      band, and cutting the wrong stem is penalised. A task that goes on after contact.
-- [ ] A pretrained vision encoder with patch tokens, and a higher resolution at the wrist, once the
-      scenes are hard enough to need them.
+Each step adds one property to the previous task and asks the same three questions: can the scripted
+expert do it, does the best policy so far cope without new data, and what must the demonstrations
+contain for a policy to learn it. Every step reports the probes of chapter 95, not only a success
+rate. Each breakthrough gets a short video.
+
+| Step | What is added | State |
+|---|---|---|
+| 1 | **A target that keeps moving** (`--disturb drift`): the named object slides on a smooth random path, as a stem sways | Expert and baselines measured; policy trained on drifting demonstrations: training |
+| 2 | **Look-alikes** (`pick_lookalike`): cubes a small colour step apart, as flowers of one plant are | Expert and baselines measured; policy: training |
+| 3 | **Clutter and occlusion** (`pick_clutter`): four objects and upright leaves that hide them from the front camera | Expert and baselines measured; policy: training |
+| 4 | **A stem to grasp from the side**: a stem fixed at its base with a flower head on top; close on the named stem inside a height band. Needs a side approach (a flower on top blocks a grasp from above) | To do |
+| 5 | **A cut**: closing on the named stem inside the band cuts it (the part above comes free); cutting the wrong stem or outside the band fails | To do |
+| 6 | **Leaves in the way that can be touched**: leaves on springs hide the stem; the arm has to push one aside and hold it, or cut past it, and they spring back | To do |
+| 7 | **Turning the plant**: the part to cut faces away; the arm turns the turntable until it can see and reach it | To do |
+| 8 | **All of it**: a plant with several stems and leaves, swaying; "cut the stem below the second flower" | To do |
+
+Alongside, once the scenes need it: a pretrained vision encoder with patch tokens, a higher resolution
+at the wrist, and a policy that can say in words what it is about to cut (Phase 7).
 
 ## Phase 5: the tutorial (chapters and docs)
 
