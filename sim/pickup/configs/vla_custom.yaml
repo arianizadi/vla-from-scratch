@@ -6,6 +6,11 @@
 save_path: experiments/pickup
 wandb: false
 db_logging: false
+# A running average of the weights is saved next to the trained ones (ema_N.pt) and evaluated with
+# them. While a policy is starting to work the average is far ahead of the trained weights
+# (tutorial/notes.md, "Averaged weights and the sampler's settings").
+ema:
+  enabled: true
 
 model:
   type: diffusion_policy

@@ -9,6 +9,8 @@
 save_path: experiments/pickup
 wandb: false
 db_logging: false
+# Averaged weights are off here: a float32 copy of this backbone takes another 9 GB of GPU memory.
+# Switch them on with --ema.enabled True where that fits.
 
 model:
   <<: !include ../../../vla_foundry/config_presets/models/vla_diffusion_paligemma2.yaml

@@ -85,7 +85,7 @@ All commands run from the repository root.
 sim/pickup/scripts/make_dataset.sh pick_target 4000 pick_target_4k
 
 # 2. train                      (config, dataset, run name, total training samples)
-sim/pickup/scripts/train_resilient.sh dp_vit_lang_reactive pick_target_4k my_run 5000000 --ema.enabled True
+sim/pickup/scripts/train_resilient.sh dp_vit_lang_reactive pick_target_4k my_run 5000000
 
 # 3. closed-loop evaluation     (experiment dir, task, episodes)
 sim/pickup/scripts/eval.sh experiments/pickup/my_run pick_target 100
@@ -104,7 +104,7 @@ hold the success rate with a Wilson 95% interval, a per-object breakdown, and gr
 whether the gripper closed, which object it was nearest to when it did, and how far it missed by.
 Useful knobs: `--exec_horizon` (actions executed per predicted chunk, default 8), `--flow_steps`
 (denoising steps, default 10), `--seed_start`, `--videos`. `PICKUP_WEIGHTS=raw|ema` picks the
-trained or the averaged weights of a run trained with `--ema.enabled True`.
+trained or the averaged weights of a run that saved both (the configs here do).
 
 ### Watching runs
 
@@ -113,7 +113,7 @@ trained or the averaged weights of a run trained with `--ema.enabled True`.
 next to `train_resilient.sh`, it turns a run into a curve of closed-loop success against training:
 
 ```bash
-sim/pickup/scripts/train_resilient.sh dp_vit_lang pick_target_1500 my_run 1000000 --ema.enabled True &
+sim/pickup/scripts/train_resilient.sh dp_vit_lang_reactive pick_target_4k my_run 5000000 &
 PICKUP_WATCH=1 PICKUP_EVAL_JOBS=2 sim/pickup/scripts/eval_checkpoints.sh experiments/pickup/my_run pick_target 100 &
 ```
 

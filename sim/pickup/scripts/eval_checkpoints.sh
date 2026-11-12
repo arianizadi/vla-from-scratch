@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Evaluate every checkpoint of a run closed-loop, so that success can be plotted against training.
 #   sim/pickup/scripts/eval_checkpoints.sh <experiment_dir> <task> [episodes]
-# Results go to results/pickup/<run>/<task>/ckpt_<N>_<raw|ema>/results.json. Runs trained with
-# --ema.enabled True get both their trained (raw) and averaged (ema) weights evaluated. The newest
+# Results go to results/pickup/<run>/<task>/ckpt_<N>_<raw|ema>/results.json. Runs that saved averaged
+# weights (the configs here switch them on) get both their trained (raw) and averaged (ema) weights evaluated. The newest
 # checkpoint is evaluated first. A checkpoint that already has results is skipped, so the script can
 # be re-run at any time; summarize.py turns the results into one table.
 #

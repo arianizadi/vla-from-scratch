@@ -56,7 +56,7 @@ themselves when they die and checkpoints that are evaluated while training conti
 ```bash
 uv sync --group preprocessing --group sim && sim/pickup/scripts/fetch_assets.sh
 sim/pickup/scripts/make_dataset.sh pick_target 4000 pick_target_4k
-sim/pickup/scripts/train_resilient.sh dp_vit_lang_reactive pick_target_4k my_run 5000000 --ema.enabled True
+sim/pickup/scripts/train_resilient.sh dp_vit_lang_reactive pick_target_4k my_run 5000000
 sim/pickup/scripts/eval_checkpoints.sh experiments/pickup/my_run pick_target
 ```
 
