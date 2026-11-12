@@ -76,14 +76,29 @@ randomly initialised one after about 1.0M; they end close, at 86% / 87% and 75% 
 Face backbones (`vla_qwen_tokens_reactive.yaml`) takes the Qwen VLA from 5% to 70% / 72% in 0.5M
 samples. Not done: a longer Qwen run, and a run that changes the conditioning alone.
 
-## Phase 4: toward flower trimming
+## Phase 4: toward flower trimming  (started 2026-11-12)
 
-- [ ] A cluttered scene with look-alike distractors and partial occlusion.
-- [ ] Pretrained vision encoder with patch tokens, higher resolution at the wrist.
-- [ ] A cutting action in place of a grasp, with a success test that penalises cutting the wrong stem.
-- [ ] A task that goes on after the grasp. The demonstrations end at the lift, and a policy knows
-      nothing of what comes after: left running for another 0.8 s in a recording, it opened the
-      gripper again in three of six episodes.
+The end goal is a robot that trims agricultural flowers: it has to find one flower among similar
+ones, among leaves that move and hide it, and cut its stem in the right place, correcting itself as
+things move. Each step below adds one of those properties to the pick-up task, in order, and asks the
+same three questions: can the scripted expert do it, does the best policy so far (random start poses
+and recoveries, 94%) cope without new data, and what do the demonstrations need to contain for a
+policy to learn it. Every step reports the probes of chapter 95, not only a success rate.
+
+- [ ] **A target that keeps moving.** The named object slides on a smooth random path at a set speed
+      while the arm reaches (`eval.py --disturb drift`, and the same in `collect.py`), as a stem sways.
+      Expert one plan / planning again, the current best policy, then a policy trained on drifting
+      demonstrations; success against speed.
+- [ ] **Look-alikes.** A task in which the objects share a shape and differ in colour by a small step
+      (`pick_lookalike`), as flowers of one plant do. Does the instruction still pick the right one,
+      and where does the policy close when it is wrong (the slope and the confusion between
+      neighbouring colours)?
+- [ ] **Clutter and occlusion.** More objects, and thin upright plates that stand in for leaves and
+      hide the target from one camera or the other (`pick_clutter`).
+- [ ] **Cutting.** A stem with a flower on it; success is closing on the named stem inside a height
+      band, and cutting the wrong stem is penalised. A task that goes on after contact.
+- [ ] A pretrained vision encoder with patch tokens, and a higher resolution at the wrist, once the
+      scenes are hard enough to need them.
 
 ## Phase 5: the tutorial (chapters and docs)
 
