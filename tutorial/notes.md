@@ -12,7 +12,7 @@ Status legend: **confirmed** (measured here), **open** (hypothesis, experiment q
 | What | Evidence | Entry |
 |---|---|---|
 | Running the scripted expert through the evaluation before training anything | 99-100/100 on the task where the first policies scored 0-6% | 1 |
-| Recording where the gripper closed, not only whether the episode succeeded | It showed that the failing policies were not looking at all (slope 0.03), which redirected the work | 3, 6 |
+| Recording where the gripper closed, not only whether the episode succeeded | It showed that the failing policies were not looking at all (slope under 0.1 where 1 means it goes to the object), which redirected the work | 3, 6 |
 | Patch tokens instead of one pooled vector | 30% against 4% on the single cube | 5 |
 | No history: one frame, no previous action | 75-81% against 2% after 3M samples | 8 |
 | Training past the stretch where nothing seems to happen | 0% after 1M samples, 85% after 5M, same policy and data | 7 |
@@ -160,8 +160,9 @@ point between the objects. The per-episode records of the 1500-demonstration run
 
 - the closing positions fill the area where objects can spawn evenly; they do not gather between
   the three objects of their own scene;
-- regressing the closing position on the position of the named object gives a slope of 0.03 and an
-  R² under 0.02 (a policy that goes to the named object has slope 1);
+- regressing the closing position on the position of the named object gives slopes between 0.00
+  and 0.09 and an R² of at most 0.006 in the three runs that never started to look (a policy that
+  goes to the named object has slope 1);
 - the miss does not change when each episode's closing position is compared with the objects of a
   different episode.
 
@@ -420,7 +421,7 @@ ended at 5% (closing at the named object 71% of the time, 83 mm off: it points, 
 Things that cost time here and have nothing to do with models:
 
 - **Cap CPU threads per process.** Numerical libraries start one thread per core. On a 128-core
-  machine each policy server started 256 threads and used about 20 cores doing nothing useful;
+  machine each policy server started 256 threads and used 14-22 cores doing nothing useful;
   twelve of them drove the load average to 570 and halved training throughput on every GPU. With
   `OMP_NUM_THREADS=4` (and the MKL / OpenBLAS equivalents) each server uses under one core. The
   scripts now set this (`PICKUP_CPU_THREADS`).

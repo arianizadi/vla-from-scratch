@@ -90,7 +90,7 @@ Closed-loop success on layouts the policy never saw.
 |---|---|
 | Check the task with a scripted expert first | Expert: 99-100/100 on the task where every first-round policy scored 0-6% |
 | Training loss and open-loop error do not predict success | A 74% policy and a 1% policy reproduce recorded expert actions equally well; the lowest loss here belongs to a 0% policy |
-| Measure how a policy fails | Where the failing policies closed the gripper did not depend on where the objects were (slope 0.03, R² under 0.02): they were not imprecise, they were not looking |
+| Measure how a policy fails | Where the failing policies closed the gripper did not depend on where the objects were (slope under 0.1, R² under 0.01, where a policy that goes to the object has 1): they were not imprecise, they were not looking |
 | One pooled vector is not enough for grasping | Pooled image embedding 4%, image patch tokens 30%, same data |
 | Looking at the scene arrives late and all at once | Same policy, same 4000 demonstrations: 0% after 1.0M training samples, 36% after 2.0M, 70% after 2.5M, 85% after 5M. With 1500 demonstrations: 0-3% up to 1.2M, 64% at 3M. A budget that ends too early reads as a broken design |
 | The previous action as an input lets the policy stop looking | With history 2% after 3M samples, without it 75-81%. The history policy is not blind: told the expert's first action it finds the named object 97% of the time |

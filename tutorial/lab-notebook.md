@@ -100,6 +100,10 @@ flow steps 84%. All intervals overlap.
 The pooled-CLIP policy scored 0/20 on its own training layouts: it ran a plausible
 reach-descend-close-lift a few centimetres from the cube.
 
+Open loop, on recorded samples (`open_loop_check.py`): the served policies reproduce the expert's
+action chunks to within 0.01-0.04 rad per joint; copying the previous action is off by 0.05-0.2 rad.
+The pooled-CLIP policy has the lowest training loss and the lowest open-loop error of the four.
+
 ## `pick_target`, first round (machine A)
 
 | Policy | Demos | Samples (epochs) | Final loss | Success |
@@ -171,6 +175,21 @@ the others before. Evaluations always use the code a run was trained with.
 
 The three rows of `dp_vit_lang_reactive` differ only in the number of demonstrations and of training
 samples. The learning-rate schedule (cosine to zero) is stretched over each run's own budget.
+
+### Does the closing position depend on the scene?
+
+All evaluations of a run pooled (22 evaluations of 100 layouts each; 12 for the last row).
+Least-squares fit of where the gripper first closed against where the named object was, for each
+table axis (x: away from the robot, y: sideways). A policy that closes where the named object is has
+slope 1 and R² near 1.
+
+| Run | Slope, x / y | R², x / y |
+|---|---|---|
+| `dp_vit_pt1500`: no language, history, 1M samples | 0.04 / 0.09 | 0.001 / 0.006 |
+| `dp_vit_reactive_pt1500`: no language, no history, 1M samples | 0.00 / 0.01 | 0.000 / 0.000 |
+| `dp_vit_lang_pt1500`: language, history, 1M samples | 0.05 / 0.06 | 0.002 / 0.003 |
+| `dp_vit_lang_reactive_pt1500`: language, no history, 1M samples (its last checkpoints are at the start of the transition) | 0.03 / 0.15 | 0.001 / 0.021 |
+| `dp_vit_lang_pt4k`: language, history, 4000 demonstrations, 3M samples | 0.08 / 0.04 | 0.004 / 0.002 |
 
 ### 4000 demonstrations, no history (`dp_vit_lang_reactive_pt4k`)
 
@@ -319,24 +338,34 @@ No history (`dp_vit_lang_reactive_cube1k`):
 
 | Samples | Success (raw / EMA) | Closed at the named object | Slope | Median miss to named |
 |---|---|---|---|---|
+| 0.1M | 3% / 8% | 100% / 100% | 0.62 / 0.70 | 91 / 54 mm |
 | 0.3M | 13% / 54% | 100% / 100% | 0.96 / 0.94 | 40 / 16 mm |
+| 0.4M | 46% / 70% | 100% / 100% | 0.94 / 0.99 | 16 / 11 mm |
 | 0.6M | 89% / 84% | 100% / 100% | 0.98 / 0.99 | 11 / 9 mm |
+| 0.7M | 83% / 94% | 100% / 100% | 1.00 / 0.99 | 10 / 8 mm |
 | 0.9M | 77% / 94% | 100% / 100% | 1.00 / 0.99 | 10 / 7 mm |
+| 1.0M | 94% / 97% | 100% / 100% | 1.00 / 1.00 | 6 / 7 mm |
 | 1.2M | 96% / 94% | 100% / 100% | 1.00 / 0.99 | 6 / 7 mm |
+| 1.3M | 94% / 95% | 100% / 100% | 1.00 / 1.00 | 6 / 6 mm |
 | 1.5M | 91% / 91% | 100% / 100% | 0.99 / 1.00 | 7 / 6 mm |
-| 1.5M (final) | 95% / 91% | 100% / 100% | 1.00 / 0.99 | 7 / 6 mm |
+| 1.50M (final) | 95% / 91% | 100% / 100% | 1.00 / 0.99 | 7 / 6 mm |
 
 
 With history (`dp_vit_cube1k`, no language input; the task has one instruction):
 
 | Samples | Success (raw / EMA) | Closed at the named object | Slope | Median miss to named |
 |---|---|---|---|---|
+| 0.1M | 4% / 7% | 100% / 100% | 0.86 / 0.57 | 74 / 89 mm |
 | 0.3M | 11% / 38% | 100% / 100% | 0.93 / 1.00 | 40 / 24 mm |
+| 0.4M | 12% / 52% | 100% / 100% | 1.07 / 1.03 | 31 / 16 mm |
 | 0.6M | 57% / 45% | 100% / 100% | 1.04 / 1.04 | 16 / 16 mm |
+| 0.7M | 62% / 59% | 100% / 100% | 1.00 / 1.04 | 14 / 14 mm |
 | 0.9M | 73% / 56% | 100% / 100% | 1.04 / 1.04 | 13 / 15 mm |
+| 1.0M | 59% / 63% | 100% / 100% | 1.03 / 1.03 | 14 / 14 mm |
 | 1.2M | 65% / 68% | 100% / 100% | 1.04 / 1.04 | 12 / 14 mm |
+| 1.3M | 62% / 64% | 100% / 100% | 1.04 / 1.03 | 14 / 13 mm |
 | 1.5M | 66% / 69% | 100% / 100% | 1.03 / 1.04 | 12 / 13 mm |
-| 1.5M (final) | 62% / 70% | 100% / 100% | 1.03 / 1.03 | 14 / 14 mm |
+| 1.50M (final) | 62% / 70% | 100% / 100% | 1.03 / 1.03 | 14 / 14 mm |
 
 
 ### Which demonstrations (1500 episodes, 1M samples)
