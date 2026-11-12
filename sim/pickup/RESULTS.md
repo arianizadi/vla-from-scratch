@@ -18,6 +18,7 @@ kept here because the way each one fell is the useful part:
 | "Training budget dominates" | The budget mattered even more than it looked: the same policy scores 0% after 1M samples and 85% after 5M. But a longer run of the first-round policies would not have helped. Three other causes had to go first: one conditioning vector for the action head, the previous action as an input, and a position table computed in half precision |
 | "Pretraining did not help" (0/100 with a pretrained VLM, 1/100 with a randomly initialised one) | Neither policy could find the object, so the comparison said nothing about pretraining. It was repeated with every token passed to the action head and no history: notebook, "From-scratch VLA, every token, no history" |
 
-The task itself is solved: 93% with the first-round data recipe once those causes were removed, 98%
-with random start poses in the demonstrations, and 94% with a policy that also follows an object
-that is moved and tries again after a missed grasp.
+The task itself is solved. With those causes removed, 4000 clean demonstrations and 5M training
+samples give 93%; random start poses in the demonstrations give 98%; and demonstrations that also
+contain recoveries give 94% with a policy that follows an object that is moved and tries again after
+a missed grasp.
