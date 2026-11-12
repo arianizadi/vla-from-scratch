@@ -22,6 +22,27 @@ resumed from checkpoints.
 | Demonstrations | scripted expert, about 66 steps each, failures discarded; seeds `0..` |
 | Training windows | 1 past + current + 14 future low-dimensional steps, images at t-1 and t; 1500 `pick_target` demos give 98,841 windows |
 
+### Datasets
+
+Every frame of a demonstration starts one training window, so windows = frames.
+
+| Name | Episodes | Windows | What is in it |
+|---|---|---|---|
+| `pick_cube_1k` | 1000 | 65,391 | one red cube |
+| `pick_target_1500` | 1500 | 98,841 | 1500 layouts, one instruction each |
+| `pick_target_4k` | 4000 | 263,289 | 4000 layouts, one instruction each |
+| `pick_target_cf` | 1500 | 98,616 | 500 layouts, each demonstrated three times, once per object |
+| `pick_target_cf4k` | 4000 | 263,552 | about 1333 layouts, each demonstrated once per object |
+| `pick_target_cf_early` | 1500 | 158,616 | `pick_target_cf` with the windows that start in frames 0-7 present 6 times |
+| `pick_target_4k_early` | 4000 | 423,289 | `pick_target_4k` with the windows that start in frames 0-7 present 6 times |
+| `pick_target_4k_recover` | 4000 | 293,541 | same seeds as `pick_target_4k`; in 1505 episodes the object is moved once (during the reach or as the gripper closes) and the expert plans again |
+| `pick_target_4k_rs` | 4000 | 241,318 | same seeds; every episode starts from a random gripper pose above the table |
+| `pick_target_4k_rs_recover` | 4000 | 275,550 | random start poses, and the object is moved once in 1456 episodes |
+| `pick_target_4k_hold` | 4000 | 267,075 | same seeds; every episode begins with one frame of the robot at rest |
+
+Training budgets in passes over the data: 1M samples on `pick_target_1500` are 10.1 epochs, 3M are
+30.4; 5M samples on `pick_target_4k` are 19.0 epochs; 1.5M on `pick_cube_1k` are 22.9.
+
 ## The scripted expert
 
 | Measurement | Result |

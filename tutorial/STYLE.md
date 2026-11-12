@@ -115,6 +115,8 @@ the failure section and the reading list. Length: 1,500 to 3,000 words.
 | `tolerance` | grasp success against placement error, per object |
 | `arm-replay` | a 3D replay of a rollout: gripper path, objects, the moment of closing |
 | `timeline` | the papers and systems that led to VLAs, on a time axis |
+| `onset` | success, how often the gripper closed at the named object, and the slope, against training samples, for several runs side by side: the point where a policy starts to look at the scene |
+| `disturbance` | a top-down replay of an episode in which the object is moved during the reach: the old place, the new place, and where the gripper closed |
 
 ## Files
 
