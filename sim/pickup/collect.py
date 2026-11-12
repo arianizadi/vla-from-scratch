@@ -35,9 +35,9 @@ def _jpeg(img, quality=95):
 
 
 def _worker(args):
-    task, jobs, out_dir, worker_id, disturb_prob, anywhere, hold_steps, drift_prob, drift_cm_s = args
+    task, jobs, out_dir, worker_id, disturb_prob, anywhere, hold_steps, drift_prob, drift_cm_s, side = args
     env = PickupEnv(task)
-    expert = ScriptedExpert(env, seed=worker_id, reactive=disturb_prob > 0 or drift_prob > 0)
+    expert = ScriptedExpert(env, seed=worker_id, reactive=disturb_prob > 0 or drift_prob > 0, side=side)
     results = []
     for seed, target_index in jobs:
         obs, start_yaw = env.reset(seed=seed, target_index=target_index), 0.0
@@ -126,6 +126,12 @@ def main():
         "random path until it is held, and the expert follows it",
     )
     ap.add_argument(
+        "--expert_side",
+        choices=["clearance", "preferred"],
+        default="clearance",
+        help="stems: which side the expert approaches from (see ScriptedExpert)",
+    )
+    ap.add_argument(
         "--drift_cm_s",
         type=float,
         default=2.0,
@@ -165,7 +171,14 @@ def main():
             next_seed = seeds[-1] + 1
             # With one target per layout the seed's own choice is kept (target_index None).
             jobs = [(seed, i if per_layout > 1 else None) for seed in seeds for i in range(per_layout)]
-            extra = (args.disturb_prob, args.random_start, args.hold_steps, args.drift_prob, args.drift_cm_s)
+            extra = (
+                args.disturb_prob,
+                args.random_start,
+                args.hold_steps,
+                args.drift_prob,
+                args.drift_cm_s,
+                args.expert_side,
+            )
             chunks = [(args.task, jobs[i :: args.workers], str(out), i, *extra) for i in range(args.workers)]
             for res in pool.map(_worker, chunks):
                 attempted += len(res)
@@ -222,6 +235,7 @@ def main():
         drift_prob=args.drift_prob,
         drift_cm_s=args.drift_cm_s if args.drift_prob > 0 else None,
         drifting_episodes=sum(r["disturbed"] == "drift" for r in kept),
+        expert_side=args.expert_side,
         data_path="data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
         features={
             "front": dict(dtype="image", shape=[224, 224, 3]),

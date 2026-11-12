@@ -283,3 +283,28 @@ def test_grasp_stem_keeps_whole_flowers():
         assert not any(name.endswith("_weld") for name in welds), welds  # the arm's own finger coupling stays
     finally:
         env.close()
+
+
+def test_the_preferred_side_expert_comes_in_from_the_outer_edge_and_still_cuts():
+    import numpy as np
+
+    env = _stem_env("cut_stem")
+    try:
+        wins, preferred = 0, 0
+        for seed in SEEDS:
+            env.reset(seed=seed)
+            expert = ScriptedExpert(env, seed=0, reactive=True, side="preferred")
+            expert.reset()
+            p = env.object_pos(env.target)[:2]
+            radial = p / np.linalg.norm(p)
+            pre = expert.waypoints[1][0][:2]  # the point the gripper comes in from
+            outer_in = np.array([radial[1], -radial[0]]) if p[1] >= 0 else np.array([-radial[1], radial[0]])
+            preferred += float((p - pre) @ outer_in) > 0
+            done, info = False, {}
+            while not done:
+                _, done, info = env.step(expert.act())
+            wins += info["success"]
+        assert wins >= 2, f"the expert cut {wins} of {len(SEEDS)} stems"
+        assert preferred >= 2, f"the preferred side was taken in {preferred} of {len(SEEDS)} layouts"
+    finally:
+        env.close()

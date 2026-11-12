@@ -43,6 +43,7 @@ def _turn_toward(R, R_target, max_angle):
 
 
 TRACK_LIMIT = 0.04  # metres: a move of the object up to this is followed by shifting the plan, a larger one re-plans
+SIDE_BLOCKED = 0.04  # metres: side="preferred" turns to the other side when its path passes this close to a stem
 
 
 class ScriptedExpert:
@@ -50,11 +51,18 @@ class ScriptedExpert:
     the named object. When it has moved a little (up to TRACK_LIMIT, as a drifting target does between
     two checks) the plan is shifted with it and the expert carries on where it was; when it has jumped
     further, or a grasp closed on nothing, the expert plans again, which gives demonstrations of
-    recovery (see disturb.py)."""
+    recovery (see disturb.py).
 
-    def __init__(self, env: PickupEnv, seed: int = 0, reactive: bool = False):
+    `side` (stems only) picks the side a stem is approached from: 'clearance', the side whose path in passes
+    farthest from the other stems; 'preferred', from the outer edge of the table toward its middle, unless that
+    path passes within SIDE_BLOCKED of another stem. The second makes the choice follow from where the stem
+    stands, not from fine distances to the other stems."""
+
+    def __init__(self, env: PickupEnv, seed: int = 0, reactive: bool = False, side: str = "clearance"):
+        assert side in ("clearance", "preferred"), side
         self.env = env
         self.reactive = reactive
+        self.side = side
         self.rng = np.random.default_rng(seed)
         self.ik_data = mujoco.MjData(env.model)
         # Reference top-down orientation and finger-axis yaw at the home configuration.
@@ -165,7 +173,14 @@ class ScriptedExpert:
             gaps = [np.linalg.norm(o - (a + k * (b - a))) for o, k in zip(others, t, strict=True)]
             return min(gaps, default=1.0)
 
-        toward = max((np.array([-radial[1], radial[0]]), np.array([radial[1], -radial[0]])), key=clearance)
+        # 'preferred': the hand comes in from the outer edge of the table (the side away from the robot's
+        # middle line, y = 0) and moves toward the middle.
+        clockwise, anticlockwise = np.array([radial[1], -radial[0]]), np.array([-radial[1], radial[0]])
+        preferred, other = (clockwise, anticlockwise) if p[1] >= 0 else (anticlockwise, clockwise)
+        if self.side == "preferred" and clearance(preferred) >= SIDE_BLOCKED:
+            toward = preferred
+        else:
+            toward = max((other, preferred), key=clearance)
         R = self.side_orientation(toward)
         lo, hi = obj["band"]
         z = self.rng.uniform(lo + 0.01, hi - 0.01)

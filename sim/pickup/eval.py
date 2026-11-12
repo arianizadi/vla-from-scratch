@@ -169,6 +169,12 @@ def main():
         help="with --disturb drift: how fast the named object slides (cm/s), from the first step until it is held",
     )
     ap.add_argument(
+        "--expert_side",
+        choices=["clearance", "preferred"],
+        default="clearance",
+        help="with --expert, stems: which side the expert approaches from (see ScriptedExpert)",
+    )
+    ap.add_argument(
         "--expert_reactive",
         action="store_true",
         help="with --expert: the expert plans again when the object has moved or a grasp closed on nothing",
@@ -187,8 +193,8 @@ def main():
     if args.expert:
         from .expert import ScriptedExpert
 
-        expert = ScriptedExpert(env, seed=0, reactive=args.expert_reactive)
-        server_info = dict(policy="scripted expert", reactive=args.expert_reactive)
+        expert = ScriptedExpert(env, seed=0, reactive=args.expert_reactive, side=args.expert_side)
+        server_info = dict(policy="scripted expert", reactive=args.expert_reactive, side=args.expert_side)
     else:
         conn = connect(args.port)
         conn.send({"cmd": "info"})
