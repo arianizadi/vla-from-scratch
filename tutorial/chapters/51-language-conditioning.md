@@ -277,28 +277,14 @@ Numbers from the [lab notebook](../lab-notebook.md): `pick_target`, 100 unseen l
 evaluation, one training seed per run, machine B (L40S GPUs, 128 CPU cores) unless stated. Pairs
 are trained / averaged weights.
 
-**With and without the instruction.** The patch-token policy without history: 36.3M parameters,
-48.9M with the instruction (its embedding table adds 12.6M). All trained before the position fix
-(the rotary position table was computed in bfloat16; [Positions](12-positions.md)).
-
-| Policy | Demos | Samples | Success | Closed at the named object | Slope |
-|---|---|---|---|---|---|
-| `dp_vit_reactive`, no instruction | 1500 | 1.0M | 1% / 1% | 26% / 34% | 0.01 / 0.04 |
-| `dp_vit_lang_reactive` | 1500 | 1.0M | 3% / 5% | 49% / 41% | 0.29 / 0.18 |
-| same | 1500 | 3.0M | 64% / 62% | 99% / 100% | 0.96 / 0.97 |
-| same | 4000 | 1.0M | 0% / 1% | 35% / 32% | 0.11 / 0.14 |
-| same run | 4000 | 2.0M | 4% / 36% | 95% / 98% | 0.81 / 0.96 |
-| same run | 4000 | 5.0M | 83% / 85% | 100% / 100% | 0.98 / 0.98 |
-
-The control (row one) has only 1500 demonstrations and 1.0M samples.
-
-- **Without the instruction, or with too little training: chance.** Rows one and four; row two a
-  little above, still 127 / 139 mm (median) from the named object.
-- **With enough training: every episode.** Last row: 7 mm (median) from the named object (the
-  expert: 5 mm); no episode lifted another object (averaged weights).
-- **The rate and the slope rise together**, then success
-  ([How much data and training](71-how-much-data-and-training.md); notes: "Looking at the scene
-  arrives late, and all at once").
+**With and without the instruction.** The patch-token policy without history (36.3M parameters,
+48.9M with the instruction's embedding table), trained before the position fix
+([Positions](12-positions.md)). Without the instruction (`dp_vit_reactive`, 1500 demonstrations,
+1.0M samples) it closed at the named object at chance, 26% / 34% (slope 0.01 / 0.04). With it
+(`dp_vit_lang_reactive`, 4000 demonstrations) it was still at chance after 1.0M samples and after
+5.0M closed at the named object in every episode, with no episode lifting another object;
+[How much data, how much training](71-how-much-data-and-training.md) follows that transition
+checkpoint by checkpoint.
 
 The failing policies of the notebook's first round (machine A, one RTX 4090, 24 GB; 1500
 demonstrations, 1.0M samples, one conditioning vector for the VLAs) sit on the reference table's last line: `dp_vit` 32% at the named object, 110 mm (median)
@@ -308,29 +294,28 @@ not average").
 
 <!-- interactive: grasp-map -->
 *Figure: where the gripper first closed relative to the named object, one dot per episode, for
-rows one, two and six.*
+the policy without the instruction and for the policy with it, failing and working.*
 
 **What the two numbers do not separate.** The rate counts the nearest object at the moment of
-closing, so it rises before the gripper is close enough to grasp: row five closes at the named
-object in 95% / 98% of episodes and still fails most of them. The slope is pooled over both table
-axes and all four objects. Neither says *when* in the episode the instruction was read; the
-handover test does.
+closing, so it rises before the gripper is close enough to grasp: after 2.0M samples the
+4000-demonstration policy closes at the named object in 95% / 98% of episodes and still fails most
+of them. The slope is pooled over both table axes and all four objects. Neither says *when* in the
+episode the instruction was read; the handover test does.
 
-**Reading the instruction earlier.** Several changes made the rate rise sooner with 4000
-demonstrations (repeating the early windows, random start poses and recoveries did too; all in
-the chapter linked below); two bear on the instruction.
-With the position table fixed ([Positions](12-positions.md)) the 4000-demonstration recipe of rows
-four to six (one instruction per layout) closes at the named object in 65% of episodes after 1.0M
-samples, against 35% with the old table (slope 0.58 against 0.11; notebook, "The same run before
-and after the fix", trained weights). With one instruction per layout, remembering which object was picked in each
-training scene fits the data as well as reading the instruction; naming every object of a layout
-in turn removes that solution, and the rate after 1.0M samples is 98% (slope 1.02) against 65%
-([Which demonstrations teach what](72-which-demonstrations-teach.md)). With 1500 demonstrations and 1.0M
-samples, naming every object did not help (notebook, "Which demonstrations").
+**Reading the instruction earlier.** Of the changes that made the rate rise sooner with 4000
+demonstrations, two bear on the instruction. With the position table fixed
+([Positions](12-positions.md)) the 4000-demonstration recipe above (one instruction per layout)
+closes at the named object in 65% of episodes after 1.0M samples, against 35% with the old table
+(slope 0.58 against 0.11; notebook, "The same run before and after the fix", trained weights).
+With one instruction per layout, remembering which object was picked in each training scene fits
+the data as well as reading the instruction; naming every object of a layout in turn removes that
+solution, and the rate after 1.0M samples is 98% (slope 1.02) against 65%
+([Which demonstrations teach what](72-which-demonstrations-teach.md)). With 1500 demonstrations
+and 1.0M samples, naming every object did not help (notebook, "Which demonstrations").
 
-**The handover.** The row-six policy reads the instruction at the start and then follows its own
-arm: when the expert drives the first 25 control steps toward another object, it closes at the
-expert's object in 100 of 100 episodes, although the instruction is in every query and it plans
+**The handover.** The 4000-demonstration policy after 5.0M samples reads the instruction at the
+start and then follows its own arm: when the expert drives the first 25 control steps toward
+another object, it closes at the expert's object in 100 of 100 episodes, although the instruction is in every query and it plans
 again every 8 control steps (notebook, "What the no-history policy depends on";
 [What a policy looks at](95-what-a-policy-looks-at.md)). Which demonstrations make it turn back is
 the subject of [A policy that corrects itself](103-case-self-correction.md).

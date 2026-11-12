@@ -28,7 +28,8 @@ another. **Initialisation** is the set of values the weights hold before a run s
 numbers, or the result of pretraining. In a demonstration, the only thing that ties the words
 "green can" to an object is where the expert then moves
 ([Language conditioning](51-language-conditioning.md)). A policy can learn the tie from that
-alone, but late: `dp_vit_lang_reactive`, the policy that solves `pick_target` here, has no
+alone, but late: `dp_vit_lang_reactive`, the policy that solves `pick_target` here (three objects
+on the table, one named in the instruction), has no
 pretrained part and closes the gripper at the object the instruction named about as often as chance
 for most of its first million training samples
 ([How much data, how much training](71-how-much-data-and-training.md)). The hope behind stages 1
@@ -204,57 +205,28 @@ retrained VLM) and the first comparison come from runs trained before the positi
 | 2. VLM, 96.5M | 40,000 captioned sim renders | 400k samples, about 15 min at 437 samples/s | loss 0.058; on 300 held-out scenes, objects listed in left-to-right order 85% of the time (256/300), leftmost object named 95% (285/300). Retrained after the fix (machine B): loss 0.059, order 267/300 = 89%, leftmost 286/300 = 95% |
 | 3. VLA, 130.0M, everything trainable | 1500 `pick_target` demos | 1.0M samples, about 1.7 h at 165 samples/s | 0/100 |
 
+### What the stage table shows
+
+Each stage has to pass its own test before the next is worth training. For stage 1 the script has
+no test beyond the training log: the falling loss and the notebook's note that it writes
+grammatical English. Stage 2 is judged by `custom_path.sh check`, not by its loss: the first
+stage-2 model reached a low loss and scored 1/300 on exact ordering (see "Where it goes wrong").
+The check scores only what the captions teach: the objects listed left to right and the leftmost
+one named, positions as an ordering or as thirds of the image, never in millimetres. A VLM that
+passes it ties the object words to coarse image regions; the precision a grasp needs has to come
+from stage 3.
+
 ### The first comparison
 
-The pair used `vla_custom.yaml` on `pick_target` (three objects on the table, one named in the
-instruction): 1500 demonstrations, 1.0M samples, one training run per policy, 100 unseen layouts.
-The last four rows describe the moment the gripper first closed; **closed at the named object**
-means that the object nearest the gripper then was the one the instruction named (chance: 33%).
-
-| | Pretrained VLM | Random-init VLM |
-|---|---|---|
-| Success | 0/100 | 1/100 |
-| Final training loss | ~0.03 | ~0.03 |
-| Closed the gripper | 100% | 100% |
-| Closed at the named object | 33% | 29% |
-| Median miss to the named object | 175 mm | 174 mm |
-| Median miss to the nearest object | 89 mm | 89 mm |
-
-Zero against one out of 100 is no difference, and no proof that pretraining is useless.
-
-1. **The task is solvable.** The scripted expert scores 99/100 through the same evaluation loop.
-2. **Neither policy was looking at the scene.** Both closed at the named object at chance, at the
-   right height (within about 3 mm) around control step 34-44 as the expert does, but 89 mm
-   (median) from the nearest object: where they closed did not depend on the scene
-   ([Measuring how a policy fails](92-measuring-failure.md)), and the low loss does not contradict
-   this ([Loss is not success](91-loss-is-not-success.md)).
-3. **The stage-2 VLM had part of the information.** It named the leftmost object in 285 of 300
-   held-out scenes, so it ties the object words to coarse image regions. Its captions give
-   positions only as thirds of the image or as an ordering.
-
-This is a floor effect: when every variant fails, a difference between them cannot show.
-
-### Why both stayed at the floor
-
-Three settings of the first pair stood in the way, each found later on the smaller patch-token
-policy (48.9M parameters, no VLM) and told in full in its own chapter:
-
-| Setting | First pair (`vla_custom.yaml`) | Repeated pair (`vla_custom_tokens_reactive.yaml`) | Told in |
-|---|---|---|---|
-| Conditioning | `action_token`: `[32, 1, 2048]` | `all_tokens`: `[32, 528, 2048]` | [What the action head sees](50-what-the-action-head-sees.md) |
-| History | `image_indices: [-1, 0]`, previous state and action | `image_indices: [0]`, `lowdim_past_timesteps: 0` | [History and the shortcut it opens](52-history-and-shortcuts.md) |
-| Data and budget | 1500 demonstrations, 1.0M samples (10.1 passes) | 4000 demonstrations (`pick_target_4k`), 3.0M samples | [How much data, how much training](71-how-much-data-and-training.md) |
-
-With one row, the named object's position has to be written into its values by a VLM that only the
-action loss trains. With its previous action as an input, a policy can read its target there, so
-only the first window of each demonstration needs the image. And looking at the scene arrives
-late: the patch-token policy had barely started after 1.0M samples on 1500 demonstrations.
-
-Which of the three held the VLA pair down was not isolated; the field notes ("Pretraining a
-backbone: mainly an earlier start") conclude that neither policy could have found the object, so
-the first comparison says nothing about pretraining. The step to the second pair changed all three
-together, and the position table with them, so the difference between the rounds is the effect of
-no single one.
+The first pair (`vla_custom.yaml`: one conditioning row and history, 1500 demonstrations, 1.0M
+samples) ended at 0/100 with the pretrained VLM and 1/100 with the random one; both closed the
+gripper at places unrelated to the scene ([Measuring how a policy fails](92-measuring-failure.md)),
+a floor at which no difference between them could show.
+[Case study: a backbone from scratch against a pretrained one](102-case-pretrained-backbones.md)
+tells that comparison in full, with the three settings of the recipe that held it down: one
+conditioning row, history, and too little data and training. The repeated pair changes all three,
+and the position table with them, so the difference between the two rounds is the effect of no
+single one.
 
 ### The comparison repeated
 
@@ -266,16 +238,17 @@ gives the table checkpoint by checkpoint.
 
 Rules for reading any such pair from `summarize.py`'s columns:
 
-1. **Both sides off the floor.** Closed at the named object well above 33% and a **slope** well
-   above 0 on both runs (the slope of where the gripper first closed against where the named object
+1. **Both sides off the floor.** **Closed at the named object** (the object nearest the gripper
+   when it first closed was the named one; chance 33%) well above 33% and a **slope** well above 0
+   on both runs (the slope of where the gripper first closed against where the named object
    was: 1 when it closes at the object, 0 when the place ignores the scene). Otherwise the success
    rates cannot be compared.
 2. **Equal samples, every checkpoint.** The slope rises before success does, so it dates the
    checkpoint at which a run starts to look at the scene.
 3. **One position table.** Set a pair built after the fix only against reference runs trained after
    it ([Telling tokens where they are](12-positions.md)).
-4. **Both weights files.** Trained and averaged (`ema_N.pt`) weights can disagree by tens of points while a run starts
-   to look; report both.
+4. **Both weights files.** Trained and averaged (`ema_N.pt`) weights can disagree by tens of
+   points while a run starts to look; report both.
 
 A pair that succeeds still needs probing: neither VLA was given the probes of
 [Probing a policy that works](95-what-a-policy-looks-at.md), and both learned from one start pose

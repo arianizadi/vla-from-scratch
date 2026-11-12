@@ -226,48 +226,29 @@ differences.
 
 **Rotary position encoding** tells the action head where in its sequence a token sits by rotating
 its queries and keys by an angle that grows with the position. The table of those angles had been
-computed in bfloat16, so neighbouring high positions got the same angle;
-[Positions](12-positions.md) has the mechanism and the count (notebook, "Bugs found and fixed").
-Tokens that share an angle look to attention as if they stood at the same place, and only their
-content tells them apart.
-
-How hard each config was hit depends on where its actions sit. The action head's sequence is one
-token for the noise level (how far the current flow step is between noise and action), the
-conditioning, the joint state, then the **action-step tokens**, one per action:
-
-| Config | Tokens before the actions | Action-step tokens | Positions | Distinct angles |
-|---|---|---|---|---|
-| `dp_vit_lang_reactive` | 426: noise level, 32 instruction, 392 patches, state | 15 | 426-440 | 8 |
-| `dp_vit` | 787: noise level, 784 patches, two states | 16 (with the previous action) | 787-802 | 4 |
-
-Past position 512 four neighbours share one angle, so the longer conditioning of the history config
-cost it more: step 5 compared two amounts of damage as well as two sets of inputs.
+computed in bfloat16, so neighbouring high positions got the same angle, and tokens that share an
+angle look to attention as if they stood at the same place ([Positions](12-positions.md) has the
+mechanism; notebook, "Bugs found and fixed"). The **action-step tokens**, one per action of the
+chunk, come last in the action head's sequence, so the longer the conditioning in front of them,
+the more of them were merged: the 15 of `dp_vit_lang_reactive` sit at positions 426 to 440 and got
+8 distinct angles, the 16 of `dp_vit` (784 patch tokens in front) at 787 to 802 and got 4. Step 5
+compared two amounts of damage as well as two sets of inputs.
 
 **Ran.** `RotaryEmbedding._update_cos_sin_tables` in
 [`vla_foundry/positional_embedding.py`](../../vla_foundry/positional_embedding.py) now computes
 the angles in float32, so step 5's commands without the extra argument are this step. The
 notebook's runs are `dp_vit_lang_reactive_cube1k_posfix` and `dp_vit_cube1k_posfix`.
 
-**Measured.** Machine B, 100 layouts per cell, six of eleven checkpoints (notebook, the two
-"Single cube ... after the fix" sections); the no-history run saved trained weights only.
+**Measured.** Machine B, 100 layouts per evaluation, one run each (notebook, the two "Single cube
+... after the fix" sections; the no-history run saved trained weights only). With only the table
+corrected, the history configuration ended at 96% / 98% instead of 62% / 70%; the less damaged
+no-history one ended where it had, at 91% (trained weights) against 95% / 91%. The final
+checkpoints closed a median 6 to 8 mm from the cube. [History and the shortcut it
+opens](52-history-and-shortcuts.md) sets the two single-cube pairs side by side and says what they
+do and do not establish about history.
 
-| Samples | No history: success (raw) | Median miss | History: success | Median miss |
-|---|---|---|---|---|
-| 0.30M | 28% | 29 mm | 30% / 37% | 27 / 23 mm |
-| 0.60M | 70% | 13 mm | 52% / 86% | 20 / 12 mm |
-| 0.89M | 81% | 11 mm | 92% / 91% | 9 / 8 mm |
-| 1.2M | 96% | 6 mm | 96% / 97% | 7 / 7 mm |
-| 1.5M | 97% | 6 mm | 99% / 98% | 7 / 6 mm |
-| 1.5M (final) | 91% | 6 mm | 96% / 98% | 8 / 7 mm |
-
-At 0.15M samples the slope was 0.22 / 0.08 with history and 0.68 without: the history policy did
-not yet go to the cube, and the other only partly did. From 0.30M on it is at least 0.93 in both
-runs.
-
-**Changed.** With only the table corrected, the history configuration went from 62% / 70% to
-96% / 98%; the less damaged no-history one ended where it had (91% trained weights, against
-95% / 91%). Still without instruction tokens and on pixels in 0-255, the history configuration was
-held back on one cube (one run per cell) by the position table, not by history.
+**Changed.** The reading of step 5. Still without instruction tokens and on pixels in 0-255, the
+history configuration had been held back on one cube by the position table, not by history.
 
 ### 7. The tolerance of the cube
 
@@ -325,7 +306,8 @@ What the route shows:
   slope is at least 0.93 from 0.3M samples on, with median misses of 16 to 40 mm there; the three
   that end above 90% end at 6 to 8 mm.
 - **Averaged weights often lead early, not always.** 54% against 13% (step 5, no history, 0.3M
-  samples), 86% against 52% (step 6, history, 0.60M), but 45% against 57% (step 5, history, 0.6M).
+  samples), 86% against 52% (history after the fix, 0.60M; notebook, "Single cube with history,
+  after the fix"), but 45% against 57% (step 5, history, 0.6M).
   Evaluate both.
 
 What it cannot show:
@@ -403,7 +385,7 @@ What it cannot show:
 4. Which config in `sim/pickup/configs/` keeps history but removes both other differences from
    the comparison of step 5?
 
-5. Reproduce the last column of step 6's position table without a GPU. The first angle column of
+5. Reproduce step 6's count of distinct angles (8 and 4) without a GPU. The first angle column of
    the rotary table has frequency 1, so under the old table its angle is the position rounded to
    bfloat16.
 

@@ -23,7 +23,7 @@ Status legend: **confirmed** (measured here), **open** (hypothesis, experiment q
 | Random start poses in the demonstrations | 98% from the home pose and 97% from random poses; follows an object moved early in the reach (94%) | 10, 11 |
 | Demonstrations in which the object is moved and the expert recovers | The policy follows a moved object (79-88%) and retries a missed grasp (78 of 99 episodes) | 11 |
 | Random start poses and recoveries in the same demonstrations | 94% on the unchanged task and 89-94% with the object moved at any point of the reach or as the gripper closes, also from a random start pose | 11 |
-| Two sampling steps instead of ten | Equal within noise on five of seven policies (84-98%) at a third of the latency; worse on the other two (77% against 96%, 77% against 89%) | 12 |
+| Two sampling steps instead of ten | Within a point of ten steps on four of seven policies (84-98%) at a third of the latency; 12-19 points worse on the three trained with repeated early windows or every object named | 12 |
 | Every token of a VLM handed to the action head, in place of one vector | The from-scratch VLA goes from 0% to 86% / 87%, the Qwen VLA from 5% to 70% / 72% (history and the number of demonstrations changed with it) | 5, 16 |
 | Pretraining the VLM backbone on captions | The policy starts to look after 0.25M samples, not after about 1.0M. It buys an earlier start: they end close, at 86% / 87% and 75% / 85% (trained weights 11 points apart, averaged weights 2) | 16 |
 
@@ -386,10 +386,11 @@ model.
 **Flow steps.** The sampler turns noise into an action chunk in a number of steps. On the 85%
 policy, 100 layouts per setting (a second 100 in brackets): 1 step 61%; 2 steps 89% (90%); 4 steps
 88% (86%); 10 steps, the default, 85% (83%); 20 steps 79%. Two steps cost 25 ms per chunk, ten cost
-71 ms. On the policies trained after the position fix, 2 steps against 10 give 94% against 93%, 98%
-against 98%, 84% against 84% and 94% against 94%, but 77% against 96% for the policy trained with
-repeated early windows and 77% against 89% for the one trained with every object named: measure it on
-the policy you will run.
+71 ms. On the seven policies trained after the position fix, 2 steps against 10 give 94% against 93%,
+98% against 98%, 84% against 84% and 94% against 94%, but 77% against 96% for the policy trained with
+repeated early windows, 77% against 89% for the one trained with every object named, and 74% against
+86% for random starts and recoveries with repeated early windows: measure it on the policy you will
+run.
 
 **Actions executed per chunk.** The policy predicts 15 actions. Executing 2 of them before planning
 again gives 76%, 4 gives 84%, 8 gives 85%, all 15 gives 84%. Planning more often does not help, and

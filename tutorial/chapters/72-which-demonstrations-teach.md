@@ -275,7 +275,7 @@ disturbance ([Case study: self-correction](103-case-self-correction.md); the pro
 | Fewer disturbed episodes than `--disturb_prob` asks for | no free place for the move, or the episode failed and was dropped | read `disturbed_episodes` in `meta/info.json`; raise the share if needed |
 | A new dataset "wins" by 3 points | one seed per run; the plain recipe ended at 93% and 96% | run a second seed of the baseline |
 | Looking early, succeeding late | the slope rises before the miss shrinks | read the miss in `summarize.py`; compare at the end |
-| The new policy wants other inference settings | two flow steps equalled ten on four of these seven policies and cost 12-19 points on the three with early windows repeated or every object named (77% against 96%, 77% against 89%, 74% against 86%; notebook, "What the same policies depend on" against the Standard column of the table before it) | sweep `--flow_steps` again on each new policy |
+| The new policy wants other inference settings | two flow steps came within a point of ten on four of these seven policies and cost 12-19 points on the three trained with early windows repeated or every object named ([Flow matching](41-flow-matching.md)) | sweep `--flow_steps` again on each new policy |
 | A boosted dataset fails to load, or its windows no longer match its statistics | its shards are symlinks to the base dataset, which `make_dataset.sh` deletes and rebuilds; `boost_early_windows.py` also refuses an existing `--out` | rebuild the base, delete the boosted folder, run `boost_early_windows.py` again |
 
 ## Background and further reading
