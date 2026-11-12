@@ -240,6 +240,14 @@ class VLMBackboneParams(BackboneParams, VLMHFParams):
     # None trains the whole VLM. Lets a multi-billion-parameter backbone be fine-tuned on a
     # single 24 GB GPU, where gradients + optimizer state for every weight do not fit.
     num_trainable_vlm_layers: int | None = field(default=None)
+    # What the action head is conditioned on (same meaning as for vlm_foundry_backbone):
+    #   "action_token": one vector, the hidden states of an action token appended to the prompt.
+    #   "all_tokens":   the hidden states of every image and text token of the prompt, so the action
+    #                   head can attend to individual image tokens (no action token is added).
+    conditioning: str = field(default="action_token")
+    # all_tokens only: pad the conditioning sequence (in front, with zeros) to this many tokens so that
+    # its length does not depend on what else is in the batch. 0 = use the batch's own length.
+    conditioning_len: int = field(default=0)
 
 
 @register_model_params("vlm_foundry_backbone")

@@ -6,15 +6,24 @@ import torch
 from torch import nn
 
 from vla_foundry.models.model_outputs.backbone_output import VisionLanguageBackboneOutput
-from vla_foundry.models.vision_language_backbones.base import BaseBackboneWrapper
+from vla_foundry.models.vision_language_backbones.base import (
+    BaseBackboneWrapper,
+    conditioning_from_hidden_states,
+    insert_after_last_real_token,
+)
 from vla_foundry.params.model_params import VLMBackboneParams
 
 
 class VLMHFBackboneWrapper(BaseBackboneWrapper):
     """VLM backbone wrapper for action policy conditioning.
 
-    This class wraps VLMHF and provides the conditioning embedding interface
-    using an action token probe, while keeping VLMHF free from conditioning-specific logic.
+    This class wraps VLMHF and provides the conditioning embedding interface, while keeping VLMHF free
+    from conditioning-specific logic. Two conditioning modes (`backbone_params.conditioning`):
+
+    - ``action_token``: an action token is inserted after the prompt and its hidden states from the
+      last layers are the conditioning, i.e. the action head receives a single vector.
+    - ``all_tokens``: the last layers' hidden states of every image and text token are the
+      conditioning, so the action head can attend to individual image tokens.
     """
 
     def __init__(self, backbone_params: VLMBackboneParams, load_pretrained: bool = True):
@@ -26,18 +35,23 @@ class VLMHFBackboneWrapper(BaseBackboneWrapper):
         """
         super().__init__(backbone_params, load_pretrained)
         self.num_vlm_layers_to_use = backbone_params.num_vlm_layers_to_use
-
-        # Add action token to vocabulary
-        self._action_token_id = self._model.resize_token_embeddings()
+        self.conditioning = backbone_params.conditioning
+        self.conditioning_len = backbone_params.conditioning_len
+        if self.conditioning not in ("action_token", "all_tokens"):
+            raise ValueError(f"conditioning must be 'action_token' or 'all_tokens', got {self.conditioning!r}")
 
         # Detect model type
         self._vlm_model_type = getattr(self._model.model.config, "model_type", "").lower()
 
-        # Initialize the new token's embedding as mean of existing embeddings
-        with torch.no_grad():
-            embeddings = self._model.model.get_input_embeddings()
-            mean_emb = embeddings.weight[:-1].mean(dim=0)
-            embeddings.weight[-1] = mean_emb
+        if self.conditioning == "action_token":
+            # Add action token to vocabulary
+            self._action_token_id = self._model.resize_token_embeddings()
+
+            # Initialize the new token's embedding as mean of existing embeddings
+            with torch.no_grad():
+                embeddings = self._model.model.get_input_embeddings()
+                mean_emb = embeddings.weight[:-1].mean(dim=0)
+                embeddings.weight[-1] = mean_emb
 
         if backbone_params.num_trainable_vlm_layers is not None:
             self._train_only_last_layers(backbone_params.num_trainable_vlm_layers)
@@ -107,22 +121,8 @@ class VLMHFBackboneWrapper(BaseBackboneWrapper):
             )
 
     def _prepare_inputs_for_action_token(self, input_ids, attention_mask):
-        """Helper: Append action token to inputs (modular and reusable)."""
-        batch_size = input_ids.shape[0]
-        device = input_ids.device
-
-        # Append action token
-        action_tokens = torch.full((batch_size, 1), self._action_token_id, device=device, dtype=input_ids.dtype)
-        input_ids_with_action = torch.cat([input_ids, action_tokens], dim=1)
-
-        # Extend attention mask
-        if attention_mask is not None:
-            action_mask = torch.ones((batch_size, 1), device=device, dtype=attention_mask.dtype)
-            attention_mask_with_action = torch.cat([attention_mask, action_mask], dim=1)
-        else:
-            attention_mask_with_action = None
-
-        return input_ids_with_action, attention_mask_with_action
+        """Insert the action token directly after each sample's last real token."""
+        return insert_after_last_real_token(input_ids, attention_mask, self._action_token_id)
 
     def _prepare_inputs(
         self,
@@ -134,26 +134,46 @@ class VLMHFBackboneWrapper(BaseBackboneWrapper):
     ):
         self._validate_inputs(input_ids, pixel_values, attention_mask, attention_mask_images, **kwargs)
 
-        input_ids_with_action, attention_mask_with_action = self._prepare_inputs_for_action_token(
-            input_ids, attention_mask
-        )
+        if attention_mask is None:
+            attention_mask = torch.ones_like(input_ids)
+        if self.conditioning == "action_token":
+            input_ids, attention_mask = self._prepare_inputs_for_action_token(input_ids, attention_mask)
 
-        # VLM needs hidden states for action token embedding extraction
+        # The conditioning is read from the hidden states
         kwargs["output_hidden_states"] = True
 
-        return input_ids_with_action, pixel_values, attention_mask_with_action, attention_mask_images, kwargs
+        return input_ids, pixel_values, attention_mask, attention_mask_images, kwargs
 
-    def _extract_action_conditioning(self, outputs) -> VisionLanguageBackboneOutput:
-        embeddings = self._extract_action_token_embeddings(outputs)
+    def get_action_conditioning(
+        self,
+        input_ids: torch.Tensor | None,
+        pixel_values: torch.Tensor | None,
+        attention_mask: torch.Tensor | None = None,
+        attention_mask_images: torch.Tensor | None = None,
+        **kwargs,
+    ) -> VisionLanguageBackboneOutput:
+        input_ids, pixel_values, attention_mask, attention_mask_images, model_kwargs = self._prepare_inputs(
+            input_ids=input_ids,
+            pixel_values=pixel_values,
+            attention_mask=attention_mask,
+            attention_mask_images=attention_mask_images,
+            **kwargs,
+        )
+        outputs = self._model(
+            input_ids=input_ids,
+            pixel_values=pixel_values,
+            attention_mask=attention_mask,
+            attention_mask_images=attention_mask_images,
+            **model_kwargs,
+        )
+        # The mask (with the action token already inserted) says which positions are real tokens.
+        return self._extract_action_conditioning(outputs, attention_mask)
+
+    def _extract_action_conditioning(self, outputs, attention_mask=None) -> VisionLanguageBackboneOutput:
+        embeddings = conditioning_from_hidden_states(
+            outputs.hidden_states[-self.num_vlm_layers_to_use :],
+            attention_mask,
+            self.conditioning,
+            self.conditioning_len,
+        )
         return VisionLanguageBackboneOutput(embeddings=embeddings)
-
-    def _extract_action_token_embeddings(self, outputs):
-        """Helper: Extract and concatenate hidden states from action token position."""
-        hidden_states = outputs.hidden_states
-        action_hidden_states = []
-        for layer_hidden in hidden_states[-self.num_vlm_layers_to_use :]:
-            action_hidden = layer_hidden[:, -1, :]  # [B, hidden_dim]
-            action_hidden_states.append(action_hidden)
-
-        # Concatenate: [B, 1, hidden_dim * num_vlm_layers_to_use]
-        return torch.cat(action_hidden_states, dim=-1).unsqueeze(1)

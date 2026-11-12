@@ -1,0 +1,64 @@
+# vla_qwen.yaml with two changes.
+# 1. The action head is conditioned on the hidden states of every image and text token of the prompt
+#    (conditioning: all_tokens) instead of on one action-token vector, so it can attend to where in
+#    the image an object is.
+# 2. No history: one frame per camera, the current joint state, and the policy is not given its
+#    previous action (image_indices: [0], lowdim_past_timesteps: 0). See dp_vit_lang_reactive.yaml.
+# As in vla_qwen.yaml only the last 4 language-model layers and the action head are trained.
+save_path: experiments/pickup
+wandb: false
+db_logging: false
+
+model:
+  <<: !include ../../../vla_foundry/config_presets/models/vla_diffusion_paligemma2.yaml
+  vision_language_backbone:
+    type: vlm_backbone
+    hf_pretrained: Qwen/Qwen3-VL-2B-Thinking
+    num_vlm_layers_to_use: 4
+    num_trainable_vlm_layers: 4
+    conditioning: all_tokens
+    # The prompt's real tokens (chat template + 2 images x 49 + the instruction: 113 for the longest
+    # prompt seen on pick_target) are right-aligned in a sequence of this length, padded in front with
+    # zeros, so that the action head sees the same length in a training batch and when served.
+    conditioning_len: 128
+
+data:
+  <<: !include ../../../vla_foundry/config_presets/data/vla_diffusion.yaml
+  processor: Qwen/Qwen3-VL-2B-Thinking
+  # Qwen's image processor takes pixel-count bounds, not height/width (the preset's PaliGemma-style
+  # `size: {height, width}` makes every batch fail). 224*224 = 50176 keeps the rendered resolution:
+  # 14x14 patches of 16 px, merged 2x2 -> 49 tokens per image, 98 for the 2 images.
+  processor_kwargs:
+    size:
+      shortest_edge: 50176
+      longest_edge: 50176
+  img_num_tokens: 49
+  dataset_modality:
+    - robotics
+  dataset_weighting:
+    - 1.0
+  camera_names:
+    - front
+    - wrist
+  image_indices:
+    - 0
+  lowdim_past_timesteps: 0
+  action_fields:
+    - action
+  proprioception_fields:
+    - state
+  language_instruction_types:
+    - original
+  # The VLM consumes ~50 samples/s, so the prefetch queue fills up. Keep it small: queued batches live
+  # in the 2 GB /dev/shm of the container and overflowing it kills the run without a traceback.
+  num_workers: 4
+  prefetch_factor: 2
+
+distributed:
+  fsdp: false
+
+hparams:
+  <<: !include ../../../vla_foundry/config_presets/hparams/diffusion_policy.yaml
+  lr: 1e-4
+  per_gpu_batch_size: 16
+  global_batch_size: 16
