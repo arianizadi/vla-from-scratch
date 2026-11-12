@@ -35,7 +35,7 @@ def _jpeg(img, quality=95):
 
 
 def _worker(args):
-    task, jobs, out_dir, worker_id, disturb_prob, anywhere, hold_steps, drift_prob, drift_cm_s, side = args
+    task, jobs, out_dir, worker_id, disturb_prob, anywhere, hold_steps, drift_prob, drift_cm_s, side, tail_steps = args
     env = PickupEnv(task)
     expert = ScriptedExpert(env, seed=worker_id, reactive=disturb_prob > 0 or drift_prob > 0, side=side)
     results = []
@@ -70,6 +70,13 @@ def _worker(args):
         if not info["success"]:
             results.append(dict(seed=seed, success=False))
             continue
+        for _ in range(tail_steps):  # after the success: the robot holds its last command (for a cut, jaws shut)
+            action = env.last_action.copy()
+            for c in CAMERAS:
+                frames[c].append(_jpeg(obs[c]))
+            states.append(obs["state"])
+            actions.append(action)
+            obs, _, _ = env.step(action)
         tmp = Path(out_dir) / "tmp" / f"seed_{seed:07d}_{target_index or 0}.parquet"
         table = pa.table(
             {
@@ -152,6 +159,14 @@ def main():
         "training window fills that slot with a copy of the expert's first command, which already points at the "
         "target.",
     )
+    ap.add_argument(
+        "--tail_steps",
+        type=int,
+        default=0,
+        help="after each success, record this many more frames of the robot holding its last command. A cut "
+        "succeeds 3 steps after the jaws reach the stem, so without a tail the shut gripper appears in only the "
+        "last few frames of each demonstration, and a policy trained on them opens again before the jaws arrive.",
+    )
     args = ap.parse_args()
     num_objects = TASKS[args.task]["num_objects"]
     assert 1 <= args.targets_per_layout <= num_objects, f"{args.task} has {num_objects} objects per layout"
@@ -178,6 +193,7 @@ def main():
                 args.drift_prob,
                 args.drift_cm_s,
                 args.expert_side,
+                args.tail_steps,
             )
             chunks = [(args.task, jobs[i :: args.workers], str(out), i, *extra) for i in range(args.workers)]
             for res in pool.map(_worker, chunks):
@@ -236,6 +252,7 @@ def main():
         drift_cm_s=args.drift_cm_s if args.drift_prob > 0 else None,
         drifting_episodes=sum(r["disturbed"] == "drift" for r in kept),
         expert_side=args.expert_side,
+        tail_steps=args.tail_steps,
         data_path="data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
         features={
             "front": dict(dtype="image", shape=[224, 224, 3]),
