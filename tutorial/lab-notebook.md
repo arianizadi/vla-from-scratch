@@ -775,15 +775,20 @@ closed steps within 3 cm of the named stem, no finger touches it 56% of the time
 fingertips' depth 32% of the time, outside the jaws sideways 20%, the gripper outside the band 20%. The
 first close is nearest the named stem in 60% of episodes (chance 33%): the flowers' heads are themselves
 look-alikes (red, orange, pink). The evaluation now also reports `caught_rate`, the share of episodes in
-which the named object was held (stems) or lifted at any step.
+which the named object was held (stems) or lifted at any step: for the final stem policy, 52/100 caught
+and 6/100 held for 10 steps. Executing 4 actions per chunk instead of 8 does not help (1/100, caught 40/100).
 
 ### Step 5: a cut (`cut_stem`)
 
 The same scene; the instruction is "cut the stem of the ... flower". Each flower is built as a base and
 a top part (upper stem and head) held by a weld; when the test of step 4 holds on a stem for 3 control
 steps in a row, the stem is cut at the gripper's height (clipped to the band) and the top part falls.
-Cutting the named stem is a success; cutting any other ends the episode as a failure. The expert, first
-check on 50 layouts: 44 cut.
+Cutting the named stem is a success; cutting any other ends the episode as a failure.
+
+| Who | Cut the named stem | Cut another stem |
+|---|---|---|
+| expert (one plan, and planning again) | 92/100 | 0/100 |
+| the stem policy of step 4, never shown a cut | 9/100 | 19/100 |
 
 ## Throughput
 
