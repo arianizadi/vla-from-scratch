@@ -134,6 +134,30 @@ gave 0/100 with pretraining and 1/100 without. Because of section 5 neither poli
 anything, so this comparison says nothing yet about pretraining. It will be re-run with
 `conditioning: all_tokens`.
 
+## 10. Operating many runs on one machine  (confirmed)
+
+Things that cost time here and have nothing to do with models:
+
+- **Cap CPU threads per process.** Numerical libraries start one thread per core. On a 128-core
+  machine each policy server started 256 threads and used about 20 cores doing nothing useful;
+  twelve of them drove the load average to 570 and halved training throughput on every GPU. With
+  `OMP_NUM_THREADS=4` (and the MKL / OpenBLAS equivalents) each server uses under one core. The
+  scripts now set this (`PICKUP_CPU_THREADS`).
+- **Pin the GPU for rendering as well as for compute.** `CUDA_VISIBLE_DEVICES` does not restrict
+  EGL, and EGL's device order is not `nvidia-smi`'s: on a 10-GPU machine EGL devices 3 and 4 were
+  GPUs 0 and 1. MuJoCo 4 orders EGL devices by `CUDA_VISIBLE_DEVICES`, so setting that one variable
+  per job pins both, provided `MUJOCO_EGL_DEVICE_ID` is left unset. Check with `nvidia-smi` while a
+  render is running rather than trusting an index.
+- **Start long jobs detached.** A job started inside an ssh session dies with the connection.
+- **Do not edit a shell script while it is running.** Bash reads scripts as it goes; an in-place
+  edit made a running evaluation fail with a syntax error halfway through.
+- **Follow the lockfile.** The framework's install notes say `uv sync` and then
+  `uv pip install -e .`. The second command re-resolves outside the lockfile and silently replaced a
+  pinned dependency with a newer commit. `uv sync` alone already installs the project.
+- **Evaluate while training.** Evaluating every checkpoint as it appears costs little next to
+  training and turns one run into a curve; a single final number hides whether the policy was
+  still improving, had peaked, or never moved.
+
 ## Open questions being tested
 
 - Does adding the instruction to the patch-token policy fix target selection? (`dp_vit_lang`)
