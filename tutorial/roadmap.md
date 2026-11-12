@@ -12,68 +12,57 @@ Where this repo is going, and what is already measured. Findings are in [notes.m
    what works, what doesn't, the edge cases, each claim backed by a run here.
 4. A site with animated explanations of the models and of training.
 
-## Where things stand (2026-11-11)
+## Where things stand (2026-11-12)
 
-**Results (100 unseen layouts each)**
+**Results (100 unseen layouts each; details in the [lab notebook](lab-notebook.md))**
 
 | Policy | `pick_cube` | `pick_target` |
 |---|---|---|
-| Scripted expert | 49/50 | 99/100 |
-| ViT patch tokens, no language | 74% | 1% |
-| Qwen3-VL-2B VLA | not run | 6% |
-| Custom LLM -> VLM -> VLA | not run | 0% |
-| Same VLA, random-init VLM | not run | 1% |
+| Scripted expert | 49/50 | 99-100/100 |
+| Patch tokens + instruction, no history, 4000 demos, 5M samples (`dp_vit_lang_reactive`) | 91-97% (1000 demos) | **85%** |
+| Same, 1500 demos, 3M samples | | 64% |
+| Same, 1500 demos, 1M samples | | 5% |
+| Patch tokens + instruction, with history, 4000 demos, 3M samples | 62-70% (1000 demos) | 2% |
+| Qwen3-VL-2B VLA, one conditioning vector, 1500 demos | not run | 6% |
+| Custom LLM -> VLM -> VLA, one conditioning vector, with history | not run | 0% (1% with a random-init VLM) |
 
-**Diagnosis**
+**What was learned on the way** (field notes, sections 6-11)
 
-- The simulator and scoring are fine: the expert scores 99/100 on the same layouts.
-- The three from-scratch policies run the whole grasp motion but close the gripper about 10 cm from
-  the nearest object, and reach the named object 29-33% of the time. Chance is 33%. They learned the
-  motion, not the target.
-- Two structural causes. The only architecture here that grasps (patch-token ViT) has no language
-  input, so with three objects it heads between them. The architectures with language (both VLA
-  recipes) give the action head a single pooled vector, the same bottleneck that made the pooled
-  CLIP policy fail on the single cube (4% vs 30%).
-- Likely third cause, untested: the policy is given its previous action, so after the first step
-  "keep going" predicts the expert without looking at the scene.
-- Grasp tolerance: cube and T block forgive 2 cm, can and hex nut need 1 cm.
+- The first-round policies were not imprecise; where they closed the gripper did not depend on the
+  scene. One conditioning vector was one cause. The previous action as an input was another. A
+  training budget that ended before the policy started to look was the third.
+- Looking at the scene arrives late and all at once: 0% at 1M samples, 36% at 2M, 70% at 2.5M.
+- The 85% policy looks once and then follows its own arm. It does not follow an object that is moved
+  and does not retry a grasp that missed. That is the next thing to fix.
+- What still fails on the static task is the grasp angle of the T block (55%) and the cube (82%).
 
-## Phase 1: make `pick_target` work
+## Phase 1: make `pick_target` work  (done)
 
-One change per step, same 100 evaluation layouts, and for every run four numbers: success, how often
-the gripper closes at the named object, the median miss, and per-object success. Raw and EMA weights
-are both evaluated from the same run.
+Steps taken: instruction tokens next to patch tokens; no history; 4000 demonstrations and 5M
+samples; averaged weights; a sweep of the sampler's settings. Open inside this phase: the grasp
+angle, and how much earlier the policy starts to look when the early windows are repeated or every
+object of a layout is named.
 
-| Step | Change | Config | GPU time | Question it answers |
-|---|---|---|---|---|
-| 1 | Instruction tokens + patch tokens | `dp_vit_lang` | 30 min | Does the policy start choosing the named object? |
-| 2 | Same, no history (one frame, no previous action) | `dp_vit_lang_reactive` | 20-30 min | Was "keep doing what I was doing" hiding the scene from the policy? |
-| 3 | Grasp diagnostics for the Qwen VLA | existing checkpoint | 10 min | Fills the last row of the failure table |
-| 4 | Winner of 1-2 on 4000 demos, about 5M samples | `pick_target_4k` | 2.5 h | How far do data and training budget go? |
-| 5 | Inference settings on the best checkpoint | none | 15 min | Free gains |
+## Phase 2: self-correction  (in progress)
 
-Targets, to be judged against the data: after steps 1-2 the named-object rate far above 33% (aiming
-for over 80%) even if success is still modest; after step 4, 80% success overall with the can and
-hex nut above 60%.
+The demonstrations were single clean passes from one start pose, and the policy trained on them
+ignores everything that happens after its first look.
 
-If neither step 1 nor step 2 gets the policy to choose the named object: oversample the first
-windows of each episode, or condition on a pretrained text-and-image encoder with patch tokens.
+- [x] Evaluation with disturbances: the object is moved during the reach or as the gripper closes
+      (`eval.py --disturb`), with the count of second grasp attempts.
+- [x] An expert that plans again when the object has moved or a grasp closed on nothing, and
+      demonstrations recorded with it (`collect.py --disturb_prob`).
+- [x] Random start poses (`--random_start`), so that the arm's position alone does not give the goal away.
+- [ ] Policies trained on each of these and on both together, evaluated with and without disturbances.
+- [ ] Noise-injected demonstrations: execute a perturbed action, record the expert's clean one.
+- [ ] A target that keeps moving, not one that jumps once.
 
-## Phase 2: self-correction
-
-The demonstrations are single clean passes, so no policy here has seen a miss followed by a retry.
-
-- [ ] Noise-injected demonstrations: execute a perturbed action, record the expert's clean one, and
-      switch the noise off near the grasp.
-- [ ] Retry demonstrations: start from a failed grasp and record the expert reopening and regrasping.
-- [ ] Moving target: nudge the object during the approach; the expert re-plans every step.
-- [ ] Evaluation with disturbances: push the object mid-episode and count recoveries.
-
-## Phase 3: redo the custom LLM -> VLM -> VLA comparison
+## Phase 3: redo the custom LLM -> VLM -> VLA comparison  (in progress)
 
 The first comparison (0% vs 1%) says nothing about pretraining because neither policy could
-localise. Rerun both with `vla_custom_tokens.yaml`: pretrained VLM vs random-init VLM, 1M samples
-each. Optional: the same change for the Qwen backbone.
+localise. Both are being re-run with every token passed to the action head, no history and 4000
+demonstrations (`vla_custom_tokens_reactive.yaml`): pretrained VLM against random-init VLM. To do
+after that: the same conditioning for the Qwen backbone.
 
 ## Phase 4: toward flower trimming
 
@@ -134,14 +123,22 @@ Problems found in VLA Foundry (or in our own code) while doing this, and their s
 | 1 | `SimpleVLMProcessor` left uint8 tensors at 0-255 while scaling PIL / numpy images | VLM ignored images at inference (captioning 0%) | Fixed, tested |
 | 2 | Action token appended after batch padding (`vlm_foundry_backbone`) | A short instruction is probed at a different position in training than when served | Fixed, tested |
 | 3 | Same in `vlm_hf_backbone` (Qwen, PaliGemma) | Same | To do |
-| 4 | `lowdim_past_timesteps or default` treats 0 as unset | Policy is fed the next state during training | Fix and test written, to be applied |
-| 5 | VLA recipes pass one pooled vector to the action head | No localisation on `pick_target` | `all_tokens` mode added for the Foundry VLM backbone; effect to be measured |
+| 4 | `lowdim_past_timesteps or default` treats 0 as unset | Policy is fed the next state during training | Fixed, tested |
+| 5 | VLA recipes pass one pooled vector to the action head | No localisation on `pick_target` | `all_tokens` mode added for the Foundry VLM backbone; effect being measured |
 | 6 | A dead data-loader worker makes training wait forever | Runs hang at 0% GPU | Worked around by `train_resilient.sh`; proper fix is a loader timeout |
 | 7 | Data preset's PaliGemma-style `size` breaks the Qwen processor | Every batch fails | Worked around in `vla_qwen.yaml` |
 | 8 | Full fine-tuning of a 2B VLM does not fit in 24 GB | Out of memory | `num_trainable_vlm_layers` added |
 | 9 | `PassthroughProcessor` feeds 0-255 pixels to a from-scratch ViT | Works, but badly conditioned inputs | To test |
 | 10 | Tutorial notebook says LLM -> VLM weight transfer is not automated | Misleading; `transformer.resume_from_checkpoint` works | Fix in docs |
-| 11 | `collect.py` reports kept / attempted as the expert success rate | Number is meaningless | To fix |
+| 11 | `collect.py` reported kept / attempted as the expert success rate | Number was meaningless | Fixed |
+| 12 | Rotary position table computed in bfloat16 under autocast | 641 distinct positions out of 2048; neighbouring action tokens shared a position | Fixed, tested; `rotary_legacy_autocast` reproduces the old table for old checkpoints. Effect being measured |
+| 13 | Evaluations on one port reached whichever policy server bound it first | Results filed under the wrong run | Fixed: free ports, the client checks the served checkpoint, mislabelled results are left out of summaries |
+| 14 | The previous-action slot of a window at the start of an episode is a copy of the first action | The expert's first command is an input in training and absent when served | `collect.py --hold_steps` as a data-side fix, being measured; a padding option in the data pipeline is to do |
+| 15 | Preprocessing joined any Ray instance it found and passed `num_cpus` to it | Two dataset builds at once: the second dies | Fixed: `--ray_address local`, and no `num_cpus` when joining |
+| 16 | Resuming a run with EMA switched on fails if its checkpoints were written without EMA | A run cannot gain averaged weights after its start | To do: start the average from the resumed weights |
+| 17 | Install notes say `uv sync` then `uv pip install -e .` | The second command re-resolves outside the lockfile | To fix in the docs; `uv sync` alone installs the project |
+| 18 | Two tests assume a nonexistent absolute path raises FileNotFoundError | They fail where the path's parent is not writable (PermissionError) | To fix |
+| 19 | Windows are shuffled by shard, not by sample | Not measured | To test |
 
 ## Caveats
 
