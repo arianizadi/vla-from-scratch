@@ -22,7 +22,8 @@ Status legend: **confirmed** (measured here), **open** (hypothesis, experiment q
 | Repeating the windows from the first frames of every demonstration | 96-97%, and the policy starts to look about half a million samples earlier | 10 |
 | Random start poses in the demonstrations | 98% from the home pose and 97% from random poses; follows an object moved early in the reach (94%) | 10, 11 |
 | Demonstrations in which the object is moved and the expert recovers | The policy follows a moved object (79-88%) and retries a missed grasp (78 of 99 episodes) | 11 |
-| Two sampling steps instead of ten | Equal within noise on four of five policies (84-98%) at a third of the latency; worse on the fifth (77% against 96%) | 12 |
+| Random start poses and recoveries in the same demonstrations | 94% on the unchanged task and 89-94% with the object moved at any point of the reach or as the gripper closes, also from a random start pose | 11 |
+| Two sampling steps instead of ten | Equal within noise on five of seven policies (84-98%) at a third of the latency; worse on the other two (77% against 96%, 77% against 89%) | 12 |
 | A VLM pretrained on captions as the backbone, every token handed to the action head | In progress. At the first checkpoint (0.25M samples) 43%, where the same model without pretraining is at 0% | 16 |
 
 ## What did not work
@@ -35,10 +36,10 @@ Status legend: **confirmed** (measured here), **open** (hypothesis, experiment q
 | A hold frame at the start of every demonstration, as the cure for that | 1-2% after 2.5M samples (still training) | 8 |
 | Judging by the training loss | The loss is flat while success goes from 0% to 80% | 2, 7 |
 | Stopping at 1M samples | 3-5% for a recipe that reaches 64% at 3M on the same data | 7 |
-| Naming every object of a layout in turn, with 1500 demonstrations and 1M samples | 0-1% (with 4000 demonstrations it trains well: in progress) | 10 |
+| Naming every object of a layout in turn | 0-1% with 1500 demonstrations and 1M samples. With 4000 and 5M it starts to look early and ends at 91% / 89%, no better than one instruction per layout, and as blind to a moved object | 10, 11 |
 | Planning again more often | 76% when 2 actions of each chunk are executed, 85% with 8 | 12 |
 | The same starting noise for every chunk of an episode | 39-80%, worse at every setting | 12 |
-| Trusting a policy outside the conditions of its demonstrations | Policies at 93-96% score 0% when the object is moved late in the reach and 9% from another start pose | 9, 11 |
+| Trusting a policy outside the conditions of its demonstrations | Policies at 89-96% score 0% when the object is moved late in the reach and 9-10% from another start pose | 9, 11 |
 
 ## What we got wrong
 
@@ -295,15 +296,22 @@ or trained / averaged where a run saved both:
 |---|---|---|---|
 | one clean pass per layout, from the home pose | 8% | 90% | 93% |
 | the same, windows of the first 8 frames repeated 5 extra times | 5% | 96% | 96% |
+| every object of a layout named in turn (about 1333 layouts, three demonstrations each) | 41% / 38% | 91% / 89% | 91% / 89% |
 | every episode starts from a random gripper pose | 56% / 76% | 94% / 98% | 98% / 98% |
 | in 1505 of 4000 episodes the object is moved once and the expert recovers | 38% / 79% | 83% / 85% | 89% / 84% |
+| random start poses, and the object is moved once in 1456 episodes | 68% / 86% | 90% / 93% | 94% / 94% |
 
 After one million samples the plain run closes at the named object 65% of the time. With the early
-windows repeated it is 99%, with random starts 91%, with recoveries 81%: the policy starts to look
-sooner whenever more of its training windows cannot be answered without looking. Random starts also
-give the best result on the unchanged task.
+windows repeated it is 99%, with every object named 98%, with random starts 91%, with recoveries 81%,
+with random starts and recoveries 100%: the policy starts to look sooner whenever more of its
+training windows cannot be answered without looking. Random starts give the best result on the
+unchanged task.
 
-Runs with every object of a layout named in turn, and with these changes combined, are in progress.
+Naming every object of a layout in turn shows the policy that the instruction matters, and it does
+start to look early. It ends no higher than one instruction per layout (the T block at 64%), and it
+is a third as many layouts for the same number of episodes.
+
+The run that adds repeated early windows to random starts and recoveries is in progress.
 
 **What to do.** Before collecting more demonstrations, ask which of them can be imitated without
 looking at the scene. From one fixed start pose with nothing ever moving, almost all of them can.
@@ -318,8 +326,10 @@ not have contained. 100 layouts per cell; the object is moved 80 mm:
 |---|---|---|---|---|
 | clean demonstrations | 93% | 9% | 12% / 0% / 0% | 0%, a second attempt in 8 of 100 |
 | clean, early windows repeated | 96% | 9% | 10% / 0% / 0% | 0% |
+| clean, every object named | 89% | 10% | 18% / 0% / 0% | 0% |
 | random start poses | 98% | 97% | 94% / 51% / 0% | 0% |
 | recoveries | 84% | 68% | 88% / 82% / 85% | 79%, a second attempt in 99 of 99 |
+| random start poses and recoveries | 94% | 91% | 92% / 91% / 94% | 89%, a second attempt in 100 of 100 |
 | scripted expert that plans again | 100% | 100% | 100% / 100% / 100% | 100% |
 
 Each ingredient buys exactly what it shows. Random start poses make the policy watch the scene while
@@ -330,12 +340,20 @@ also make the policy use its cameras throughout: frozen on the first frame it fi
 handed over after the expert has driven 25 steps toward the wrong object, it turns back and succeeds
 in 56 of 100 episodes; the clean-data policy closes on the wrong object every time.
 
-The recovery policy pays on the unchanged task (84-89% against 93-98%, the can at 77%). The runs that
-combine random starts with recoveries are in progress.
+The recovery policy pays on the unchanged task (84-89% against 93-98%, the can at 77%).
+
+Both ingredients in the same demonstrations give both behaviours and take most of that cost back:
+94% on the unchanged task, 91% from a random start pose, 89-94% wherever in the reach the object is
+moved, 89% when it is moved as the gripper closes, and 90 of 98 from a random start pose with the
+object moved on the way. With its cameras frozen on the first frame this policy finds the named object
+in none of 100 episodes; handed over after the expert has driven 25 steps toward the wrong object, it
+turns back and succeeds in 89. It looks all the way. What it has not regained is the T block (77%,
+against 92% with random starts alone).
 
 **What to do.** Write the expert so that it can recover (`ScriptedExpert(reactive=True)` plans again
-when the object has moved or its fingers closed on nothing), disturb a share of the demonstrations
-(`collect.py --disturb_prob 0.5`), and evaluate with the same disturbances. A behaviour that never
+when the object has moved or its fingers closed on nothing), disturb a share of the demonstrations and
+vary where they start (`collect.py --disturb_prob 0.5 --random_start`), and evaluate with the same
+disturbances. A behaviour that never
 occurs in the demonstrations does not appear in the policy, whatever its success rate.
 
 ## 12. Averaged weights and the sampler's settings  (confirmed)
@@ -351,8 +369,9 @@ model.
 policy, 100 layouts per setting (a second 100 in brackets): 1 step 61%; 2 steps 89% (90%); 4 steps
 88% (86%); 10 steps, the default, 85% (83%); 20 steps 79%. Two steps cost 25 ms per chunk, ten cost
 71 ms. On the policies trained after the position fix, 2 steps against 10 give 94% against 93%, 98%
-against 98% and 84% against 84%, but 77% against 96% for the policy trained with repeated early
-windows: measure it on the policy you will run.
+against 98%, 84% against 84% and 94% against 94%, but 77% against 96% for the policy trained with
+repeated early windows and 77% against 89% for the one trained with every object named: measure it on
+the policy you will run.
 
 **Actions executed per chunk.** The policy predicts 15 actions. Executing 2 of them before planning
 again gives 76%, 4 gives 84%, 8 gives 85%, all 15 gives 84%. Planning more often does not help, and
@@ -466,11 +485,9 @@ Things that cost time here and have nothing to do with models:
 
 ## Open questions being tested
 
-- Do random start poses and recoveries together give the 98% of the one and the self-correction of
-  the other? Does repeating the early windows add to that?
+- Does repeating the early windows add anything to random start poses and recoveries together?
 - How much does one run vary? The plain recipe is being repeated with another seed, with and
   without the position fix.
-- Does naming every object of a layout in turn help once there are 4000 demonstrations?
 - How far does the from-scratch VLA get on its pretrained VLM, against the same model without
   pretraining and against the Qwen backbone with every token?
 - Can a policy with history be made to look? The hold frame alone was not enough.

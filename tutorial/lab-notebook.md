@@ -464,11 +464,11 @@ Success with trained / averaged weights (a dash where a run did not save average
 |---|---|---|---|---|---|---|---|---|
 | one instruction per layout (`pick_target_4k`) | 0% / - | 8% / - | 58% / - | 40% / - | 90% / - | 94% / - | 93% / - | 94% (raw, 4.0M) |
 | early windows repeated (`pick_target_4k_early`) | 1% / - | 5% / - | 76% / - | 73% / - | 96% / - | 96% / - | 96% / - | 97% (raw, 5.0M) |
-| every object named (`pick_target_cf4k`) | 1% / 2% | 41% / 38% | 74% / 80% | 73% / 84% |  |  |  | 92% (ema, 2.5M), still training |
+| every object named (`pick_target_cf4k`) | 1% / 2% | 41% / 38% | 74% / 80% | 73% / 84% | 91% / 89% | 89% / 91% | 91% / 89% | 93% (raw, 3.5M) |
 | recoveries (`pick_target_4k_recover`) | 0% / 12% | 38% / 79% | 79% / 80% | 85% / 87% | 83% / 85% | 86% / 88% | 89% / 84% | 92% (ema, 4.5M) |
 | random starts (`pick_target_4k_rs`) | 0% / 1% | 56% / 76% | 57% / 79% | 71% / 84% | 94% / 98% | 98% / 98% | 98% / 98% | 99% (ema, 5.0M) |
-| random starts and recoveries (`pick_target_4k_rs_recover`) | 12% / 54% | 68% / 86% | 86% / 91% | 93% / 84% | 90% / 93% |  |  | 93% (raw, 2.0M), still training |
-| random starts, recoveries, early windows repeated (`pick_target_4k_rs_recover_early`) | 5% / 13% |  |  |  |  |  |  | 13% (ema, 0.5M), still training |
+| random starts and recoveries (`pick_target_4k_rs_recover`) | 12% / 54% | 68% / 86% | 86% / 91% | 93% / 84% | 90% / 93% | 93% / 89% | 94% / 94% | 94% (raw, 4.5M) |
+| random starts, recoveries, early windows repeated (`pick_target_4k_rs_recover_early`) | 5% / 13% | 58% / 60% | 49% / 82% | 84% / 84% | 80% / 83% |  |  | 87% (ema, 2.5M), still training |
 
 Closed at the named object and slope at the same points (trained weights, or averaged where only those exist):
 
@@ -476,11 +476,11 @@ Closed at the named object and slope at the same points (trained weights, or ave
 |---|---|---|---|---|---|
 | one instruction per layout (`pick_target_4k`) | 36%, 0.03 | 65%, 0.58 | 98%, 0.94 | 98%, 0.97 | 99%, 0.96 |
 | early windows repeated (`pick_target_4k_early`) | 58%, 0.49 | 99%, 0.93 | 100%, 1.00 | 100%, 1.02 | 99%, 1.01 |
-| every object named (`pick_target_cf4k`) | 30%, -0.04 | 98%, 1.02 | 99%, 0.98 | 99%, 0.99 |  |
+| every object named (`pick_target_cf4k`) | 30%, -0.04 | 98%, 1.02 | 99%, 0.98 | 99%, 0.99 | 100%, 1.00 |
 | recoveries (`pick_target_4k_recover`) | 33%, 0.11 | 81%, 0.96 | 100%, 0.97 | 100%, 1.00 | 100%, 0.99 |
 | random starts (`pick_target_4k_rs`) | 46%, 0.18 | 91%, 0.81 | 96%, 0.94 | 87%, 0.84 | 98%, 0.95 |
 | random starts and recoveries (`pick_target_4k_rs_recover`) | 50%, 1.00 | 100%, 1.02 | 100%, 1.00 | 100%, 1.00 | 100%, 0.99 |
-| random starts, recoveries, early windows repeated (`pick_target_4k_rs_recover_early`) | 56%, 0.56 |  |  |  |  |
+| random starts, recoveries, early windows repeated (`pick_target_4k_rs_recover_early`) | 56%, 0.56 | 93%, 0.95 | 97%, 1.00 | 100%, 0.98 | 100%, 1.00 |
 
 Success by object, pooled over each finished run's last three checkpoints (trained and, where saved, averaged weights):
 
@@ -489,8 +489,10 @@ Success by object, pooled over each finished run's last three checkpoints (train
 | before the fix, one instruction per layout | 156/168 = 93% | 122/144 = 85% | 144/150 = 96% | 74/138 = 54% |
 | one instruction per layout | 76/84 = 90% | 68/72 = 94% | 74/75 = 99% | 60/69 = 87% |
 | early windows repeated | 79/84 = 94% | 72/72 = 100% | 72/75 = 96% | 64/69 = 93% |
+| every object named | 164/168 = 98% | 138/144 = 96% | 148/150 = 99% | 88/138 = 64% |
 | recoveries | 130/168 = 77% | 141/144 = 98% | 144/150 = 96% | 109/138 = 79% |
 | random starts | 168/168 = 100% | 144/144 = 100% | 149/150 = 99% | 127/138 = 92% |
+| random starts and recoveries | 163/168 = 97% | 138/144 = 96% | 146/150 = 97% | 106/138 = 77% |
 
 ### How each policy copes outside the conditions it was trained in
 
@@ -501,8 +503,10 @@ Final checkpoint of each run (averaged weights where the run saved them), 100 la
 | before the fix, plain demonstrations | 85/100 | 83/100 | 6/100 | 9/100 | 0/96 | 0/99 | 1/99 (29 retried) | 0/98 | 0/98 (41 retried) |
 | one instruction per layout | 93/100 | 96/100 | 9/100 | 12/100 | 0/97 | 0/100 | 0/100 (8 retried) | 0/99 | 0/99 (2 retried) |
 | early windows repeated | 96/100 | 100/100 | 9/100 | 10/100 | 0/100 | 0/100 | 0/100 (3 retried) | 0/100 | 0/100 (7 retried) |
+| every object named | 89/100 | 93/100 | 10/100 | 18/100 | 0/96 | 0/100 | 0/100 (29 retried) | 0/99 | 0/99 (31 retried) |
 | recoveries | 84/100 | 93/100 | 68/100 | 88/100 | 79/96 | 85/100 | 78/99 (99 retried) | 70/100 | 65/81 (78 retried) |
 | random starts | 98/100 | 97/100 | 97/100 | 94/100 | 50/98 | 0/100 | 0/100 (2 retried) | 15/99 | 0/100 (1 retried) |
+| random starts and recoveries | 94/100 | 87/100 | 91/100 | 92/100 | 89/98 | 94/100 | 89/100 (100 retried) | 90/98 | 89/100 (99 retried) |
 
 The scripted expert under the same conditions, 100 layouts each:
 
@@ -518,8 +522,27 @@ What the same policies depend on:
 | before the fix, plain demonstrations | 1/100 (at the named object 99%) | 12/100 (closed at the other object 16/100) | 0/100 (closed at the other object 100/100) | 89/100 |
 | one instruction per layout | 1/100 (at the named object 94%) | 18/100 (closed at the other object 24/100) | 0/100 (closed at the other object 100/100) | 94/100 |
 | early windows repeated | 0/100 (at the named object 70%) | 16/100 (closed at the other object 28/100) | 0/100 (closed at the other object 100/100) | 77/100 |
+| every object named | 4/100 (at the named object 86%) | 20/100 (closed at the other object 22/100) | 0/100 (closed at the other object 100/100) | 77/100 |
 | recoveries | 0/100 (at the named object 3%) | 79/100 (closed at the other object 1/97) | 56/100 (closed at the other object 28/80) | 84/100 |
 | random starts | 5/100 (at the named object 98%) | 98/100 (closed at the other object 0/100) | 14/100 (closed at the other object 57/98) | 98/100 |
+| random starts and recoveries | 0/100 (at the named object 0%) | 89/100 (closed at the other object 0/99) | 89/100 (closed at the other object 3/100) | 94/100 |
+
+### A second seed, with and without the fix
+
+The plain run again with other seeds for the data order and the initial weights (`--data.seed 43 --hparams.seed 43`): once with the position table in float32 (`dp_vit_lang_reactive_pt4k_seed43_posfix`) and once with the half-precision table of the runs before the fix (`--model.transformer.positional_embedding_type rotary_legacy_autocast`, `dp_vit_lang_reactive_pt4k_seed43_legacy`). Everything else is the code after the fix. Trained / averaged weights.
+
+| Samples | Success, old table | Success, fixed table | Closed at the named object, old | fixed | Slope, old | fixed |
+|---|---|---|---|---|---|---|
+| 0.5M |  | 0% / 1% |  | 25% / 36% |  | -0.06 / 0.01 |
+| 1.0M |  | 2% / 6% |  | 83% / 72% |  | 0.77 / 0.72 |
+| 1.5M |  | 46% / 58% |  | 98% / 100% |  | 0.90 / 0.98 |
+| 2.0M |  | 71% / 87% |  | 99% / 100% |  | 0.97 / 0.99 |
+| 2.5M |  | 88% / 92% |  | 100% / 100% |  | 0.99 / 0.98 |
+| 3.0M |  | 92% / 88% |  | 100% / 100% |  | 0.98 / 0.99 |
+| 3.5M |  | 94% / 93% |  | 100% / 100% |  | 0.98 / 0.99 |
+
+The run with the fixed table was still training when this was written.
+
 
 ### History, on demonstrations that begin with a hold frame (`dp_vit_lang_pt4k_hold_posfix`)
 
@@ -531,6 +554,8 @@ What the same policies depend on:
 | 2.0M | 1% / 1% | 41% / 32% | 0.11 / -0.06 | 141 / 152 mm |
 | 2.5M | 2% / 2% | 43% / 38% | 0.12 / 0.06 | 149 / 151 mm |
 | 3.0M | 1% / 0% | 31% / 39% | -0.11 / -0.02 | 181 / 168 mm |
+| 3.5M | 0% / 1% | 36% / 35% | 0.07 / 0.05 | 148 / 143 mm |
+| 4.0M | 2% / 4% | 37% / 32% | -0.04 / -0.00 | 174 / 160 mm |
 
 Still training when this was written: the table holds the checkpoints evaluated so far.
 
@@ -582,6 +607,9 @@ Backbone pretrained on captions (stage 2, retrained with the fix):
 | 0.75M | 30% / 60% | 100% / 100% | 1.02 / 0.98 | 22 / 15 mm |
 | 1.0M | 73% / 62% | 99% / 99% | 0.98 / 0.99 | 13 / 13 mm |
 | 1.2M | 64% / 82% | 100% / 100% | 1.00 / 0.99 | 13 / 10 mm |
+| 1.5M | 74% / 83% | 100% / 100% | 1.02 / 0.99 | 12 / 9 mm |
+| 1.7M | 79% / 88% | 100% / 100% | 0.97 / 0.99 | 9 / 8 mm |
+| 2.0M | 81% / 88% | 100% / 100% | 0.98 / 0.99 | 7 / 8 mm |
 
 Still training when this was written: the table holds the checkpoints evaluated so far.
 
@@ -592,6 +620,9 @@ The same architecture with a randomly initialised backbone:
 |---|---|---|---|---|
 | 0.25M | 0% / 0% | 33% / 28% | -0.09 / -0.04 | 177 / 184 mm |
 | 0.5M | 0% / 1% | 39% / 33% | 0.04 / 0.09 | 178 / 159 mm |
+| 0.75M | 0% / 3% | 44% / 37% | 0.32 / 0.06 | 160 / 151 mm |
+| 1.0M | 9% / 4% | 84% / 68% | 0.87 / 0.73 | 60 / 77 mm |
+| 1.2M | 28% / 36% | 95% / 95% | 0.92 / 0.92 | 28 / 22 mm |
 
 Still training when this was written: the table holds the checkpoints evaluated so far.
 
@@ -614,13 +645,16 @@ Every token, no history, 4000 demonstrations (`vla_qwen_tokens_reactive_pt4k_pos
 |---|---|---|---|---|
 | 0.05M | 1% / 1% | 40% / 35% | 0.26 / 0.08 | 159 / 149 mm |
 | 0.10M | 6% / 12% | 71% / 80% | 0.76 / 0.83 | 94 / 73 mm |
+| 0.15M | 9% / 29% | 89% / 97% | 0.89 / 0.98 | 55 / 32 mm |
+| 0.20M | 30% / 36% | 98% / 99% | 0.96 / 1.01 | 27 / 25 mm |
+| 0.25M | 32% / 45% | 99% / 98% | 1.06 / 0.96 | 27 / 20 mm |
 
 Still training when this was written: the table holds the checkpoints evaluated so far.
 
 
 ### Runs in progress when this was written
 
-Still training or being evaluated, with no final result here: every object named on 4000 demonstrations; random starts and recoveries together; the same with the early windows repeated; the history policy on demonstrations that begin with a hold frame; the plain run again with another seed, with and without the fix; the from-scratch VLA with a pretrained and with a randomly initialised backbone; the Qwen backbone with every token. Tables and rows above that say 'still training' show the checkpoints evaluated so far.
+Still training or being evaluated, with no final result here: random starts and recoveries with the early windows repeated; the history policy on demonstrations that begin with a hold frame; the plain run again with another seed, with and without the fix; the from-scratch VLA with a pretrained and with a randomly initialised backbone; the Qwen backbone with every token. Tables and rows above that say 'still training' show the checkpoints evaluated so far.
 
 ## Throughput
 
