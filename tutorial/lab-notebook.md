@@ -686,9 +686,10 @@ poses and recoveries (`--random_start --disturb_prob 0.5`), 5M samples, 100 unse
 evaluation, final checkpoint, trained / averaged weights where both are given. "Closed at the named
 object" is the share of first closes nearest the named object.
 
-**In progress:** look-alikes for 10M samples (`dp_vit_lang_reactive_lookalike4k_rs_recover_10m`); the stem grasp
-with other seeds (`..._stem4k_rs_recover_seed43`) and for 10M samples (`..._stem4k_rs_recover_10m`); the cut
-with demonstrations that come in from the outer edge (`dp_vit_lang_reactive_cut4k_rs_recover_outer`).
+**In progress:** the cut with demonstrations that keep the jaws shut after the cut (`..._cut4k_rs_recover_outer_tail10`,
+two seeds); one flower to cut, with and without that tail (`..._cutone4k_rs_recover_outer`, two seeds, and
+`..._cutone4k_rs_recover_outer_tail10`); the cut for 10M samples, from 4000 and from 16000 demonstrations
+(`..._cut4k_rs_recover_outer_10m`, `..._cut16k_rs_recover_outer_10m`).
 
 ### Step 1: a target that keeps moving (`--disturb drift`)
 
@@ -725,7 +726,7 @@ instruction tells them apart. The expert takes the named cube in 100/100 (one pl
 | trained on look-alikes (`dp_vit_lang_reactive_lookalike4k_rs_recover`, seed 42) | 35/100 / 28/100 | 43% |
 | the same, other seeds (`..._seed43`: `--data.seed 43 --hparams.seed 43`) | 89/100 / 93/100 | |
 | the same, a third pair of seeds (`..._seed44`) | 88/100 / 91/100 | |
-| the same as seed 42 for 10M samples (`..._10m`) | 81/100 / 81/100 after 7 of 11 checkpoints (about 6.4M samples), still rising | |
+| the same as seed 42 for 10M samples (`..._10m`) | 80/100 / 89/100 | 85% |
 | trained on the clutter scenes of step 3, which include the same cubes | 86/100 | 100% |
 | trained on the clutter scenes without the leaves (`dp_vit_lang_reactive_mixed4k_rs_recover`; on its own task 96/100 / 93/100) | 97/100 | |
 
@@ -737,15 +738,16 @@ brackets):
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | seed 42 | 28 (59) | 34 (65) | 30 (67) | 38 (68) | 54 (58) | 25 (67) | 22 (67) | 36 (56) | 33 (57) | 37 (52) | 28 (59) |
 | seed 43 | 24 (52) | 83 (1) | 92 (0) | 93 (0) | 83 (0) | 87 (0) | 89 (0) | 92 (0) | 83 (0) | 90 (0) | 93 (0) |
-| seed 44 | 24 (60) | 36 (64) | 30 (65) | 56 (44) | 88 (3) | 83 (0) | 90 (1) | 91 (0) | 91 (0) | 91 (0) | 91 (0) | |
+| seed 44 | 24 (60) | 36 (64) | 30 (65) | 56 (44) | 88 (3) | 83 (0) | 90 (1) | 91 (0) | 91 (0) | 91 (0) | 91 (0) |
+| seed 42, 10M samples (checkpoints 0.9M apart) | 32 (62) | 31 (63) | 17 (37) | 48 (56) | 55 (48) | 59 (47) | 81 (23) | 84 (21) | 88 (17) | 80 (19) | 89 (15) |
 | clutter, no leaves (its own task) | 9 (29) | 68 (1) | 84 (0) | 90 (0) | 88 (0) | 95 (0) | 95 (0) | 94 (0) | 91 (0) | 91 (0) | 93 (0) |
 | clutter with leaves (its own task) | 6 (17) | 75 (0) | 81 (0) | 87 (0) | 85 (0) | 83 (0) | 84 (0) | 82 (0) | 82 (0) | 88 (0) | 86 (0) |
 
 The switch is sudden, as on `pick_target` (notes: "Looking at the scene arrives late, and all at once"):
 from a wrong cube in about 60% of episodes to none within one checkpoint. With seed 43 it comes after
 about 0.9M samples, with seed 44 after about 2M, with seed 42 not within 5M. In the two runs whose scenes
-also hold other shapes it came by the second checkpoint. Seed 42 with twice the samples does learn,
-slowly (81/100 after about 6.4M samples, a wrong cube still in 23%). A look-alike run that has not switched by the
+also hold other shapes it came by the second checkpoint. Seed 42 with twice the samples does learn, but
+gradually rather than all at once: 89/100 at the end, a wrong cube still lifted in 15%. A look-alike run that has not switched by the
 end of its budget looks exactly like one that cannot learn the task; a second seed is what tells them
 apart.
 
@@ -796,8 +798,12 @@ look-alikes (red, orange, pink). The evaluation now also reports `caught_rate`, 
 which the named object was held (stems) or lifted at any step: for the final stem policy, 52/100 caught
 and 6/100 held for 10 steps. Executing 4 actions per chunk instead of 8 does not help (1/100, caught 40/100).
 
-Other seeds and more samples have not changed it so far: `..._stem4k_rs_recover_seed43` and the
-10M-sample run are at 0-5/100 (seed 43 at 4/100 after 9 of 11 checkpoints, 10M at 4/100 after 6 of 11). Where it goes wrong shows when the expert drives the first K control steps
+Other seeds do not change it: `..._stem4k_rs_recover_seed43` ends at 2/100 / 3/100 (never above 4).
+Twice the samples help slowly (`..._stem4k_rs_recover_10m`, averaged weights per checkpoint: 0, 0, 4, 5, 7,
+4, 10, 5, 13, 8, 12; final 14/100 / 12/100). It closes in almost every episode and catches the named stem
+in about 40%, but in another 40-47% it holds another stem, and its first close is nearest the named stem
+in only 41-46%: the step-2 problem (telling look-alikes apart) is back, and not solved by 10M samples
+here. Where it goes wrong shows when the expert drives the first K control steps
 toward the named stem and the policy takes over (final checkpoint, averaged weights):
 
 | Expert drives | Grasp the stem (10 steps) | Caught at some step | First close nearest the named stem | Cut the named stem (3 steps) |
@@ -832,9 +838,22 @@ Cutting the named stem is a success; cutting any other ends the episode as a fai
 | expert (one plan, and planning again) | 92/100 | 0/100 |
 | the stem policy of step 4, never shown a cut | 9/100 | 19/100 |
 | trained on cuts (`dp_vit_lang_reactive_cut4k_rs_recover`) | 0/100 / 0/100 | 0/100 / 3/100 |
+| trained on cuts coming in from the outer edge (`..._cut4k_rs_recover_outer`) | 3/100 / 2/100 | 2/100 / 2/100 |
 
-The policy trained on cuts does worse than the stem policy it was meant to improve on: 0-7/100 over
-its checkpoints. The first-steps problem of step 4 applies unchanged; see the expert-side change above.
+The policies trained on cuts do worse than the stem policy they were meant to improve on: 0-7/100 over
+their checkpoints with either side rule. The outer-edge one closes its gripper in 80-91% of episodes, its
+first close is nearest the named stem in 59-72% (the stem policy: 60%), yet the named stem is caught at
+any step in only 5-6%. Rolled out step by step (30 layouts, final checkpoint, averaged weights): in 96
+closed control steps within 3 cm of the named stem, the stem lies between the jaws and inside the band,
+but no finger touches it in 98% of them. The gripper is commanded shut for about three steps and then
+opened again, before the fingers (about 4 steps from open to the stem) arrive. The demonstrations
+explain it: a cut ends the episode 3 steps after the jaws reach the stem, so the shut gripper appears in
+only the last 6-7 frames of each one (the stem demonstrations hold it for 13-14), and in no frame does
+the scene show a shut gripper still waiting for a stem.
+
+`collect.py --tail_steps N` keeps recording N frames after each success with the robot holding its last
+command, so every cut demonstration ends with the jaws shut for 16-17 frames. Runs with 10 such frames
+are in progress.
 
 ## Throughput
 
