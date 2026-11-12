@@ -200,43 +200,40 @@ def gpus():
 def runs_table(runs, evals, width):
     wide = width >= 150
     table = Table(box=box.SIMPLE_HEAD, expand=True, pad_edge=False, header_style="bold")
-    table.add_column("run", no_wrap=True)
-    table.add_column("progress", no_wrap=True)
-    table.add_column("loss", no_wrap=True)
-    table.add_column("speed", justify="right", no_wrap=True)
-    table.add_column("left", justify="right", no_wrap=True)
-    table.add_column("closed-loop success by checkpoint", no_wrap=True)
-    table.add_column("best", justify="right", no_wrap=True)
-    table.add_column("at named", justify="right", no_wrap=True)
-    table.add_column("miss", justify="right", no_wrap=True)
+    table.add_column("run", no_wrap=True, min_width=min(34, max([len(r.name) for r in runs] + [3]) + 6))
+    table.add_column("progress", no_wrap=True, min_width=(14 if wide else 8) + 18)
+    table.add_column("loss", no_wrap=True, min_width=6 + (14 if wide else 0))
+    table.add_column("speed", justify="right", no_wrap=True, min_width=7)
+    table.add_column("left", justify="right", no_wrap=True, min_width=6)
+    table.add_column("closed-loop success by checkpoint", no_wrap=True, ratio=1)
+    table.add_column("best", justify="right", no_wrap=True, min_width=12)
+    table.add_column("at named", justify="right", no_wrap=True, min_width=8)
+    table.add_column("miss", justify="right", no_wrap=True, min_width=6)
     for run in runs:
         state = run.state
         name = Text(f"{STATE_MARK[state]} ", style=STATE_STYLE[state]) + Text(run.name, style="bold")
         if run.restarts:
             name += Text(f"  ↻{run.restarts}", style="yellow")
         fraction = run.seen / run.total if run.total else 0.0
-        progress = bar(fraction, 16 if wide else 10, STATE_STYLE[state].replace("bold ", ""))
+        progress = bar(fraction, 14 if wide else 8, STATE_STYLE[state].replace("bold ", ""))
         progress += Text(f" {100 * fraction:3.0f}%", style="bold")
         if run.total:
             progress += Text(f"  {run.seen / 1e6:.2f}/{run.total / 1e6:.2f}M", style="dim")
-        loss = Text("-" if run.loss is None else f"{run.loss:.3f} ")
-        loss += Text(spark(run.losses[len(run.losses) // 20 :], 18 if wide else 10), style="magenta")
+        loss = Text("-" if run.loss is None else f"{run.loss:.3f}")
+        if wide:
+            loss += Text(" " + spark(run.losses[len(run.losses) // 20 :], 13), style="magenta")
         speed = "-" if run.rate is None or state != "training" else f"{run.rate:,.0f}/s"
         left = duration((run.total - run.seen) / run.rate) if state == "training" and run.rate else "-"
 
         rows, running = evals.of(run.name)
         curve, best, named, miss = Text(""), Text("-", style="dim"), "-", "-"
         if rows:
-            kinds = sorted({w for _, w, _ in rows})
-            for kind in kinds:
+            for kind in sorted({w for _, w, _ in rows}):
                 rates = [r["success_rate"] for _, w, r in rows if w == kind]
-                curve += (
-                    Text(f"{kind} ", style="dim") + Text(spark([0.0, 1.0] + rates, 99)[2:], style="green") + Text("  ")
-                )
+                curve += Text(f"{kind} ", style="dim")
+                curve += Text(spark([0.0, 1.0] + rates, 99)[2:], style="green") + Text("  ")
             n, kind, top = max(rows, key=lambda r: (r[2]["success_rate"], r[0]))
-            best = Text(
-                f"{100 * top['success_rate']:.0f}%", style="bold green" if top["success_rate"] >= 0.5 else "bold"
-            )
+            best = Text(f"{100 * top['success_rate']:.0f}%", style="bold green" if top["success_rate"] >= 0.5 else "bold")
             best += Text(f" #{n} {kind}", style="dim")
             grasp = top.get("grasp") or {}
             if grasp.get("closed_nearest_is_target_rate") is not None:
