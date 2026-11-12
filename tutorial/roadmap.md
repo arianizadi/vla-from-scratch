@@ -90,11 +90,11 @@ rate. Each breakthrough gets a short video.
 
 | Step | What is added | State |
 |---|---|---|
-| 1 | **A target that keeps moving** (`--disturb drift`): the named object slides on a smooth random path, as a stem sways | Expert and baselines measured; policy trained on drifting demonstrations: training |
-| 2 | **Look-alikes** (`pick_lookalike`): cubes a small colour step apart, as flowers of one plant are | Expert and baselines measured; policy: training |
-| 3 | **Clutter and occlusion** (`pick_clutter`): four objects and upright leaves that hide them from the front camera | Expert and baselines measured; policy: training |
-| 4 | **A stem to grasp from the side** (`grasp_stem`): flowers on stems standing in heavy bases; close on the named stem inside a height band. The flower on top blocks a grasp from above, so the expert turns the gripper horizontal and comes in across the table (pointing straight out from the base is out of reach) | Expert works (24 of 30 in a first check); baselines and a policy: training |
-| 5 | **A cut**: closing on the named stem inside the band cuts it (the part above comes free); cutting the wrong stem or outside the band fails | To do |
+| 1 | **A target that keeps moving** (`--disturb drift`): the named object slides on a smooth random path, as a stem sways | **Works.** A policy trained with objects sliding at 2 cm/s in a third of its demonstrations picks up 96 / 88 / 70 of 100 at 1 / 2 / 4 cm/s (best earlier policy 94 / 78 / 27), and loses nothing elsewhere |
+| 2 | **Look-alikes** (`pick_lookalike`): cubes a small colour step apart, as flowers of one plant are | **Open.** Trained on look-alikes alone the policy never tells them apart (22-54% over its checkpoints, a wrong cube in over half the episodes); the clutter policy of step 3, which sees the same cubes among other shapes, picks the named one in 86%. Controls running: second seed, 10M samples, clutter without leaves |
+| 3 | **Clutter and occlusion** (`pick_clutter`): four objects and upright leaves that hide them from the front camera | **Works.** 86-87% with leaves hiding the objects from the front camera (best earlier policy 35%); also 86% on the look-alikes |
+| 4 | **A stem to grasp from the side** (`grasp_stem`): flowers on stems standing in heavy bases; close on the named stem inside a height band. The flower on top blocks a grasp from above, so the expert turns the gripper horizontal and comes in across the table (pointing straight out from the base is out of reach) | **Open.** Expert 88%; the policy 0-5%. In 13 of 30 layouts it catches the named stem but loses it within 10 steps; in 16 it never closes near it; the flower colours are look-alikes too |
+| 5 | **A cut** (`cut_stem`): closing on the named stem inside the band for 3 control steps cuts it there and the part above falls; cutting another stem fails | Expert 44 of 50 in a first check; dataset and policy: training |
 | 6 | **Leaves in the way that can be touched**: leaves on springs hide the stem; the arm has to push one aside and hold it, or cut past it, and they spring back | To do |
 | 7 | **Turning the plant**: the part to cut faces away; the arm turns the turntable until it can see and reach it | To do |
 | 8 | **All of it**: a plant with several stems and leaves, swaying; "cut the stem below the second flower" | To do |
