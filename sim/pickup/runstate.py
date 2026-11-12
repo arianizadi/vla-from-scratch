@@ -7,6 +7,7 @@ running job: a run is whatever its `<name>.train.log` and its results directory 
 
 import glob
 import json
+import math
 import os
 import re
 import subprocess
@@ -28,8 +29,13 @@ class Run:
     def __init__(self, experiments, name):
         self.experiments, self.name = experiments, name
         self.live = os.path.join(experiments, f"{name}.train.log")
-        self.offset = 0
         self.inode = None
+        self._start()
+
+    def _start(self):
+        """Forget what was parsed so far and read the earlier attempts."""
+        self.offset = 0
+        self.tail = ""  # the end of the live log when it stopped in the middle of a line
         self.base = self.in_chunk = self.total = 0
         self.loss = self.rate = self.lr = None
         self.curve = []  # (samples seen, loss), one point per logged step
@@ -43,10 +49,11 @@ class Run:
         for line in text.splitlines():
             m = PROGRESS.search(line)
             if m:
-                self.in_chunk = int(m.group(2))
-                self.loss = float(m.group(4))
-                self.rate = float(m.group(5))
-                self.lr = float(m.group(6))
+                try:
+                    in_chunk, loss, rate, lr = int(m.group(2)), float(m.group(4)), float(m.group(5)), float(m.group(6))
+                except ValueError:  # a line that was cut short, or two lines written into each other
+                    continue
+                self.in_chunk, self.loss, self.rate, self.lr = in_chunk, loss, rate, lr
                 self.curve.append((self.base + self.in_chunk, self.loss))
                 continue
             m = SAMPLES.search(line)
@@ -60,13 +67,23 @@ class Run:
             st = os.stat(self.live)
         except FileNotFoundError:
             return
-        if st.st_ino != self.inode or st.st_size < self.offset:  # a new attempt started a new log
-            self.inode, self.offset = st.st_ino, 0
+        if st.st_ino != self.inode or st.st_size < self.offset:
+            # Another file has this name now: a new attempt started a new log (the old one is a
+            # .part file), or the log was replaced by a copy of itself. Reading everything again
+            # is right in both cases; carrying on would count a replaced log twice.
+            if self.inode is not None:
+                self._start()
+            self.inode = st.st_ino
         with open(self.live, errors="ignore") as f:
             f.seek(self.offset)
             text = f.read()
             self.offset = f.tell()
-        self._parse(text)
+        # The trainer may be in the middle of writing a line: an unfinished last line waits for its
+        # end, and is read as it is once nothing more arrives (a log that ends without a line break).
+        pending = self.tail + text
+        cut = max(pending.rfind("\n"), pending.rfind("\r")) + 1 if text else len(pending)
+        self.tail = pending[cut:]
+        self._parse(pending[:cut])
         if len(self.curve) > 40000:
             self.curve = self.curve[::2]
 
@@ -113,7 +130,7 @@ class Run:
                 seen.update(int(m.group(1)) for m in SAMPLES.finditer(f.read()))
         ordered = sorted(seen)  # ordered[n] = samples at the start of chunk n = when checkpoint n was written
         out = {n: s for n, s in enumerate(ordered) if n > 0}
-        if self.total:
+        if self.total and self.finished:
             out[len(ordered)] = self.total  # the final checkpoint has no following chunk to log its count
         return out
 
@@ -128,6 +145,21 @@ class Run:
             bucket = curve[int(i * step) : max(int((i + 1) * step), int(i * step) + 1)]
             out.append([bucket[-1][0], round(sum(loss for _, loss in bucket) / len(bucket), 5)])
         return out
+
+
+def is_evaluation(results):
+    """Whether a results.json has the figures that every view reads without asking.
+
+    A file in another format (an older eval.py, another tool) is left out by this, instead of
+    stopping the dashboards with a KeyError.
+    """
+    try:
+        numbers = [results["successes"], results["episodes"], results["success_rate"], *results["success_ci95"]]
+        for target in results.get("per_target", {}).values():
+            numbers += [target["successes"], target["episodes"]]
+        return len(results["success_ci95"]) == 2 and all(math.isfinite(n) for n in numbers)
+    except (AttributeError, KeyError, OverflowError, TypeError):
+        return False
 
 
 class Evals:
@@ -156,7 +188,9 @@ class Evals:
                 continue
             try:
                 results = self.load(path)
-            except (OSError, json.JSONDecodeError):
+            except (OSError, ValueError):  # being written right now, or not JSON
+                continue
+            if not is_evaluation(results):
                 continue
             if not served_checkpoint_matches(results, name, int(m.group(1)), m.group(2)):
                 continue  # answered by another run's policy server (two evaluations on one port)
@@ -253,6 +287,12 @@ def snapshot(runs, evals, curve_points=300):
         run.update()
         rows, running = evals.of(run.name)
         samples = run.samples_at_checkpoint() if rows else {}
+        evaluations = []
+        for n, w, task, r in rows:
+            try:
+                evaluations.append(evaluation_row(n, w, task, r, samples.get(n)))
+            except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+                continue  # episode records that cannot be read: one such file must not hide every run
         left = (run.total - run.seen) / run.rate if run.state == "training" and run.rate else None
         out.append(
             dict(
@@ -268,7 +308,7 @@ def snapshot(runs, evals, curve_points=300):
                 checkpoints=run.checkpoints,
                 seconds_since_log=run.age,
                 loss_curve=run.downsampled_curve(curve_points),
-                evaluations=[evaluation_row(n, w, task, r, samples.get(n)) for n, w, task, r in rows],
+                evaluations=evaluations,
                 evaluations_running=running,
             )
         )

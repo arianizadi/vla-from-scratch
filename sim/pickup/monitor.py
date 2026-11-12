@@ -13,11 +13,6 @@ terminal or over ssh, and be closed and reopened at any time.
 """
 
 import argparse
-import glob
-import json
-import os
-import re
-import subprocess
 import time
 from datetime import UTC, datetime
 
@@ -28,14 +23,11 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from .runstate import Evals, discover, gpus
+
 SPARK = "▁▂▃▄▅▆▇█"
 STATE_STYLE = {"training": "bold green", "done": "bold cyan", "stalled": "bold yellow", "waiting": "dim"}
 STATE_MARK = {"training": "●", "done": "✔", "stalled": "▲", "waiting": "○"}
-PROGRESS = re.compile(
-    r"Train Checkpoint: (\d+) \[\s*(\d+)/(\d+) \(\s*\d+%\)\] Loss: ([\d.]+|nan).*? ([\d.]+)/s,.*?LR: ([\d.e+-]+)"
-)
-SAMPLES = re.compile(r"Samples: (\d+) / (\d+)")
-FINISHED = "Model has seen the desired number of samples"
 
 
 def spark(values, width):
@@ -67,136 +59,6 @@ def duration(seconds):
     return f"{seconds // 60}m{seconds % 60:02d}s" if seconds >= 60 else f"{seconds}s"
 
 
-class Run:
-    """Incrementally parsed training log of one run (earlier attempts, then the live log)."""
-
-    def __init__(self, experiments, name):
-        self.experiments, self.name = experiments, name
-        self.live = os.path.join(experiments, f"{name}.train.log")
-        self.offset = 0
-        self.inode = None
-        self.base = self.in_chunk = self.total = 0
-        self.loss = self.rate = None
-        self.losses = []
-        self.finished = False
-        for part in sorted(glob.glob(self.live + ".part*")):  # attempts that died and were resumed
-            with open(part, errors="ignore") as f:
-                self._parse(f.read())
-        self.finished = False
-
-    def _parse(self, text):
-        for line in text.splitlines():
-            m = PROGRESS.search(line)
-            if m:
-                self.in_chunk = int(m.group(2))
-                self.loss = float(m.group(4))
-                self.rate = float(m.group(5))
-                self.losses.append(self.loss)
-                continue
-            m = SAMPLES.search(line)
-            if m:
-                self.base, self.total, self.in_chunk = int(m.group(1)), int(m.group(2)), 0
-            elif FINISHED in line:
-                self.finished = True
-
-    def update(self):
-        try:
-            st = os.stat(self.live)
-        except FileNotFoundError:
-            return
-        if st.st_ino != self.inode or st.st_size < self.offset:  # a new attempt started a new log
-            self.inode, self.offset = st.st_ino, 0
-        with open(self.live, errors="ignore") as f:
-            f.seek(self.offset)
-            text = f.read()
-            self.offset = f.tell()
-        self._parse(text)
-        if len(self.losses) > 20000:
-            self.losses = self.losses[::2]
-
-    @property
-    def seen(self):
-        return self.total if self.finished and self.total else min(self.base + self.in_chunk, self.total or 10**18)
-
-    @property
-    def age(self):
-        try:
-            return time.time() - os.stat(self.live).st_mtime
-        except FileNotFoundError:
-            return None
-
-    @property
-    def state(self):
-        if self.finished:
-            return "done"
-        if self.age is None:
-            return "waiting"
-        return "training" if self.age < 180 else "stalled"
-
-    @property
-    def restarts(self):
-        try:
-            with open(os.path.join(self.experiments, f"{self.name}.retries.log")) as f:
-                return sum(1 for line in f if "ended" in line or "stalled" in line)
-        except FileNotFoundError:
-            return 0
-
-    @property
-    def checkpoints(self):
-        return len(glob.glob(os.path.join(self.experiments, self.name, "checkpoints", "checkpoint_*.pt")))
-
-
-class Evals:
-    """Closed-loop results of a run's checkpoints, cached by file modification time."""
-
-    def __init__(self, results, task):
-        self.results, self.task, self.cache = results, task, {}
-
-    def of(self, name):
-        rows, running = [], 0
-        for d in glob.glob(os.path.join(self.results, name, self.task or "*", "ckpt_*")):
-            m = re.fullmatch(r"ckpt_(\d+)_(raw|ema)", os.path.basename(d))
-            path = os.path.join(d, "results.json")
-            if not m:
-                continue
-            if not os.path.exists(path):
-                running += 1
-                continue
-            mtime = os.path.getmtime(path)
-            if self.cache.get(path, (None,))[0] != mtime:
-                try:
-                    with open(path) as f:
-                        self.cache[path] = (mtime, json.load(f))
-                except (OSError, json.JSONDecodeError):
-                    continue
-            rows.append((int(m.group(1)), m.group(2), self.cache[path][1]))
-        return sorted(rows, key=lambda r: (r[0], r[1])), running
-
-
-def gpus():
-    query = "index,name,utilization.gpu,memory.used,memory.total,temperature.gpu"
-    try:
-        out = subprocess.run(
-            ["nvidia-smi", f"--query-gpu={query}", "--format=csv,noheader,nounits"],
-            capture_output=True,
-            text=True,
-            timeout=8,
-        ).stdout
-    except (OSError, subprocess.TimeoutExpired):
-        return []
-    rows = []
-    for line in out.strip().splitlines():
-        parts = [p.strip() for p in line.split(",")]
-        if len(parts) == 6:
-            try:
-                rows.append(
-                    (int(parts[0]), parts[1], float(parts[2]), float(parts[3]), float(parts[4]), float(parts[5]))
-                )
-            except ValueError:
-                continue
-    return rows
-
-
 def runs_table(runs, evals, width):
     wide = width >= 150
     table = Table(box=box.SIMPLE_HEAD, expand=True, pad_edge=False, header_style="bold")
@@ -226,13 +88,14 @@ def runs_table(runs, evals, width):
         left = duration((run.total - run.seen) / run.rate) if state == "training" and run.rate else "-"
 
         rows, running = evals.of(run.name)
+        rows = sorted(rows, key=lambda r: (r[0], r[1]))  # by checkpoint, whatever the task
         curve, best, named, miss = Text(""), Text("-", style="dim"), "-", "-"
         if rows:
-            for kind in sorted({w for _, w, _ in rows}):
-                rates = [r["success_rate"] for _, w, r in rows if w == kind]
+            for kind in sorted({w for _, w, _, _ in rows}):
+                rates = [r["success_rate"] for _, w, _, r in rows if w == kind]
                 curve += Text(f"{kind} ", style="dim")
                 curve += Text(spark([0.0, 1.0] + rates, 99)[2:], style="green") + Text("  ")
-            n, kind, top = max(rows, key=lambda r: (r[2]["success_rate"], r[0]))
+            n, kind, _, top = max(rows, key=lambda r: (r[3]["success_rate"], r[0]))
             best = Text(
                 f"{100 * top['success_rate']:.0f}%", style="bold green" if top["success_rate"] >= 0.5 else "bold"
             )
@@ -256,13 +119,12 @@ def gpu_table(rows, width):
     for _ in range(columns):
         table.add_column(ratio=1)
     cells = []
-    for index, name, util, used, total, temp in rows:
+    for gpu in rows:
+        util, used, total, temp = gpu["util"], gpu["mem_used_mb"], gpu["mem_total_mb"], gpu["temp_c"]
         style = "green" if util >= 50 else ("yellow" if util >= 5 else "grey50")  # busy is the good state
-        cell = Text(f"GPU {index} ", style="bold") + bar(util / 100, 14, style) + Text(f" {util:3.0f}%  ")
+        cell = Text(f"GPU {gpu['index']} ", style="bold") + bar(util / 100, 14, style) + Text(f" {util:3.0f}%  ")
         cell += bar(used / total if total else 0, 10, "blue") + Text(f" {used / 1024:4.1f}/{total / 1024:.0f} GB  ")
-        cell += Text(f"{temp:.0f}°C  ", style="red" if temp >= 85 else "dim") + Text(
-            name.replace("NVIDIA ", ""), style="dim"
-        )
+        cell += Text(f"{temp:.0f}°C  ", style="red" if temp >= 85 else "dim") + Text(gpu["name"], style="dim")
         cells.append(cell)
     per_column = -(-len(cells) // columns)
     for r in range(per_column):
@@ -288,15 +150,6 @@ def frame(runs, evals, width, experiments, show_gpus=True):
     legend = "success is closed-loop on unseen layouts · at named = gripper closed at the object the instruction named"
     parts.append(Text(legend + " · miss = median distance to it · Ctrl-C quits", style="dim"))
     return Group(*parts)
-
-
-def discover(experiments, known):
-    names = set()
-    for path in glob.glob(os.path.join(experiments, "*.train.log*")):
-        names.add(os.path.basename(path).split(".train.log")[0])
-    for name in sorted(names - set(known)):
-        known[name] = Run(experiments, name)
-    return [known[n] for n in sorted(known)]
 
 
 def main():

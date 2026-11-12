@@ -41,12 +41,16 @@ sim/pickup/
   caption_data.py    captioned scene renders for vision-language pretraining
   vlm_check.py       held-out captioning check for a trained VLM
   monitor.py         terminal dashboard: runs, loss, closed-loop success per checkpoint, GPUs
+  monitor_server.py  graphical monitor: a web server for the same view in a browser
+  monitor_ui/        the pages that server sends (plain HTML, CSS and JavaScript, no build step)
+  runstate.py        what both monitors show, read from the training logs and the results
   summarize.py       all closed-loop results as one table (or JSON)
   text_data.py       web text for the language-model stage of the from-scratch path
   smoke_test.py      expert-only sanity check
   configs/           preprocessing + training configs
   scripts/           fetch_assets.sh, make_dataset.sh, train.sh, train_resilient.sh (auto-resume), eval.sh,
-                     eval_checkpoints.sh (every checkpoint), custom_path.sh (LLM -> VLM -> VLA stages)
+                     eval_checkpoints.sh (every checkpoint), custom_path.sh (LLM -> VLM -> VLA stages),
+                     monitor_remote.sh (the graphical monitor from your own computer, over ssh)
   assets/            Blender source, exported meshes; third_party/ (Panda model, fetched, not committed)
 ```
 
@@ -117,6 +121,31 @@ at any time, in another terminal or over ssh.
 .venv/bin/python -m sim.pickup.monitor --once --svg runs.svg   # one frame, saved as an image
 .venv/bin/python -m sim.pickup.summarize --task pick_target    # the same results as one table
 ```
+
+`monitor_server.py` is the graphical monitor: the same runs in a browser, with charts of the loss,
+of closed-loop success per checkpoint, of how the policy fails, and of GPU load. It is a small web
+server that reads the same logs and results. It needs only the Python standard library, no build
+step and no network access. There are two ways to use it.
+
+On the training machine, start the server and open the URL it prints. It listens on that machine
+only, so from another computer reach it through an ssh port forward:
+
+```bash
+.venv/bin/python -m sim.pickup.monitor_server          # on the training machine, Ctrl-C stops
+ssh -L 8765:127.0.0.1:8765 <training-machine>          # on your computer; then open http://localhost:8765
+```
+
+From your own computer, one script does both and opens the browser. Ctrl-C ends the ssh session
+and, with it, the server on the training machine:
+
+```bash
+sim/pickup/scripts/monitor_remote.sh <ssh-host> <repo-directory-on-that-host> [port]
+```
+
+To serve the monitor on the network instead, pass `--host 0.0.0.0`. On any address other than
+loopback the server requires a token: it prints a URL that ends in `?token=...` (choose the token
+with `--token`) and answers 401 without it. On loopback no token is asked for, which leaves the port
+open to the other users of that machine; pass `--token` to require one there too.
 
 ### Checks that need no trained policy
 
