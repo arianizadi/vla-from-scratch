@@ -93,7 +93,7 @@ rate. Each breakthrough gets a short video.
 | 1 | **A target that keeps moving** (`--disturb drift`): the named object slides on a smooth random path, as a stem sways | Expert and baselines measured; policy trained on drifting demonstrations: training |
 | 2 | **Look-alikes** (`pick_lookalike`): cubes a small colour step apart, as flowers of one plant are | Expert and baselines measured; policy: training |
 | 3 | **Clutter and occlusion** (`pick_clutter`): four objects and upright leaves that hide them from the front camera | Expert and baselines measured; policy: training |
-| 4 | **A stem to grasp from the side**: a stem fixed at its base with a flower head on top; close on the named stem inside a height band. Needs a side approach (a flower on top blocks a grasp from above) | To do |
+| 4 | **A stem to grasp from the side** (`grasp_stem`): flowers on stems standing in heavy bases; close on the named stem inside a height band. The flower on top blocks a grasp from above, so the expert turns the gripper horizontal and comes in across the table (pointing straight out from the base is out of reach) | Expert works (24 of 30 in a first check); baselines and a policy: training |
 | 5 | **A cut**: closing on the named stem inside the band cuts it (the part above comes free); cutting the wrong stem or outside the band fails | To do |
 | 6 | **Leaves in the way that can be touched**: leaves on springs hide the stem; the arm has to push one aside and hold it, or cut past it, and they spring back | To do |
 | 7 | **Turning the plant**: the part to cut faces away; the arm turns the turntable until it can see and reach it | To do |
