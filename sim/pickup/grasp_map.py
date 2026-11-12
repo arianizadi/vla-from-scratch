@@ -137,8 +137,10 @@ def main():
     p.add_argument("--extent_cm", type=float, default=None, help="half-width of each map (default: fit the data)")
     p.add_argument("--rows", type=int, default=16, help="map height in terminal rows")
     p.add_argument("--svg", default=None, help="also save the output as an SVG image")
+    p.add_argument("--width", type=int, default=None, help="output width in characters (default: the terminal's)")
     args = p.parse_args()
-    console = Console(record=bool(args.svg), force_terminal=bool(args.svg) or None)
+    width = args.width or (100 if args.svg else None)
+    console = Console(record=bool(args.svg), force_terminal=bool(args.svg) or None, width=width)
     for path in args.results:
         console.print(panel(path, args.extent_cm, args.rows))
     if args.svg:
