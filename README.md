@@ -95,10 +95,12 @@ Closed-loop success on layouts the policy never saw.
 | Looking at the scene arrives late and all at once | Same policy, same 4000 demonstrations: 0% after 1.0M training samples, 36% after 2.0M, 70% after 2.5M, 85% after 5M. With 1500 demonstrations: 0-3% up to 1.2M, 64% at 3M. A budget that ends too early reads as a broken design |
 | The previous action as an input lets the policy stop looking | With history 2% after 3M samples, without it 75-81%. The history policy is not blind: told the expert's first action it finds the named object 97% of the time |
 | A policy that succeeds may look only once | The 85% policy, shown only its first camera frame for the whole episode, still reaches the named object in 99% of episodes. Move the object 8 cm mid-reach and it closes where the object was: 0/96 |
+| A policy looks where its demonstrations make looking necessary | Same policy, same 4000 episodes, different content: clean passes from one start pose 93%; random start poses 98%, and 97% from poses where the first scores 9% |
+| Self-correction has to be in the data | Trained on demonstrations in which the object is moved and the expert recovers, the policy follows a moved object (79-88%) and retries a missed grasp (78 of 99). Every policy trained on clean demonstrations: 0-12% |
 | Averaged weights lead during the transition | 36% against 4% at 2.0M samples; equal before and after |
-| Two sampling steps are enough | 1 flow step 61%, 2 steps 89-90%, 10 steps 83-85% |
+| Two sampling steps are usually enough | 1 flow step 61%, 2 steps 89-90%, 10 steps 83-85%; on four later policies 2 steps matched 10, on one they cost 19 points |
 | Know the tolerance of the task | Cube and T block forgive a 2 cm offset. At 1 cm the round objects lose 40% on one simulator build and under 6% on another: measure it where you evaluate |
-| Train/inference mismatches hide in preprocessing | Five so far, none raised an error: a pixel-range bug (captioning 0% -> 85%), a position table computed in half precision (641 distinct positions out of 2048), a previous-action slot that holds the answer in training and nothing when served, and two more |
+| Train/inference mismatches hide in preprocessing | Five so far, none raised an error: a pixel-range bug (captioning 0% -> 85%), a position table computed in half precision (641 distinct positions out of 2048; fixing it took the same run from 83% to 93%), a previous-action slot that holds the answer in training and nothing when served, and two more |
 
 Details and the open questions are in the [field notes](tutorial/notes.md).
 

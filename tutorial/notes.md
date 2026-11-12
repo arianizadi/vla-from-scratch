@@ -7,6 +7,51 @@ training seed per run, so treat differences of a few percent as noise.
 
 Status legend: **confirmed** (measured here), **open** (hypothesis, experiment queued).
 
+## What worked
+
+| What | Evidence | Entry |
+|---|---|---|
+| Running the scripted expert through the evaluation before training anything | 99-100/100 on the task where the first policies scored 0-6% | 1 |
+| Recording where the gripper closed, not only whether the episode succeeded | It showed that the failing policies were not looking at all (slope 0.03), which redirected the work | 3, 6 |
+| Patch tokens instead of one pooled vector | 30% against 4% on the single cube | 5 |
+| No history: one frame, no previous action | 75-81% against 2% after 3M samples | 8 |
+| Training past the stretch where nothing seems to happen | 0% after 1M samples, 85% after 5M, same policy and data | 7 |
+| More demonstrations | 85% with 4000 against 64% with 1500 | 7 |
+| Keeping a running average of the weights | 36% against 4% in the middle of the transition | 12 |
+| Computing the position table in float32 | 93% against 83%; on the single cube with history 96-98% against 62-70% | 14 |
+| Repeating the windows from the first frames of every demonstration | 96-97%, and the policy starts to look about half a million samples earlier | 10 |
+| Random start poses in the demonstrations | 98% from the home pose and 97% from random poses; follows an object moved early in the reach (94%) | 10, 11 |
+| Demonstrations in which the object is moved and the expert recovers | The policy follows a moved object (79-88%) and retries a missed grasp (78 of 99 episodes) | 11 |
+| Two sampling steps instead of ten | Equal within noise on four of five policies (84-98%) at a third of the latency; worse on the fifth (77% against 96%) | 12 |
+| A VLM pretrained on captions as the backbone, every token handed to the action head | In progress. At the first checkpoint (0.25M samples) 43%, where the same model without pretraining is at 0% | 16 |
+
+## What did not work
+
+| What | Evidence | Entry |
+|---|---|---|
+| One pooled image vector for the action head | 4% on the single cube | 5 |
+| One vector read from a VLM (the framework's VLA recipe), from-scratch or Qwen | 0-6% | 5 |
+| The previous action as an input | 2% after 3M samples: the policy reads its goal there instead of in the image | 8 |
+| A hold frame at the start of every demonstration, as the cure for that | 1-2% after 2.5M samples (still training) | 8 |
+| Judging by the training loss | The loss is flat while success goes from 0% to 80% | 2, 7 |
+| Stopping at 1M samples | 3-5% for a recipe that reaches 64% at 3M on the same data | 7 |
+| Naming every object of a layout in turn, with 1500 demonstrations and 1M samples | 0-1% (with 4000 demonstrations it trains well: in progress) | 10 |
+| Planning again more often | 76% when 2 actions of each chunk are executed, 85% with 8 | 12 |
+| The same starting noise for every chunk of an episode | 39-80%, worse at every setting | 12 |
+| Trusting a policy outside the conditions of its demonstrations | Policies at 93-96% score 0% when the object is moved late in the reach and 9% from another start pose | 9, 11 |
+
+## What we got wrong
+
+| What we believed or did | What was the case | Entry |
+|---|---|---|
+| "The failing policy reaches for a point between the objects" | Where it closed did not depend on the scene at all | 6 |
+| "This design does not work with 1500 demonstrations" | The run had ended inside the transition; with three times the samples it reaches 64% | 7 |
+| "What still fails is the grasp angle on the T block" | Most of it was the position bug: 55% before the fix, 87-93% after | 13, 14 |
+| Positions computed in half precision in every run of the first two rounds | 641 distinct positions out of 2048; nothing looked wrong because training and serving agreed | 14 |
+| About 40 evaluations filed under the wrong run | Two evaluations on one port both talked to the same policy server | 17 |
+| The grasp tolerance measured on one simulator build and applied to another | At a 10 mm offset the can is grasped 60% of the time on one build and 94% on the other | 4 |
+| Runs relaunched without averaged weights; a second trainer started in a live run's directory; two dataset builds sharing one Ray instance | Each cost between a few minutes and half an hour | 17 |
+
 ## The short version
 
 1. Check the environment with a scripted expert before training anything.
@@ -20,9 +65,11 @@ Status legend: **confirmed** (measured here), **open** (hypothesis, experiment q
 7. Do not give the policy its previous action without testing what it does with it. Here it used it
    in place of the cameras.
 8. A policy that succeeds may still look at the scene only once. Test it with something that moves.
-9. Save averaged weights and evaluate both sets. Sweep the sampler's settings: fewer steps were enough.
-10. Feed inference through exactly the code path used in training, and test that it does.
-11. Checkpoint often and auto-resume; long runs die. Make every evaluation check which checkpoint
+9. A policy learns to look where its demonstrations make looking necessary. Vary the start pose,
+   and put recoveries in the data if you want recoveries in the behaviour.
+10. Save averaged weights and evaluate both sets. Sweep the sampler's settings: fewer steps were enough.
+11. Feed inference through exactly the code path used in training, and test that it does.
+12. Checkpoint often and auto-resume; long runs die. Make every evaluation check which checkpoint
     it is talking to.
 
 ## 1. Verify the task with an expert first  (confirmed)
@@ -157,13 +204,12 @@ had ended inside the transition, with its learning rate already near zero.
 about what comes next; a slope that has started to move does. Do not judge a design on a budget that
 ends before the transition of a comparable run.
 
-**Why so late (partly tested).** In a demonstration only the first moments need the image and the
+**Why so late (tested).** In a demonstration only the first moments need the image and the
 instruction; after that the arm's own position says where it is going (section 9). So few training
-windows reward looking. Repeating the windows from the first 8 frames of each demonstration five extra
-times brings the transition forward. Two runs on the same code (both after the position fix of
-section 12, both still in progress): at 1.0M samples the plain one closes at the named object 65% of
-the time (slope 0.58), the one with repeated early windows 99% (slope 0.93), and at 1.5M the latter
-already succeeds in 76% of the layouts.
+windows reward looking. Every change that made more windows depend on the scene brought the
+transition forward (section 10): after 1.0M samples the plain run closes at the named object 65% of
+the time, with the windows of the first frames repeated 99%, with random start poses 91%, with
+recovery demonstrations 81%.
 
 ## 8. The previous action as an input  (confirmed)
 
@@ -198,8 +244,10 @@ served, the slot holds what the robot is really doing before it moves, which is 
 **What to do.** Start without history. If you add it, run the two probes above
 (`eval.py --first_prev_action expert`, `--expert_prefix 10`): a policy that scores far better with
 them than without is leaning on its own past. `collect.py --hold_steps 1` begins every demonstration
-with a frame of the robot at rest, so that the first windows contain what serving will provide;
-whether a history policy trained that way finds the object is being tested.
+with a frame of the robot at rest, so that the first windows contain what serving will provide. It
+has not helped so far: a history policy trained on such demonstrations is at 1-2% after 2.5M samples
+(still training). The leak at the first frame is then closed, but from the second step on the
+previous action still predicts the next one, and that was enough to keep the policy from looking.
 
 ## 9. Success is not the same as looking  (confirmed)
 
@@ -225,12 +273,63 @@ work around things that move, or to try again after a miss, needs exactly the be
 lacks.
 
 **What to do.** Add a disturbance to the evaluation (`eval.py --disturb reach` and `--disturb grasp`)
-before trusting a policy outside the conditions it was trained in. Two changes to the data are being
-tested here: demonstrations in which the object is moved and the expert plans again and retries
-(`collect.py --disturb_prob`), and random start poses, which take away the straight line from home
-(`--random_start`). The scripted expert that plans again succeeds 40/40 under both disturbances.
+before trusting a policy outside the conditions it was trained in, and change the demonstrations
+(sections 10 and 11).
 
-## 10. Averaged weights and the sampler's settings  (confirmed)
+## 10. What the demonstrations contain  (confirmed)
+
+The policy, the number of demonstrations (4000) and the budget (5M samples) stay the same; only what
+the demonstrations show changes. All runs after the position fix; success with the trained weights,
+or trained / averaged where a run saved both:
+
+| Demonstrations | After 1.0M samples | After 3.0M | Final |
+|---|---|---|---|
+| one clean pass per layout, from the home pose | 8% | 90% | 93% |
+| the same, windows of the first 8 frames repeated 5 extra times | 5% | 96% | 96% |
+| every episode starts from a random gripper pose | 56% / 76% | 94% / 98% | 98% / 98% |
+| in 1505 of 4000 episodes the object is moved once and the expert recovers | 38% / 79% | 83% / 85% | 89% / 84% |
+
+After one million samples the plain run closes at the named object 65% of the time. With the early
+windows repeated it is 99%, with random starts 91%, with recoveries 81%: the policy starts to look
+sooner whenever more of its training windows cannot be answered without looking. Random starts also
+give the best result on the unchanged task.
+
+Runs with every object of a layout named in turn, and with these changes combined, are in progress.
+
+**What to do.** Before collecting more demonstrations, ask which of them can be imitated without
+looking at the scene. From one fixed start pose with nothing ever moving, almost all of them can.
+`collect.py --random_start` costs nothing; `boost_early_windows.py` needs no new data at all.
+
+## 11. Self-correction has to be in the data  (confirmed)
+
+The same policies, each at its final checkpoint, under conditions their demonstrations may or may
+not have contained. 100 layouts per cell; the object is moved 80 mm:
+
+| Trained on | Unchanged task | Random start pose | Object moved at step 10 / 20 / 30 of the reach | Object moved as the gripper closes |
+|---|---|---|---|---|
+| clean demonstrations | 93% | 9% | 12% / 0% / 0% | 0%, a second attempt in 8 of 100 |
+| clean, early windows repeated | 96% | 9% | 10% / 0% / 0% | 0% |
+| random start poses | 98% | 97% | 94% / 51% / 0% | 0% |
+| recoveries | 84% | 68% | 88% / 82% / 85% | 79%, a second attempt in 99 of 99 |
+| scripted expert that plans again | 100% | 100% | 100% / 100% / 100% | 100% |
+
+Each ingredient buys exactly what it shows. Random start poses make the policy watch the scene while
+it reaches, so it follows an object that moves early, but nothing in its data ever went wrong late,
+and it neither follows a late move nor tries again. Demonstrations with recoveries give both. They
+also make the policy use its cameras throughout: frozen on the first frame it finds the named object
+3% of the time, where the policy trained on clean demonstrations still finds it 94% of the time. And
+handed over after the expert has driven 25 steps toward the wrong object, it turns back and succeeds
+in 56 of 100 episodes; the clean-data policy closes on the wrong object every time.
+
+The recovery policy pays on the unchanged task (84-89% against 93-98%, the can at 77%). The runs that
+combine random starts with recoveries are in progress.
+
+**What to do.** Write the expert so that it can recover (`ScriptedExpert(reactive=True)` plans again
+when the object has moved or its fingers closed on nothing), disturb a share of the demonstrations
+(`collect.py --disturb_prob 0.5`), and evaluate with the same disturbances. A behaviour that never
+occurs in the demonstrations does not appear in the policy, whatever its success rate.
+
+## 12. Averaged weights and the sampler's settings  (confirmed)
 
 **Averaged weights.** Runs keep a running average of their weights (EMA) next to the trained ones.
 During the transition the average is far ahead: 36% against 4% at 2.0M samples, 70% against 56% at
@@ -240,7 +339,9 @@ model.
 **Flow steps.** The sampler turns noise into an action chunk in a number of steps. On the 85%
 policy, 100 layouts per setting (a second 100 in brackets): 1 step 61%; 2 steps 89% (90%); 4 steps
 88% (86%); 10 steps, the default, 85% (83%); 20 steps 79%. Two steps cost 25 ms per chunk, ten cost
-71 ms.
+71 ms. On the policies trained after the position fix, 2 steps against 10 give 94% against 93%, 98%
+against 98% and 84% against 84%, but 77% against 96% for the policy trained with repeated early
+windows: measure it on the policy you will run.
 
 **Actions executed per chunk.** The policy predicts 15 actions. Executing 2 of them before planning
 again gives 76%, 4 gives 84%, 8 gives 85%, all 15 gives 84%. Planning more often does not help, and
@@ -249,16 +350,19 @@ on the T block it hurts (8/23 at 2 actions, 15/23 at 8).
 **Tried, did not help.** Starting every chunk of an episode from the same noise, so that successive
 chunks would make the same choices: 80% at 8 actions per chunk, 55% at 4, 39% at 2.
 
-## 11. What still fails  (confirmed)
+## 13. What still fails  (confirmed)
 
-Pooled over the checkpoints from 3M samples on: green can 93%, blue hex nut 94%, red cube 82%,
-yellow T block 55%. The can and the hex nut can be grasped at any angle. The cube and the T block
-cannot, and their failures are angle errors: a median of 64 degrees off on the failed T-block grasps,
-with the gripper stopped 9 mm above the grasp height, on top of the bar. The object is the right
-one and the position is about 15 mm off (median). The failures are spread over all object orientations; they do
-not cluster where the expert's choice between two equivalent grasps flips.
+Before the position fix the failures were angle errors on the two objects that cannot be grasped at
+any angle: the T block at 55% and the cube at 82% (can 93%, hex nut 94%, pooled over the checkpoints
+from 3M samples on), with a median of 64 degrees off on the failed T-block grasps. The failures were
+spread over all object orientations and did not cluster where the expert's choice between two
+equivalent grasps flips, so they were not the expert's ambiguity.
 
-## 12. Train/inference mismatches hide in preprocessing  (confirmed)
+Most of that was the position bug of section 14. After the fix, pooled over the last three
+checkpoints: T block 87%, cube 94%, can 90%, hex nut 99% with clean demonstrations; T block 92%, the
+other three 99-100% with random start poses. What remains is spread thinly over the objects.
+
+## 14. Train/inference mismatches hide in preprocessing  (confirmed)
 
 Five found so far, none of which raised an error:
 
@@ -280,27 +384,38 @@ Five found so far, none of which raised an error:
   bfloat16 autocast, which keeps 8 significant bits. Positions above 256 collapsed onto even numbers
   and above 512 onto multiples of 4: 641 distinct positions out of 2048. In the no-history policy 15
   action tokens shared 8 positions; with history, 16 shared 4. Training and serving agreed with each
-  other, so nothing looked wrong. The table is now computed in float32; the comparison of the same
-  run before and after is in progress.
+  other, so nothing looked wrong. The table is now computed in float32. The same run after the fix
+  starts to look earlier (58% against 4% after 1.5M samples) and ends higher (93% against 83%, the
+  T block at 20/23 against 15/23); the policy with history on the single cube goes from 62-70% to
+  96-98%. One seed each; a second pair is running.
 
 **What to do.** For every model, run a check that pushes the same sample through the training
 pipeline and through the serving path and compares the tensors the model receives.
 
-## 13. Long runs die  (confirmed)
+## 15. Long runs die  (confirmed)
 
 One of the machines used was unreliable: stage-3 runs died or hung three times. A dead data-loader
 worker does not crash the trainer; it waits forever at 0% GPU. `scripts/train_resilient.sh` restarts
 from the newest checkpoint when a run exits or when its log stops moving for 7 minutes.
 
-## 14. Pretraining a small VLM on captions  (inconclusive)
+## 16. Pretraining a small VLM on captions  (in progress)
 
 The from-scratch path (91M LLM on web text, then a VLM on 40k captioned sim renders, then a VLA)
-gave 0/100 with pretraining and 1/100 without. Both policies conditioned the action head on a single
-vector (section 5), had history (section 8) and 1M samples on 1500 demonstrations (section 7), so
-neither could have found the object and the comparison says nothing about pretraining. It is being
-re-run with every token passed to the action head, no history and 4000 demonstrations.
+gave 0/100 with pretraining and 1/100 without in the first round. Both policies conditioned the
+action head on a single vector (section 5), had history (section 8) and 1M samples on 1500
+demonstrations (section 7), so neither could have found the object and the comparison said nothing
+about pretraining.
 
-## 15. Operating many runs on one machine  (confirmed)
+It is being re-run with every token passed to the action head, no history and 4000 demonstrations.
+The runs are not finished; their checkpoints so far are in the lab notebook. The first of them
+already differ: after 0.25M samples the VLA on the pretrained VLM closes at the named object in 97%
+of episodes and succeeds in 43% (averaged weights), and the same architecture with a randomly
+initialised backbone is at chance, 0%.
+
+The same change is being tried on the pretrained Qwen backbone, which with one conditioning vector
+ended at 5% (closing at the named object 71% of the time, 83 mm off: it points, it does not grasp).
+
+## 17. Operating many runs on one machine  (confirmed)
 
 Things that cost time here and have nothing to do with models:
 
@@ -325,18 +440,29 @@ Things that cost time here and have nothing to do with models:
   end and filed the other run's success rate under its own name; about 40 results here were wrong
   that way before one of them looked too good. `eval.sh` now takes a free port, and the client stops
   unless the server reports the run and checkpoint it asked for.
+- **One trainer per run directory.** A queue script that reused a name started a second trainer in
+  the directory of a live run. It was caught before it wrote a checkpoint. Launch scripts should
+  refuse a run name whose training log is being written.
+- **Switch averaged weights on in the config, not on the command line.** Runs relaunched by hand
+  came up without them, and a run cannot gain them later unless resuming allows it (it does now).
+- **Give every dataset build its own Ray instance.** Two builds started together shared one, and the
+  second died with an error about `num_cpus` (`make_dataset.sh` now passes `--ray_address local`).
+- **Say why a run was stopped.** A run ended on purpose looks exactly like one that hangs. The
+  monitors show `<run>.stopped` as "stopped" with its text; `train_resilient.sh` writes it when it is
+  interrupted.
 - **Evaluate while training.** Evaluating every checkpoint as it appears costs little next to
   training and turns one run into a curve; a single final number hides whether the policy was
   still improving, had peaked, or never moved.
 
 ## Open questions being tested
 
-- Does the position fix change the result of the 4000-demonstration run?
-- How much earlier does the transition come when the early windows are repeated, or when every
-  object of a layout is named in turn?
-- Do demonstrations with recoveries, or random start poses, make the policy follow an object that
-  moves and retry a grasp that missed?
-- Does a history policy find the object when its demonstrations begin with a hold frame?
-- Does pretraining the VLM help the from-scratch VLA once it can see (section 14)?
-- What does the orientation of the T block need: more data, more resolution, or demonstrations
-  that correct the angle late?
+- Do random start poses and recoveries together give the 98% of the one and the self-correction of
+  the other? Does repeating the early windows add to that?
+- How much does one run vary? The plain recipe is being repeated with another seed, with and
+  without the position fix.
+- Does naming every object of a layout in turn help once there are 4000 demonstrations?
+- How far does the from-scratch VLA get on its pretrained VLM, against the same model without
+  pretraining and against the Qwen backbone with every token?
+- Can a policy with history be made to look? The hold frame alone was not enough.
+- Disturbances here are a single jump of the object. Does the recovery policy cope with an object
+  that keeps moving, and with look-alike objects next to the named one?

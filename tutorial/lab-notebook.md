@@ -274,10 +274,9 @@ The named object is moved once per episode, 80 mm in a random direction unless s
 | at step 20, by 120 mm | 0/99 | 9 mm | 116 mm | 35/99 |
 | at the moment the gripper first closes | 1/99 | - | - | 29/99 |
 
-The expert closes the gripper around step 40. The scripted expert under the same disturbances, 40
-layouts each: with its one plan per episode 1/40 (moved at step 15) and 0/40 (moved at the grasp);
-planning again when the object has moved or the fingers met on nothing, 40/40 and 40/40, with a
-second grasp attempt in every episode of the second case.
+The expert closes the gripper around step 40. The scripted expert under the same disturbances is
+in the section after the position fix (100 layouts per condition): with its one plan per episode it
+fails as the policy does; planning again it succeeds every time.
 
 ### Inference settings
 
@@ -372,14 +371,199 @@ The expert moves the gripper 30 cm in that chunk. The no-language policy gives t
 Language model final loss 4.15. VLM final loss 0.058; held-out captioning check 249/300 = 83% exact
 ordering and 279/300 = 93% leftmost object. Both were trained before the position fix; the language
 model's sequences are 256 tokens long and are not affected by it, the VLM's are 320 tokens and are.
+The VLM retrained after the fix (same data and budget): final loss 0.059, captioning check 267/300 =
+89% exact ordering and 286/300 = 95% leftmost object.
+
+## After the position fix (machine B)
+
+Everything in this section was trained with the rotary position table computed in float32 (see the
+bug table). Same policy as above unless stated (`dp_vit_lang_reactive`: patch tokens, instruction
+tokens, no history), 4000 demonstrations, 5M samples, 100 unseen layouts per evaluation.
+
+### The same run before and after the fix
+
+Trained weights (the run after the fix did not save averaged weights). Before: `dp_vit_lang_reactive_pt4k`. After: `dp_vit_lang_reactive_pt4k_posfix`.
+
+| Samples | Success before / after | Closed at the named object | Slope | Median miss to named |
+|---|---|---|---|---|
+| 0.5M | 0% / 0% | 34% / 36% | 0.02 / 0.03 | 166 / 177 mm |
+| 1.0M | 0% / 8% | 35% / 65% | 0.11 / 0.58 | 138 / 80 mm |
+| 1.5M | 4% / 58% | 61% / 98% | 0.47 / 0.94 | 102 / 14 mm |
+| 2.0M | 4% / 40% | 95% / 98% | 0.81 / 0.97 | 32 / 16 mm |
+| 2.5M | 56% / 77% | 98% / 99% | 0.94 / 0.90 | 14 / 10 mm |
+| 3.0M | 81% / 90% | 100% / 99% | 0.98 / 0.96 | 9 / 7 mm |
+| 3.5M | 83% / 88% | 100% / 100% | 0.99 / 0.98 | 9 / 6 mm |
+| 4.0M | 86% / 94% | 100% / 100% | 1.00 / 0.99 | 8 / 5 mm |
+| 4.5M | 81% / 92% | 100% / 100% | 0.99 / 0.99 | 7 / 6 mm |
+| 5.0M | 83% / 93% | 100% / 99% | 0.98 / 0.98 | 7 / 6 mm |
+
+Per object at the final checkpoint, before / after: can 26/28 / 25/28, cube 18/24 / 23/24, hex 24/25 / 25/25, tblock 15/23 / 20/23.
+
+### What the demonstrations contain
+
+Success with trained / averaged weights (a dash where a run did not save averaged weights), at fixed points of training.
+
+| Demonstrations | 0.5M | 1.0M | 1.5M | 2.0M | 3.0M | 4.0M | 5.0M | Best checkpoint |
+|---|---|---|---|---|---|---|---|---|
+| one instruction per layout (`pick_target_4k`) | 0% / - | 8% / - | 58% / - | 40% / - | 90% / - | 94% / - | 93% / - | 94% (raw, 4.0M) |
+| early windows repeated (`pick_target_4k_early`) | 1% / - | 5% / - | 76% / - | 73% / - | 96% / - | 96% / - | 96% / - | 97% (raw, 5.0M) |
+| every object named (`pick_target_cf4k`) | 1% / 2% | 41% / 38% | 74% / 80% | 73% / 84% |  |  |  | 92% (ema, 2.5M), still training |
+| recoveries (`pick_target_4k_recover`) | 0% / 12% | 38% / 79% | 79% / 80% | 85% / 87% | 83% / 85% | 86% / 88% | 89% / 84% | 92% (ema, 4.5M) |
+| random starts (`pick_target_4k_rs`) | 0% / 1% | 56% / 76% | 57% / 79% | 71% / 84% | 94% / 98% | 98% / 98% | 98% / 98% | 99% (ema, 5.0M) |
+| random starts and recoveries (`pick_target_4k_rs_recover`) | 12% / 54% | 68% / 86% | 86% / 91% | 93% / 84% | 90% / 93% |  |  | 93% (raw, 2.0M), still training |
+| random starts, recoveries, early windows repeated (`pick_target_4k_rs_recover_early`) | 5% / 13% |  |  |  |  |  |  | 13% (ema, 0.5M), still training |
+
+Closed at the named object and slope at the same points (trained weights, or averaged where only those exist):
+
+| Demonstrations | 0.5M | 1.0M | 1.5M | 2.0M | 3.0M |
+|---|---|---|---|---|---|
+| one instruction per layout (`pick_target_4k`) | 36%, 0.03 | 65%, 0.58 | 98%, 0.94 | 98%, 0.97 | 99%, 0.96 |
+| early windows repeated (`pick_target_4k_early`) | 58%, 0.49 | 99%, 0.93 | 100%, 1.00 | 100%, 1.02 | 99%, 1.01 |
+| every object named (`pick_target_cf4k`) | 30%, -0.04 | 98%, 1.02 | 99%, 0.98 | 99%, 0.99 |  |
+| recoveries (`pick_target_4k_recover`) | 33%, 0.11 | 81%, 0.96 | 100%, 0.97 | 100%, 1.00 | 100%, 0.99 |
+| random starts (`pick_target_4k_rs`) | 46%, 0.18 | 91%, 0.81 | 96%, 0.94 | 87%, 0.84 | 98%, 0.95 |
+| random starts and recoveries (`pick_target_4k_rs_recover`) | 50%, 1.00 | 100%, 1.02 | 100%, 1.00 | 100%, 1.00 | 100%, 0.99 |
+| random starts, recoveries, early windows repeated (`pick_target_4k_rs_recover_early`) | 56%, 0.56 |  |  |  |  |
+
+Success by object, pooled over each finished run's last three checkpoints (trained and, where saved, averaged weights):
+
+| Demonstrations | Can | Cube | Hex nut | T block |
+|---|---|---|---|---|
+| before the fix, one instruction per layout | 156/168 = 93% | 122/144 = 85% | 144/150 = 96% | 74/138 = 54% |
+| one instruction per layout | 76/84 = 90% | 68/72 = 94% | 74/75 = 99% | 60/69 = 87% |
+| early windows repeated | 79/84 = 94% | 72/72 = 100% | 72/75 = 96% | 64/69 = 93% |
+| recoveries | 130/168 = 77% | 141/144 = 98% | 144/150 = 96% | 109/138 = 79% |
+| random starts | 168/168 = 100% | 144/144 = 100% | 149/150 = 99% | 127/138 = 92% |
+
+### How each policy copes outside the conditions it was trained in
+
+Final checkpoint of each run (averaged weights where the run saved them), 100 layouts per cell. The object is moved 80 mm; counts are over the episodes in which it could be moved.
+
+| Demonstrations | Standard | Second set of layouts | Random start | Moved at step 10 | Moved at step 20 | Moved at step 30 | Moved at the grasp | Random start, moved at step 20 | Random start, moved at the grasp |
+|---|---|---|---|---|---|---|---|---|---|
+| before the fix, plain demonstrations | 85/100 | 83/100 | 6/100 | 9/100 | 0/96 | 0/99 | 1/99 (29 retried) | 0/98 | 0/98 (41 retried) |
+| one instruction per layout | 93/100 | 96/100 | 9/100 | 12/100 | 0/97 | 0/100 | 0/100 (8 retried) | 0/99 | 0/99 (2 retried) |
+| early windows repeated | 96/100 | 100/100 | 9/100 | 10/100 | 0/100 | 0/100 | 0/100 (3 retried) | 0/100 | 0/100 (7 retried) |
+| recoveries | 84/100 | 93/100 | 68/100 | 88/100 | 79/96 | 85/100 | 78/99 (99 retried) | 70/100 | 65/81 (78 retried) |
+| random starts | 98/100 | 97/100 | 97/100 | 94/100 | 50/98 | 0/100 | 0/100 (2 retried) | 15/99 | 0/100 (1 retried) |
+
+The scripted expert under the same conditions, 100 layouts each:
+
+| Expert | Standard | Random start | Moved at step 10 | Moved at step 20 | Moved at step 30 | Moved at the grasp | Random start, moved at step 20 | Random start, moved at the grasp |
+|---|---|---|---|---|---|---|---|---|
+| one plan per episode | 100/100 | 100/100 | 0/100 | 0/99 | 0/100 | 0/100 | | |
+| plans again | 100/100 | 100/100 | 100/100 | 96/96 | 100/100 | 100/100 | 98/98 | 100/100 |
+
+What the same policies depend on:
+
+| Demonstrations | Cameras frozen on the first frame | Expert drives 10 steps toward another object | Expert drives 25 steps toward another object | 2 flow steps |
+|---|---|---|---|---|
+| before the fix, plain demonstrations | 1/100 (at the named object 99%) | 12/100 (closed at the other object 16/100) | 0/100 (closed at the other object 100/100) | 89/100 |
+| one instruction per layout | 1/100 (at the named object 94%) | 18/100 (closed at the other object 24/100) | 0/100 (closed at the other object 100/100) | 94/100 |
+| early windows repeated | 0/100 (at the named object 70%) | 16/100 (closed at the other object 28/100) | 0/100 (closed at the other object 100/100) | 77/100 |
+| recoveries | 0/100 (at the named object 3%) | 79/100 (closed at the other object 1/97) | 56/100 (closed at the other object 28/80) | 84/100 |
+| random starts | 5/100 (at the named object 98%) | 98/100 (closed at the other object 0/100) | 14/100 (closed at the other object 57/98) | 98/100 |
+
+### History, on demonstrations that begin with a hold frame (`dp_vit_lang_pt4k_hold_posfix`)
+
+| Samples | Success (raw / EMA) | Closed at the named object | Slope | Median miss to named |
+|---|---|---|---|---|
+| 0.5M | 0% / 2% | 35% / 41% | 0.09 / 0.09 | 148 / 152 mm |
+| 1.0M | 2% / 1% | 34% / 30% | -0.06 / 0.03 | 156 / 163 mm |
+| 1.5M | 1% / 1% | 34% / 34% | -0.02 / -0.04 | 159 / 157 mm |
+| 2.0M | 1% / 1% | 41% / 32% | 0.11 / -0.06 | 141 / 152 mm |
+| 2.5M | 2% / 2% | 43% / 38% | 0.12 / 0.06 | 149 / 151 mm |
+| 3.0M | 1% / 0% | 31% / 39% | -0.11 / -0.02 | 181 / 168 mm |
+
+Still training when this was written: the table holds the checkpoints evaluated so far.
+
+
+### Single cube with history, after the fix (`dp_vit_cube1k_posfix`)
+
+Before the fix the same configuration ended at 62% / 70% (table above).
+
+| Samples | Success (raw / EMA) | Closed at the named object | Slope | Median miss to named |
+|---|---|---|---|---|
+| 0.15M | 1% / 2% | 91% / 89% | 0.22 / 0.08 | 117 / 164 mm |
+| 0.30M | 30% / 37% | 99% / 100% | 0.93 / 0.96 | 27 / 23 mm |
+| 0.45M | 29% / 65% | 100% / 100% | 1.01 / 0.98 | 23 / 15 mm |
+| 0.60M | 52% / 86% | 100% / 100% | 0.98 / 1.00 | 20 / 12 mm |
+| 0.75M | 89% / 87% | 100% / 100% | 0.99 / 0.99 | 9 / 10 mm |
+| 0.89M | 92% / 91% | 100% / 100% | 0.98 / 0.99 | 9 / 8 mm |
+| 1.0M | 93% / 93% | 100% / 100% | 0.99 / 0.99 | 9 / 8 mm |
+| 1.2M | 96% / 97% | 100% / 100% | 0.99 / 0.98 | 7 / 7 mm |
+| 1.3M | 98% / 97% | 100% / 100% | 0.99 / 0.99 | 7 / 6 mm |
+| 1.5M | 99% / 98% | 100% / 100% | 0.99 / 1.00 | 7 / 6 mm |
+| 1.5M (final) | 96% / 98% | 100% / 100% | 0.99 / 0.99 | 8 / 7 mm |
+
+
+### Single cube without history, after the fix (`dp_vit_lang_reactive_cube1k_posfix`)
+
+| Samples | Success (raw) | Closed at the named object | Slope | Median miss to named |
+|---|---|---|---|---|
+| 0.15M | 1% | 100% | 0.68 | 77 mm |
+| 0.30M | 28% | 100% | 1.00 | 29 mm |
+| 0.45M | 12% | 100% | 1.05 | 26 mm |
+| 0.60M | 70% | 100% | 0.97 | 13 mm |
+| 0.75M | 90% | 100% | 1.01 | 9 mm |
+| 0.89M | 81% | 100% | 0.97 | 11 mm |
+| 1.0M | 94% | 100% | 1.00 | 5 mm |
+| 1.2M | 96% | 100% | 0.99 | 6 mm |
+| 1.3M | 96% | 100% | 0.99 | 6 mm |
+| 1.5M | 97% | 100% | 0.99 | 6 mm |
+| 1.5M (final) | 91% | 100% | 0.99 | 6 mm |
+
+
+### From-scratch VLA, every token, no history (`vla_custom_tokens_reactive`, 130M parameters, 3M samples)
+
+Backbone pretrained on captions (stage 2, retrained with the fix):
+
+| Samples | Success (raw / EMA) | Closed at the named object | Slope | Median miss to named |
+|---|---|---|---|---|
+| 0.25M | 5% / 43% | 81% / 97% | 0.87 / 0.97 | 64 / 21 mm |
+| 0.5M | 31% / 50% | 99% / 100% | 0.95 / 1.01 | 29 / 19 mm |
+| 0.75M | 30% / 60% | 100% / 100% | 1.02 / 0.98 | 22 / 15 mm |
+| 1.0M | 73% / 62% | 99% / 99% | 0.98 / 0.99 | 13 / 13 mm |
+| 1.2M | 64% / 82% | 100% / 100% | 1.00 / 0.99 | 13 / 10 mm |
+
+Still training when this was written: the table holds the checkpoints evaluated so far.
+
+
+The same architecture with a randomly initialised backbone:
+
+| Samples | Success (raw / EMA) | Closed at the named object | Slope | Median miss to named |
+|---|---|---|---|---|
+| 0.25M | 0% / 0% | 33% / 28% | -0.09 / -0.04 | 177 / 184 mm |
+| 0.5M | 0% / 1% | 39% / 33% | 0.04 / 0.09 | 178 / 159 mm |
+
+Still training when this was written: the table holds the checkpoints evaluated so far.
+
+
+### Qwen3-VL-2B backbone
+
+One action-token vector, with history, 1500 demonstrations (`vla_qwen_pt1500`, trained before the fix; its action head has 20 tokens and was not affected):
+
+| Samples | Success (raw) | Closed at the named object | Slope | Median miss to named |
+|---|---|---|---|---|
+| 0.10M | 1% | 33% | 0.04 | 175 mm |
+| 0.20M | 3% | 60% | 0.53 | 105 mm |
+| 0.30M | 2% | 60% | 0.62 | 98 mm |
+| 0.40M | 5% | 71% | 0.68 | 83 mm |
+
+
+Every token, no history, 4000 demonstrations (`vla_qwen_tokens_reactive_pt4k_posfix`):
+
+| Samples | Success (raw / EMA) | Closed at the named object | Slope | Median miss to named |
+|---|---|---|---|---|
+| 0.05M | 1% / 1% | 40% / 35% | 0.26 / 0.08 | 159 / 149 mm |
+| 0.10M | 6% / 12% | 71% / 80% | 0.76 / 0.83 | 94 / 73 mm |
+
+Still training when this was written: the table holds the checkpoints evaluated so far.
+
 
 ### Runs in progress when this was written
 
-With the position fix: the 4000-demo policy again (the comparison with the run above), the same with
-the early windows repeated, with every object named, with demonstrations that contain recoveries, with
-random start poses, with both, a history policy on demonstrations that begin with a hold frame, the
-single-cube controls, and the from-scratch VLM and VLA (pretrained and random-init backbone). Before
-the fix: the Qwen VLA on 1500 demos.
+Still training or being evaluated, with no final result here: every object named on 4000 demonstrations; random starts and recoveries together; the same with the early windows repeated; the history policy on demonstrations that begin with a hold frame; the plain run again with another seed, with and without the fix; the from-scratch VLA with a pretrained and with a randomly initialised backbone; the Qwen backbone with every token. Tables and rows above that say 'still training' show the checkpoints evaluated so far.
 
 ## Throughput
 
@@ -419,6 +603,6 @@ Policy inference per chunk: 20-65 ms for the 36M policy, about 190 ms for the Qw
 | `lowdim_past_timesteps or default` treats 0 as unset | with 0 past steps the proprioception input contains the state one step in the future | explicit `is None` check; test added |
 | Both VLA recipes condition the action head on one vector | see the `pick_target` tables | `conditioning: all_tokens` for the from-scratch VLM backbone; effect not yet measured |
 | A dead data-loader worker leaves the trainer waiting forever | runs hang at 0% GPU | `train_resilient.sh` restarts on exit or on a stalled log |
-| The rotary position table was computed in bfloat16 under autocast, which keeps 8 significant bits | positions above 256 collapse onto even numbers, above 512 onto multiples of 4: 641 distinct positions out of 2048. In the no-history policy (425 tokens before the actions) 15 action tokens shared 8 positions; with history (about 820) 16 shared 4 | the table is computed in float32 and then cast; test added. Effect on success: comparison in progress |
+| The rotary position table was computed in bfloat16 under autocast, which keeps 8 significant bits | positions above 256 collapse onto even numbers, above 512 onto multiples of 4: 641 distinct positions out of 2048. In the no-history policy (425 tokens before the actions) 15 action tokens shared 8 positions; with history (about 820) 16 shared 4 | the table is computed in float32 and then cast; test added. Effect: see 'The same run before and after the fix' (one seed each; a second pair is running) and the single cube with history |
 | Evaluations shared a port (see Operations) | results filed under the wrong run | `eval.sh` takes a free port and waits for its own server; the client stops unless the server reports the checkpoint it asked for; `summarize.py` leaves out results whose recorded checkpoint does not match |
 | The previous-action input of a window at the start of a demonstration is filled with a copy of the first action | the expert's first command, which already points at the target, is an input in training and absent when served (see "What the history policy depends on") | `collect.py --hold_steps 1` begins every demonstration with a frame of the robot at rest; test of the effect in progress |
