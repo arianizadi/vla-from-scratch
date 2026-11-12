@@ -20,7 +20,6 @@ import sys
 from pathlib import Path
 
 
-
 def served_checkpoint_matches(results, run, checkpoint, weights):
     """Was this evaluation served by the checkpoint its directory says (run, number, raw or ema)?
 

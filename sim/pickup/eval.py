@@ -9,7 +9,6 @@ evaluated layout is unseen. Writes results.json (+ rollout videos) to --out.
 import argparse
 import io
 import json
-import os
 import re
 import sys
 import time

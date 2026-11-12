@@ -76,7 +76,9 @@ def main():
                 continue
             name = f"{run['name']}__{task}__ckpt_{checkpoint}_{weights}.json"
             with open(os.path.join(args.out, "grasp", name), "w") as f:
-                json.dump(dict(run=run["name"], task=task, checkpoint=checkpoint, weights=weights, episodes=episodes), f)
+                json.dump(
+                    dict(run=run["name"], task=task, checkpoint=checkpoint, weights=weights, episodes=episodes), f
+                )
             written += 1
             for row in run["evaluations"]:
                 if (row["checkpoint"], row["weights"], row["task"]) == (checkpoint, weights, task):
