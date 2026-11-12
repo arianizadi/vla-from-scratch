@@ -18,10 +18,15 @@ class GraspProbe:
     def __init__(self, env):
         self.env = env
         self.record = None
+        self.closes = 0  # grasp attempts: times the gripper command went from open to closed
+        self.was_closed = False
 
     def update(self, action):
         """Call with the action that is about to be executed."""
-        if self.record is not None or float(action[7]) >= 0.5:
+        closed = float(action[7]) < 0.5
+        self.closes += int(closed and not self.was_closed)
+        self.was_closed = closed
+        if self.record is not None or not closed:
             return
         env = self.env
         tcp = env.tcp_pos()
@@ -46,8 +51,9 @@ class GraspProbe:
 
     def result(self):
         if self.record is not None:
-            return self.record
+            return dict(self.record, closes=self.closes)
         return dict(
+            closes=0,
             close_step=None,
             close_nearest=None,
             close_xy_err_target=None,
@@ -112,6 +118,8 @@ def summarize(episodes):
         within_10mm_of_target_rate=frac_within(closed, 0.010),
         within_20mm_of_target_rate=frac_within(closed, 0.020),
         within_30mm_of_target_rate=frac_within(closed, 0.030),
+        # Share of episodes with a second grasp attempt (open, then close again).
+        retried_rate=sum(e.get("closes", 1) >= 2 for e in closed) / n if n else None,
         close_vs_target_slope=[f[0] for f in fits],
         close_vs_target_r2=[f[1] for f in fits],
         by_target=by_target,

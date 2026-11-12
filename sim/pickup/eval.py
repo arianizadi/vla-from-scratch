@@ -20,6 +20,7 @@ import numpy as np
 from PIL import Image
 
 from .diagnostics import GraspProbe, summarize
+from .disturb import Disturbance
 from .env import PickupEnv
 
 AUTHKEY = b"pickup-sim"  # must match policy_server.AUTHKEY (not imported: that module needs torch)
@@ -113,6 +114,21 @@ def main():
         help="previous action sent with the first query: the hold command the robot is really under, or the "
         "expert's first command (what a training window padded by copying contains)",
     )
+    # Disturbances: how does the policy cope when the scene changes under it? (disturb.py)
+    ap.add_argument(
+        "--disturb",
+        choices=["none", "reach", "grasp"],
+        default="none",
+        help="move the named object once per episode: 'reach' at --disturb_step, while the gripper is on its way; "
+        "'grasp' at the moment the gripper first closes, so that succeeding takes a second attempt",
+    )
+    ap.add_argument("--disturb_step", type=int, default=15)
+    ap.add_argument("--disturb_mm", type=float, default=80.0, help="how far the object is moved")
+    ap.add_argument(
+        "--expert_reactive",
+        action="store_true",
+        help="with --expert: the expert plans again when the object has moved or a grasp closed on nothing",
+    )
     args = ap.parse_args()
 
     out = Path(args.out)
@@ -122,8 +138,8 @@ def main():
     if args.expert:
         from .expert import ScriptedExpert
 
-        expert = ScriptedExpert(env, seed=0)
-        server_info = dict(policy="scripted expert")
+        expert = ScriptedExpert(env, seed=0, reactive=args.expert_reactive)
+        server_info = dict(policy="scripted expert", reactive=args.expert_reactive)
     else:
         conn = connect(args.port)
         conn.send({"cmd": "info"})
@@ -145,6 +161,7 @@ def main():
         prev_obs, queue, frames = obs, [], []
         wrong_object = False  # a non-target object was lifted at any point in the episode
         probe = GraspProbe(env)
+        disturbance = Disturbance(env, args.disturb, args.disturb_step, args.disturb_mm / 1000, seed=seed)
         if expert is not None:
             expert.reset()
         prefix_goal = None
@@ -189,7 +206,8 @@ def main():
                 frames.append(np.concatenate([obs["front"], obs["wrist"]], axis=1))
             prev_obs = obs
             action = queue.pop(0)
-            probe.update(action)
+            probe.update(action)  # before the disturbance: the first close is judged on the scene it was aimed at
+            disturbance.update(action)
             obs, done, info = env.step(action)
             wrong_object = wrong_object or bool(info["wrong_object"])
         episodes.append(
@@ -201,6 +219,7 @@ def main():
                 steps=env.steps,
                 wrong_object=wrong_object,
                 prefix_goal=prefix_goal,
+                disturbed=disturbance.record,
                 **probe.result(),
             )
         )
@@ -245,6 +264,10 @@ def main():
             prefix_target=args.prefix_target if args.expert_prefix else None,
             stale_images=args.stale_images,
             first_prev_action=args.first_prev_action,
+            disturb=args.disturb,
+            disturb_step=args.disturb_step if args.disturb == "reach" else None,
+            disturb_mm=args.disturb_mm if args.disturb != "none" else None,
+            disturbed_rate=sum(bool(e["disturbed"] and e["disturbed"]["to_xy"]) for e in episodes) / n,
         ),
         seed_start=args.seed_start,
         wall_time_s=time.time() - t_start,

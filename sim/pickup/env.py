@@ -269,6 +269,22 @@ class PickupEnv:
         w, x, y, z = self.data.qpos[adr + 3 : adr + 7]
         return float(np.arctan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z)))
 
+    def move_object(self, name, xy, yaw=None):
+        """Put an object down somewhere else on the table, upright and at rest: a disturbance, used to
+        test how a policy copes and to record demonstrations of recovery. Yaw is kept unless given."""
+        adr, vadr = self.obj_qadr[name], self.obj_vadr[name]
+        if yaw is None:
+            yaw = self.object_yaw(name)
+        self.data.qpos[adr : adr + 2] = xy
+        self.data.qpos[adr + 2] = self.rest_z[name] + 0.002
+        self.data.qpos[adr + 3 : adr + 7] = [np.cos(yaw / 2), 0, 0, np.sin(yaw / 2)]
+        self.data.qvel[vadr : vadr + 6] = 0
+        mujoco.mj_forward(self.model, self.data)
+
+    def on_table(self, name):
+        """Is the object still resting at table height (not lifted, not carried)?"""
+        return bool(self.object_pos(name)[2] - self.rest_z[name] < 0.01)
+
     def tcp_pos(self):
         return self.data.site_xpos[self.tcp_id].copy()
 

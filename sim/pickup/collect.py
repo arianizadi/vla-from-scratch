@@ -21,6 +21,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from PIL import Image
 
+from .disturb import Disturbance
 from .env import CONTROL_HZ, TASKS, PickupEnv
 from .expert import ScriptedExpert
 
@@ -34,13 +35,20 @@ def _jpeg(img, quality=95):
 
 
 def _worker(args):
-    task, jobs, out_dir, worker_id = args
+    task, jobs, out_dir, worker_id, disturb_prob = args
     env = PickupEnv(task)
-    expert = ScriptedExpert(env, seed=worker_id)
+    expert = ScriptedExpert(env, seed=worker_id, reactive=disturb_prob > 0)
     results = []
     for seed, target_index in jobs:
         obs = env.reset(seed=seed, target_index=target_index)
         expert.reset()
+        # Per-episode draw (from the seed, so a dataset can be rebuilt): is this episode disturbed, when
+        # and by how much. Half of the moves come during the reach, half as the gripper closes.
+        rng = np.random.default_rng([seed, 7])
+        kind = str(rng.choice(["reach", "grasp"])) if rng.random() < disturb_prob else "none"
+        disturbance = Disturbance(
+            env, kind, step=int(rng.integers(5, 30)), distance=float(rng.uniform(0.05, 0.10)), seed=seed
+        )
         frames = {c: [] for c in CAMERAS}
         states, actions = [], []
         done, info = False, {}
@@ -50,6 +58,7 @@ def _worker(args):
                 frames[c].append(_jpeg(obs[c]))
             states.append(obs["state"])
             actions.append(action)
+            disturbance.update(action)
             obs, done, info = env.step(action)
         if not info["success"]:
             results.append(dict(seed=seed, success=False))
@@ -71,6 +80,8 @@ def _worker(args):
                 length=len(actions),
                 instruction=env.instruction,
                 path=str(tmp),
+                disturbed=kind if disturbance.record and disturbance.record["to_xy"] else "none",
+                replans=expert.replans,
             )
         )
     env.close()
@@ -91,6 +102,14 @@ def main():
         help="demonstrate this many different targets in every layout (pick_target: up to 3). With 1, each "
         "layout appears with a single instruction, and nothing in the data shows that the instruction matters.",
     )
+    ap.add_argument(
+        "--disturb_prob",
+        type=float,
+        default=0.0,
+        help="share of episodes in which the named object is moved once, during the reach or as the gripper "
+        "closes, and the expert recovers (plans again, retries the grasp). 0: every demonstration goes to plan, "
+        "so the data holds no example of a correction.",
+    )
     args = ap.parse_args()
     num_objects = TASKS[args.task]["num_objects"]
     assert 1 <= args.targets_per_layout <= num_objects, f"{args.task} has {num_objects} objects per layout"
@@ -110,7 +129,7 @@ def main():
             next_seed = seeds[-1] + 1
             # With one target per layout the seed's own choice is kept (target_index None).
             jobs = [(seed, i if per_layout > 1 else None) for seed in seeds for i in range(per_layout)]
-            chunks = [(args.task, jobs[i :: args.workers], str(out), i) for i in range(args.workers)]
+            chunks = [(args.task, jobs[i :: args.workers], str(out), i, args.disturb_prob) for i in range(args.workers)]
             for res in pool.map(_worker, chunks):
                 attempted += len(res)
                 successes += sum(r["success"] for r in res)
@@ -128,7 +147,16 @@ def main():
         table = table.append_column("index", pa.array(np.arange(index, index + n, dtype=np.int64)))
         table = table.append_column("task_index", pa.array(np.full(n, task_idx, dtype=np.int64)))
         pq.write_table(table, out / "data" / "chunk-000" / f"episode_{ep_idx:06d}.parquet")
-        episodes.append(dict(episode_index=ep_idx, tasks=[r["instruction"]], length=n, seed=r["seed"]))
+        episodes.append(
+            dict(
+                episode_index=ep_idx,
+                tasks=[r["instruction"]],
+                length=n,
+                seed=r["seed"],
+                disturbed=r["disturbed"],
+                replans=r["replans"],
+            )
+        )
         index += n
     for f in (out / "tmp").glob("*.parquet"):
         f.unlink()
@@ -149,6 +177,8 @@ def main():
         expert_success_rate=successes / attempted if attempted else None,
         expert_attempted=attempted,
         targets_per_layout=per_layout,
+        disturb_prob=args.disturb_prob,
+        disturbed_episodes=sum(r["disturbed"] != "none" for r in kept),
         data_path="data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
         features={
             "front": dict(dtype="image", shape=[224, 224, 3]),

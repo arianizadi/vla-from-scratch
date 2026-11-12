@@ -21,8 +21,13 @@ def _rotz(a):
 
 
 class ScriptedExpert:
-    def __init__(self, env: PickupEnv, seed: int = 0):
+    """`reactive=False`: one plan per episode, made at reset. `reactive=True`: the expert also watches
+    the named object and plans again when it has been moved or when a grasp closed on nothing, which
+    gives demonstrations of recovery (see disturb.py)."""
+
+    def __init__(self, env: PickupEnv, seed: int = 0, reactive: bool = False):
         self.env = env
+        self.reactive = reactive
         self.rng = np.random.default_rng(seed)
         self.ik_data = mujoco.MjData(env.model)
         # Reference top-down orientation and finger-axis yaw at the home configuration.
@@ -57,6 +62,15 @@ class ScriptedExpert:
     # ------------------------------------------------------------------- plan
     def reset(self):
         env = self.env
+        self.des_pos = env.tcp_pos()
+        self.des_yaw = 0.0
+        self.q_cmd = env.data.ctrl[:7].copy()
+        self.replans = 0
+        self._plan()
+
+    def _plan(self, again=False):
+        """Waypoints for the named object where it is now, starting from the current set-point."""
+        env = self.env
         obj = OBJECTS[env.target]
         p = env.object_pos(env.target)
         if obj["grasp_sym"] is None:
@@ -67,22 +81,35 @@ class ScriptedExpert:
         xy_noise = self.rng.normal(0, 0.003, 2)
         grasp = np.array([p[0] + xy_noise[0], p[1] + xy_noise[1], max(p[2], 0.018)])
         speed = self.rng.uniform(0.8, 1.2)
+        approach = grasp + [0, 0, self.rng.uniform(0.10, 0.14)]
         # (position, gripper, max speed m/s, dwell steps after arrival)
         self.waypoints = [
-            (grasp + [0, 0, self.rng.uniform(0.10, 0.14)], 1.0, 0.40 * speed, 0),
+            (approach, 1.0, 0.40 * speed, 0),
             (grasp, 1.0, 0.18 * speed, 2),
             (grasp, 0.0, 0.0, 8),
             (grasp + [0, 0, self.rng.uniform(0.18, 0.24)], 0.0, 0.30 * speed, 1000),
         ]
+        if again and self.des_pos[2] < approach[2] - 0.02:
+            # Planning again with the gripper low: go straight up first, so the fingers clear the objects.
+            self.waypoints.insert(0, (np.array([self.des_pos[0], self.des_pos[1], approach[2]]), 1.0, 0.40 * speed, 0))
         self.wp = 0
         self.dwell = 0
         self.yaw_off = yaw_off
-        self.des_pos = env.tcp_pos()
-        self.des_yaw = 0.0
-        self.q_cmd = env.data.ctrl[:7].copy()
+        self.planned_xy = p[:2].copy()
+
+    def _needs_new_plan(self):
+        env = self.env
+        if not env.on_table(env.target):
+            return False
+        moved = np.linalg.norm(env.object_pos(env.target)[:2] - self.planned_xy) > 0.015
+        lifting = self.wp == len(self.waypoints) - 1
+        return moved or (lifting and env.state()[7] < 0.05)  # the fingers met: nothing is in them
 
     def act(self):
         env = self.env
+        if self.reactive and self._needs_new_plan():
+            self.replans += 1
+            self._plan(again=True)
         target, grip, speed, dwell = self.waypoints[self.wp]
         dt = 1.0 / 20.0
         delta = target - self.des_pos
