@@ -155,3 +155,32 @@ def test_lookalike_layouts_hold_three_cubes_told_apart_by_colour_only():
         assert all(text.startswith("pick up the ") and text.endswith(" cube") for text in labels)
     finally:
         env.close()
+
+
+def test_clutter_stands_leaves_between_the_objects_and_the_front_camera():
+    if not PANDA_XML.exists():
+        pytest.skip("Franka model not fetched (sim/pickup/scripts/fetch_assets.sh)")
+    try:
+        env = PickupEnv("pick_clutter")
+    except Exception as error:
+        pytest.skip(f"cannot render: {error}")
+    try:
+        for seed in SEEDS:
+            env.reset(seed=seed)
+            assert len(env.active) == 4 and len(env.leaves) == 3
+            for x, y, _ in env.leaves:
+                assert 0.25 < x < 0.75 and -0.35 < y < 0.35, "a leaf left the table"
+            expert = ScriptedExpert(env, seed=0)
+            expert.reset()
+            done, info = False, {}
+            while not done:
+                _, done, info = env.step(expert.act())
+            assert info["success"], f"seed {seed}: the expert failed in clutter"
+    finally:
+        env.close()
+
+
+def test_tasks_without_leaves_park_them_out_of_view(env):
+    env.reset(seed=SEEDS[0])
+    assert env.leaves == []
+    assert all(env.data.mocap_pos[i][2] < -0.5 for i in env.leaf_mocap)

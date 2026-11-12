@@ -70,7 +70,16 @@ TASKS = {
     "pick_cube": dict(pool=["cube"], num_objects=1),
     "pick_target": dict(pool=["cube", "can", "hex", "tblock"], num_objects=3),
     "pick_lookalike": dict(pool=["cube", "cube_orange", "cube_pink", "cube_dark"], num_objects=3),
+    # Clutter and occlusion: four objects, look-alikes among them, and upright "leaves" that hide them from
+    # the front camera. The leaves are seen but not touched (no collision): this task is about seeing.
+    "pick_clutter": dict(
+        pool=["cube", "can", "hex", "tblock", "cube_orange", "cube_pink", "cube_dark"], num_objects=4, leaves=3
+    ),
 }
+MAX_LEAVES = 4
+LEAF_HALF = (0.035, 0.0015, 0.065)  # metres: a plate 7 cm wide and 13 cm tall
+LEAF_RGBA = (0.22, 0.52, 0.16, 1)
+FRONT_CAMERA_XY = np.array([1.15, -0.55])
 
 HOME_Q = np.array([0.0, 0.0, 0.0, -1.57079, 0.0, 1.57079, -0.7853])
 CONTROL_HZ = 20
@@ -143,6 +152,17 @@ def build_model() -> mujoco.MjModel:
         name="front", pos=[1.15, -0.55, 0.62], quat=_look_at_quat([1.15, -0.55, 0.62], [0.42, 0.0, 0.10]), fovy=45
     )
 
+    for i in range(MAX_LEAVES):  # moved into place at reset by tasks that use them, parked out of view otherwise
+        leaf = wb.add_body(name=f"leaf{i}", mocap=True, pos=[2.0 + 0.3 * i, -2.0, -0.7])
+        leaf.add_geom(
+            type=mujoco.mjtGeom.mjGEOM_BOX,
+            size=list(LEAF_HALF),
+            rgba=list(LEAF_RGBA),
+            contype=0,
+            conaffinity=0,
+            group=2,
+        )
+
     hand = spec.body("hand")
     hand.add_site(name="tcp", pos=[0, 0, 0.1034], size=[0.004, 0.004, 0.004], rgba=[0, 0, 0, 0])
     hand.add_camera(
@@ -198,6 +218,8 @@ class PickupEnv:
         self.ctrl_hi = self.model.actuator_ctrlrange[:7, 1].copy()
         self.obj_qadr = {n: self.model.joint(self.model.body(n).jntadr[0]).qposadr[0] for n in OBJECTS}
         self.obj_vadr = {n: self.model.joint(self.model.body(n).jntadr[0]).dofadr[0] for n in OBJECTS}
+        self.leaf_mocap = [int(self.model.body(f"leaf{i}").mocapid[0]) for i in range(MAX_LEAVES)]
+        self.leaves: list[list[float]] = []  # [x, y, yaw] of each leaf in use
         self.active: list[str] = []
         self.target: str = ""
         self.instruction: str = ""
@@ -238,6 +260,7 @@ class PickupEnv:
             else:  # parked on the floor, far outside both camera views
                 d.qpos[adr : adr + 3] = [2.0 + 0.3 * i, 2.0, -0.76 + OBJECTS[name]["rest_z"]]
                 d.qpos[adr + 3 : adr + 7] = [1, 0, 0, 0]
+        self._place_leaves(rng, placed, cfg.get("leaves", 0))  # draws only for tasks with leaves
         mujoco.mj_forward(m, d)
         for _ in range(100):  # let objects settle
             mujoco.mj_step(m, d)
@@ -287,6 +310,26 @@ class PickupEnv:
         mujoco.mj_forward(self.model, self.data)
         self.last_action = np.concatenate([self.data.ctrl[:7], [self.data.ctrl[7] / 255.0]]).astype(np.float32)
         return self.get_obs()
+
+    def _place_leaves(self, rng, placed, count):
+        """Stand `count` leaves on the table, each between an object and the front camera, roughly facing it."""
+        d = self.data
+        self.leaves = []
+        for i in range(MAX_LEAVES):
+            mid = self.leaf_mocap[i]
+            if i >= count:
+                d.mocap_pos[mid] = [2.0 + 0.3 * i, -2.0, -0.7]
+                d.mocap_quat[mid] = [1, 0, 0, 0]
+                continue
+            obj = placed[int(rng.integers(len(placed)))]
+            to_cam = FRONT_CAMERA_XY - obj
+            to_cam /= np.linalg.norm(to_cam)
+            side = np.array([-to_cam[1], to_cam[0]])
+            xy = obj + to_cam * rng.uniform(0.045, 0.08) + side * rng.uniform(-0.035, 0.035)
+            yaw = float(np.arctan2(to_cam[1], to_cam[0]) + np.pi / 2 + rng.uniform(-0.5, 0.5))
+            d.mocap_pos[mid] = [xy[0], xy[1], LEAF_HALF[2]]
+            d.mocap_quat[mid] = [np.cos(yaw / 2), 0, 0, np.sin(yaw / 2)]
+            self.leaves.append([float(xy[0]), float(xy[1]), yaw])
 
     def move_object(self, name, xy, yaw=None):
         """Put an object down somewhere else on the table, upright and at rest: a disturbance, used to
