@@ -274,11 +274,13 @@ export function createDetail(route) {
       status,
       run.state === "stalled" && isNum(run.seconds_since_log)
         ? `no log output for ${fmtSpan(run.seconds_since_log)}`
-        : run.state === "waiting"
-          ? "waiting for the training log"
-          : isNum(run.seconds_since_log)
-            ? `last log line ${fmtSpan(run.seconds_since_log)} ago`
-            : "",
+        : run.state === "stopped"
+          ? run.note || "stopped on purpose"
+          : run.state === "waiting"
+            ? "waiting for the training log"
+            : isNum(run.seconds_since_log)
+              ? `last log line ${fmtSpan(run.seconds_since_log)} ago`
+              : "",
     );
     const fraction = progressOf(run);
     bar.style.width = `${(100 * fraction).toFixed(2)}%`;

@@ -261,6 +261,12 @@ select {
   --state: var(--ink-2);
 }
 
+/* Ended on purpose before its budget: not a problem, so not the warning colour. */
+.state-stopped .icon,
+[data-state="stopped"] {
+  --state: var(--ink-3);
+}
+
 .state-waiting .icon,
 [data-state="waiting"] {
   --state: var(--ink-3);

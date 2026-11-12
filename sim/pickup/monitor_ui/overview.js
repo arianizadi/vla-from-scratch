@@ -99,6 +99,7 @@ function statusText(run) {
   }
   if (run.state === "stalled")
     return isNum(run.seconds_since_log) ? `no log output for ${fmtSpan(run.seconds_since_log)}` : "no log output";
+  if (run.state === "stopped") return run.note || "stopped on purpose";
   if (run.state === "done") return "finished";
   return "waiting for the training log";
 }

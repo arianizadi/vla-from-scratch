@@ -20,7 +20,7 @@ PROGRESS = re.compile(
 )
 SAMPLES = re.compile(r"Samples: (\d+) / (\d+)")
 FINISHED = "Model has seen the desired number of samples"
-STATES = ("training", "done", "stalled", "waiting")
+STATES = ("training", "done", "stalled", "stopped", "waiting")
 
 
 class Run:
@@ -103,12 +103,32 @@ class Run:
             return None
 
     @property
+    def stopped_note(self):
+        """Why the run was stopped on purpose, or None if it was not.
+
+        A run that somebody ended before its budget leaves a log that has stopped moving, exactly as a
+        run that hangs does. The marker file <run>.stopped (written by train_resilient.sh when it is
+        interrupted, or by hand, with the reason as its text) tells the two apart. A log that was
+        written after the marker means the run was taken up again, and the marker no longer counts.
+        """
+        marker = os.path.join(self.experiments, f"{self.name}.stopped")
+        try:
+            if os.stat(marker).st_mtime + 60 < os.stat(self.live).st_mtime:
+                return None
+            with open(marker, errors="ignore") as f:
+                return f.readline().strip()[:300] or "stopped"
+        except OSError:
+            return None
+
+    @property
     def state(self):
         if self.finished:
             return "done"
         if self.age is None:
             return "waiting"
-        return "training" if self.age < 180 else "stalled"
+        if self.age < 180:
+            return "training"
+        return "stopped" if self.stopped_note is not None else "stalled"
 
     @property
     def restarts(self):
@@ -293,16 +313,18 @@ def snapshot(runs, evals, curve_points=300):
                 evaluations.append(evaluation_row(n, w, task, r, samples.get(n)))
             except (AttributeError, IndexError, KeyError, TypeError, ValueError):
                 continue  # episode records that cannot be read: one such file must not hide every run
-        left = (run.total - run.seen) / run.rate if run.state == "training" and run.rate else None
+        state = run.state
+        left = (run.total - run.seen) / run.rate if state == "training" and run.rate else None
         out.append(
             dict(
                 name=run.name,
-                state=run.state,
+                state=state,
+                note=run.stopped_note if state == "stopped" else None,  # why a stopped run was stopped
                 samples_seen=run.seen,
                 samples_total=run.total,
                 loss=run.loss,
                 learning_rate=run.lr,
-                samples_per_second=run.rate if run.state == "training" else None,
+                samples_per_second=run.rate if state == "training" else None,
                 seconds_left=left,
                 restarts=run.restarts,
                 checkpoints=run.checkpoints,

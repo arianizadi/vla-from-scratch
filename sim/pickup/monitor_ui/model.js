@@ -5,7 +5,7 @@ import { wilson } from "./scale.js";
 
 export const WEIGHTS = ["raw", "ema"];
 export const WEIGHT_LABEL = { raw: "raw", ema: "EMA" };
-export const STATE_ORDER = { training: 0, stalled: 1, waiting: 2, done: 3 };
+export const STATE_ORDER = { training: 0, stalled: 1, waiting: 2, stopped: 3, done: 4 };
 
 /** The directory name of an evaluation, as /api/evaluation wants it. */
 export function variantOf(evaluation) {

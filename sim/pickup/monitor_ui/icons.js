@@ -18,7 +18,7 @@ const stroke = {
   "stroke-linejoin": "round",
 };
 
-/** The mark of a run's state; the same four marks as the terminal dashboard. */
+/** The mark of a run's state; the same five marks as the terminal dashboard. */
 export function stateIcon(state) {
   if (state === "training") {
     return icon(
@@ -39,10 +39,18 @@ export function stateIcon(state) {
         "stroke-linejoin": "round",
       }),
     );
+  if (state === "stopped")
+    return icon("stopped", s("rect", { x: 3.6, y: 3.6, width: 8.8, height: 8.8, rx: 1.4, fill: "currentColor" }));
   return icon("waiting", s("circle", { cx: 8, cy: 8, r: 4.2, ...stroke }));
 }
 
-export const STATE_LABEL = { training: "training", done: "done", stalled: "stalled", waiting: "waiting" };
+export const STATE_LABEL = {
+  training: "training",
+  done: "done",
+  stalled: "stalled",
+  stopped: "stopped",
+  waiting: "waiting",
+};
 
 const OBJECT_SHAPES = {
   cube: () => s("rect", { x: 3, y: 3, width: 10, height: 10, rx: 1.6, fill: "currentColor" }),

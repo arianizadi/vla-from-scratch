@@ -6,12 +6,29 @@
 # Why both cases: a crashed run exits, but a data-loader worker that dies (out of memory, a hardware
 # fault) leaves the trainer waiting for it forever at 0% GPU. A run whose log has not moved for
 # PICKUP_STALL_SECONDS (default 420) is therefore killed and resumed as well.
+#
+# To end a run on purpose, stop this script (Ctrl-C, or kill it): it stops the trainer with it and
+# leaves experiments/pickup/<run_name>.stopped, which the monitors show as "stopped" instead of
+# "stalled". Put a reason in that file if you like. Starting the run again removes it.
 set -uo pipefail
 cd "$(dirname "$0")/../../.."
 name=${3:?run name}
 log=experiments/pickup/$name.train.log
+stopped=experiments/pickup/$name.stopped
 stall=${PICKUP_STALL_SECONDS:-420}
 mkdir -p experiments/pickup
+job=
+stop() {
+  echo "stopped by hand on $(date -u '+%Y-%m-%d at %H:%M UTC')" > "$stopped"
+  if [ -n "$job" ]; then
+    kill -TERM -- -$job 2>/dev/null
+    sleep 5
+    kill -KILL -- -$job 2>/dev/null
+  fi
+  exit 130
+}
+trap stop INT TERM
+rm -f "$stopped"
 for attempt in $(seq 1 "${PICKUP_MAX_ATTEMPTS:-20}"); do
   [ -f "$log" ] && mv "$log" "$log.part$(date +%s)"
   latest=$(ls experiments/pickup/"$name"/checkpoints/checkpoint_*.pt 2>/dev/null | sort -V | tail -1)
@@ -19,7 +36,8 @@ for attempt in $(seq 1 "${PICKUP_MAX_ATTEMPTS:-20}"); do
   setsid sim/pickup/scripts/train.sh "$@" ${latest:+--model.resume_from_checkpoint "$latest"} &
   job=$!
   while kill -0 $job 2>/dev/null; do
-    sleep 30
+    sleep 30 &
+    wait $!  # a wait, unlike a sleep in the foreground, is cut short by a signal, so that stop runs at once
     if [ -f "$log" ] && [ $(( $(date +%s) - $(stat -c %Y "$log") )) -gt "$stall" ]; then
       echo "attempt $attempt of $name stalled at $(date -u +%H:%M); killing" >> experiments/pickup/"$name".retries.log
       kill -TERM -- -$job 2>/dev/null

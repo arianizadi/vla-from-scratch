@@ -26,8 +26,14 @@ from rich.text import Text
 from .runstate import Evals, discover, gpus
 
 SPARK = "▁▂▃▄▅▆▇█"
-STATE_STYLE = {"training": "bold green", "done": "bold cyan", "stalled": "bold yellow", "waiting": "dim"}
-STATE_MARK = {"training": "●", "done": "✔", "stalled": "▲", "waiting": "○"}
+STATE_STYLE = {
+    "training": "bold green",
+    "done": "bold cyan",
+    "stalled": "bold yellow",
+    "stopped": "grey62",
+    "waiting": "dim",
+}
+STATE_MARK = {"training": "●", "done": "✔", "stalled": "▲", "stopped": "■", "waiting": "○"}
 
 
 def spark(values, width):

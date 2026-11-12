@@ -9,7 +9,7 @@ import { createOverview } from "./overview.js";
 import { createDetail } from "./detail.js";
 import { createCompare } from "./compare.js";
 
-const STATES = ["training", "stalled", "waiting", "done"];
+const STATES = ["training", "stalled", "stopped", "waiting", "done"];
 const CONNECTION_TEXT = {
   connecting: "Connecting",
   live: "Live",

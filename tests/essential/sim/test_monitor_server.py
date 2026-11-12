@@ -32,6 +32,7 @@ GPUS = [dict(index=0, name="Test GPU", util=87.0, mem_used_mb=1024.0, mem_total_
 RUN_KEYS = {
     "name",
     "state",
+    "note",
     "samples_seen",
     "samples_total",
     "loss",
@@ -243,6 +244,38 @@ def test_run_in_progress_then_stalled_then_resumed(tree):
     os.utime(log, (time.time() - 3600, time.time() - 3600))
     assert run.state == "stalled"
     assert runstate.Run(str(tree.experiments), "never_started").state == "waiting"
+
+
+def test_a_run_ended_on_purpose_is_stopped_not_stalled(tree):
+    log = tree.experiments / "beta.train.log"
+    marker = tree.experiments / "beta.stopped"
+    run = runstate.Run(str(tree.experiments), "beta")
+    run.update()
+    hour_ago = time.time() - 3600
+    os.utime(log, (hour_ago, hour_ago))
+    assert (run.state, run.stopped_note) == ("stalled", None)
+
+    reason = "stopped at 800 samples: its GPU was needed"
+    marker.write_text(reason + "\nsecond line\n")
+    assert (run.state, run.stopped_note) == ("stopped", reason)
+    shown = runstate.snapshot([run], runstate.Evals(str(tree.results)))["runs"][0]
+    assert (shown["state"], shown["note"]) == ("stopped", reason)
+
+    marker.write_text("")  # a marker without a reason still counts
+    assert (run.state, run.stopped_note) == ("stopped", "stopped")
+
+    # The run is taken up again: its log is newer than the marker, which then no longer counts.
+    os.utime(marker, (hour_ago - 600, hour_ago - 600))
+    assert (run.state, run.stopped_note) == ("stalled", None)
+    os.utime(log, None)
+    assert run.state == "training"
+
+    # A finished run is done whatever else is lying around.
+    done = runstate.Run(str(tree.experiments), "alpha")
+    done.update()
+    (tree.experiments / "alpha.stopped").write_text("left over\n")
+    assert done.state == "done"
+    assert runstate.snapshot([done], runstate.Evals(str(tree.results)))["runs"][0]["note"] is None
 
 
 def test_run_reads_earlier_attempts_first(tree):
