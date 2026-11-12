@@ -1,7 +1,6 @@
-# Pickup sim: a MuJoCo training and evaluation environment for VLA Foundry
+# Pickup sim: a MuJoCo training and evaluation environment for robot policies
 
-A self-contained loop for training VLA Foundry policies on a simulated robot and measuring them
-closed-loop:
+A self-contained loop for training policies on a simulated robot and measuring them closed-loop:
 
 ```
 scripted expert in MuJoCo ──> LeRobot v2.0 dataset ──> Foundry shards ──> vla_foundry/main.py
@@ -36,6 +35,7 @@ sim/pickup/
   policy_server.py   serve action chunks from a checkpoint over a local socket
   eval.py            closed-loop evaluation client; also runs the scripted expert (--expert)
   diagnostics.py     where the gripper was, relative to the objects, when it first closed
+  disturb.py         move the named object during an episode (robustness tests, recovery demonstrations)
   grasp_tolerance.py grasp success against a controlled placement error, per object
   open_loop_check.py compare predicted chunks with expert actions on recorded samples
   caption_data.py    captioned scene renders for vision-language pretraining
@@ -45,6 +45,8 @@ sim/pickup/
   monitor_ui/        the pages that server sends (plain HTML, CSS and JavaScript, no build step)
   runstate.py        what both monitors show, read from the training logs and the results
   summarize.py       all closed-loop results as one table (or JSON)
+  export.py          runs, evaluations, probes and rollout traces as JSON, for plots or a results page
+  boost_early_windows.py  repeat the windows from the first frames of each demonstration in a dataset
   text_data.py       web text for the language-model stage of the from-scratch path
   smoke_test.py      expert-only sanity check
   configs/           preprocessing + training configs
@@ -79,15 +81,20 @@ The scripts read a few environment variables, documented in `scripts/_common.sh`
 All commands run from the repository root.
 
 ```bash
-# 1. demonstrations -> shards   (1000 episodes)
-sim/pickup/scripts/make_dataset.sh pick_cube 1000 pick_cube_1k
+# 1. demonstrations -> shards   (4000 episodes of the three-object task)
+sim/pickup/scripts/make_dataset.sh pick_target 4000 pick_target_4k
 
 # 2. train                      (config, dataset, run name, total training samples)
-sim/pickup/scripts/train.sh dp_vit pick_cube_1k dp_vit_pick_cube_1k 1500000
+sim/pickup/scripts/train_resilient.sh dp_vit_lang_reactive pick_target_4k my_run 5000000 --ema.enabled True
 
 # 3. closed-loop evaluation     (experiment dir, task, episodes)
-sim/pickup/scripts/eval.sh experiments/pickup/dp_vit_pick_cube_1k pick_cube 50
+sim/pickup/scripts/eval.sh experiments/pickup/my_run pick_target 100
 ```
+
+This is the recipe that reached 85% on `pick_target` (about an hour and a half of training on one
+46 GB GPU). For a first run that finishes sooner, use the single-object task: `pick_cube` with 1000
+demonstrations and 1.5M samples reached 91-97% with the same config. Evaluate checkpoints while the
+run trains (next section): the same policy scores 0% for the first million samples.
 
 `train_resilient.sh` takes the same arguments as `train.sh` and restarts the run from its newest
 checkpoint if it dies or stops making progress. Use it for anything longer than a few minutes.
@@ -147,6 +154,64 @@ loopback the server requires a token: it prints a URL that ends in `?token=...` 
 with `--token`) and answers 401 without it. On loopback no token is asked for, which leaves the port
 open to the other users of that machine; pass `--token` to require one there too.
 
+### Probing a policy
+
+A success rate does not say what a policy depends on. `eval.py` (and `eval.sh`, which passes extra
+arguments through) can change one thing about the episode and measure again:
+
+| Option | The question it answers |
+|---|---|
+| `--stale_images` | Keep sending the first frame's images: does the policy need the cameras after its first look? |
+| `--expert_prefix K` | The scripted expert drives the first K steps, then the policy takes over. With `--prefix_target distractor` the expert heads for another object of the layout: does the policy follow the instruction, or the motion it finds itself in? |
+| `--first_prev_action expert` | For policies that are given their previous action: send the expert's first command with the first query instead of the hold command the robot is really under. A large gain means the policy reads its goal from that input |
+| `--disturb reach` | Move the named object once while the gripper is on its way (`--disturb_step`, default 15; `--disturb_mm`, default 80): does the policy follow it? |
+| `--disturb grasp` | Move it at the moment the gripper first closes: does the policy try again? The results count grasp attempts (`retried_rate`) |
+| `--random_start` | Start every episode from a random gripper pose above the table instead of the home pose |
+| `--noise episode` | Start every chunk of an episode from the same noise |
+| `--exec_horizon`, `--flow_steps` | Actions executed per predicted chunk; sampling steps |
+| `--traces N` | Save the first N rollouts as JSON (joint angles, gripper and object poses per control step) for replays and plots |
+
+`--expert --expert_reactive` runs the scripted expert that plans again when the object has moved or
+its fingers closed on nothing: the reference for the two disturbances. The results file records the
+settings of every evaluation, and for disturbances how the episodes with a moved object went.
+
+```bash
+sim/pickup/scripts/eval.sh experiments/pickup/my_run pick_target 100 --disturb reach --disturb_step 20
+PICKUP_OUT=results/pickup/my_run/pick_target/frozen sim/pickup/scripts/eval.sh experiments/pickup/my_run pick_target 100 --stale_images
+```
+
+Set `PICKUP_OUT` to keep each probe in its own directory; `summarize.py` and `export.py` list them
+next to the checkpoint evaluations.
+
+### What the demonstrations contain
+
+`make_dataset.sh <task> <episodes> <name> [collect.py options]` passes its extra arguments to
+`collect.py`. By default every demonstration is one clean pass from the home pose, one instruction
+per layout. A policy trained on that looks at the scene once and then follows its own arm (see the
+field notes). The options change what the data can teach:
+
+| Option | What it adds |
+|---|---|
+| `--targets_per_layout 3` | Every layout is demonstrated once per object, so the same scene appears with different instructions |
+| `--disturb_prob 0.5` | In that share of the episodes the named object is moved once, during the reach or as the gripper closes, and the expert plans again or retries: demonstrations of recovery |
+| `--random_start` | Every episode starts from a random gripper pose above the table, so the arm's own position no longer gives the goal away |
+| `--hold_steps 1` | Every episode begins with a frame of the robot at rest, for policies that are given their previous action (the first training window then holds what serving will provide) |
+
+`boost_early_windows.py` builds a copy of a preprocessed dataset in which the windows that start in
+the first frames of each demonstration, the ones that need the instruction, appear several times:
+
+```bash
+.venv/bin/python -m sim.pickup.boost_early_windows --shards data/preprocessed/pick_target_4k/shards \
+    --out data/preprocessed/pick_target_4k_early/shards --max_frame 7 --repeat 5
+```
+
+### Results as data
+
+```bash
+.venv/bin/python -m sim.pickup.summarize --task pick_target      # one table: success, slope, miss per checkpoint
+.venv/bin/python -m sim.pickup.export --out export/              # JSON: runs, evaluations, probes, per-episode files, traces
+```
+
 ### Checks that need no trained policy
 
 Three checks that do not need a trained policy, or do not need the simulator:
@@ -182,4 +247,6 @@ Three checks that do not need a trained policy, or do not need the simulator:
 
 ## Results
 
-See `RESULTS.md`.
+Every number measured with this environment is in the [lab notebook](../../tutorial/lab-notebook.md);
+what the numbers mean is in the [field notes](../../tutorial/notes.md). `RESULTS.md` holds the first
+round only.
