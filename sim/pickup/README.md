@@ -9,9 +9,10 @@ scripted expert in MuJoCo ──> LeRobot v2.0 dataset ──> Foundry shards �
 ```
 
 - **Robot**: Franka Panda (MuJoCo Menagerie) on a table, 20 Hz control.
-- **Objects**: red cube, green can, blue hex nut, yellow T block, modelled in Blender
-  (`assets/build_assets_blender.py`, `assets/pickup_assets.blend`) and exported as OBJ. Physics uses
-  primitive collision shapes; the Blender meshes are the visuals.
+- **Objects**: red cube, green can, blue hex nut, yellow T block, flowers, and for pruning a potted plant
+  on a rotating stand with two push buttons, modelled in Blender (`assets/build_assets_blender.py`,
+  `assets/build_plant_blender.py`; each saves a `.blend` beside the OBJs, not kept in git) and exported as
+  OBJ. Physics uses primitive collision shapes; the Blender meshes are the visuals.
 - **Observations**: `front` and `wrist` RGB cameras (224x224) and an 8-D state
   (7 joint angles + gripper opening in [0, 1]).
 - **Actions**: 8-D absolute targets (7 joint positions + gripper command, 1 = open, 0 = closed).

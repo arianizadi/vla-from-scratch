@@ -8,7 +8,7 @@ same 8-D joint-target space the policy is trained on.
 import mujoco
 import numpy as np
 
-from .env import HOME_Q, OBJECTS, PickupEnv
+from .env import BUTTONS, HOME_Q, OBJECTS, REACH_AZIMUTH, STEM_H, PickupEnv
 
 
 def _wrap(a, period):
@@ -42,8 +42,34 @@ def _turn_toward(R, R_target, max_angle):
     return R_out.reshape(3, 3), angle
 
 
+def _angle(R1, R2):
+    return float(np.arccos(np.clip((np.trace(R1 @ R2.T) - 1) / 2, -1, 1)))
+
+
+def _segment_distance(points, a, b):
+    """Distance of each of `points` (n x 3) to the segment a-b."""
+    ab = b - a
+    t = np.clip((points - a) @ ab / (ab @ ab), 0, 1)
+    return np.linalg.norm(points - (a + t[:, None] * ab), axis=1)
+
+
 TRACK_LIMIT = 0.04  # metres: a move of the object up to this is followed by shifting the plan, a larger one re-plans
 SIDE_BLOCKED = 0.04  # metres: side="preferred" turns to the other side when its path passes this close to a stem
+# Pruning
+PRUNE_SECTOR = np.radians(25)  # a shoot pointing within this of REACH_AZIMUTH is cut without turning the plant
+TURN_STOP = np.radians(4)  # let go of the button this far before the shoot points at REACH_AZIMUTH (the plate coasts)
+PRESS_DEPTH = 0.0055  # metres the fingertips aim below the cap (they get about 4 of the 6 mm; the motor starts at 3)
+FINGERTIP = 0.0098  # metres the fingertips reach beyond the tcp along the gripper's axis
+SIDE_CLEAR = 0.02  # metres: an approach path this far from other shoots and the flower counts as clear
+PRUNE_OPEN = 0.6  # gripper command while cutting: jaws 48 mm apart, enough for a rising shoot, clear of the pot
+PRESS_TILT = np.radians(15)  # the gripper leans this far from vertical, fingertips away from the robot, to press
+LANE_BACK = 0.20  # metres toward the robot from the stand's axis: the line the hand travels along between moves
+# Points on the open fingers, the hand and the last link (tcp frame): the clearance of an approach path.
+HAND_POINTS = np.array(
+    [[x, y, z] for x in (-0.01, 0.01) for y in (-0.045, 0.045) for z in (-0.045, 0.01)]
+    + [[x, y, z] for x in (-0.032, 0.032) for y in (-0.105, 0.0, 0.105) for z in (-0.13, -0.035)]
+    + [[x, y, z] for x in (-0.044, 0.044) for y in (-0.055, 0.09) for z in (-0.16, -0.10)]  # the last link
+)
 
 
 class ScriptedExpert:
@@ -70,6 +96,12 @@ class ScriptedExpert:
         mujoco.mj_kinematics(env.model, self.ik_data)
         self.R_home = self.ik_data.site_xmat[env.tcp_id].reshape(3, 3).copy()
         self.yaw_home = float(np.arctan2(self.R_home[1, 1], self.R_home[0, 1]))
+        # Pruning: pointing down with the fingers closing along the table's y, the hand's long side across the table
+        self.R_down = _rotz(np.pi / 2) @ self.R_home
+        # Pressing a button: leaning the fingertips away from the robot keeps the wrist back, out of the way of the
+        # leaves of a shoot that the plate is turning toward the robot.
+        c, s = np.cos(PRESS_TILT), np.sin(PRESS_TILT)
+        self.R_press = np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]]).T @ self.R_down  # about y, by -PRESS_TILT
 
     # --------------------------------------------------------------------- IK
     def solve_ik(self, q_init, pos, yaw_offset, iters=30, damping=0.05, R_des=None):
@@ -113,6 +145,8 @@ class ScriptedExpert:
     def _plan(self, again=False):
         """Waypoints for the named object where it is now, starting from the current set-point."""
         env = self.env
+        if env.plant_task:
+            return self._plan_prune()
         obj = OBJECTS[env.target]
         if obj.get("grasp") == "side":
             return self._plan_side(again)
@@ -203,6 +237,125 @@ class ScriptedExpert:
         self.yaw_off = self.des_yaw
         self.planned_xy = p[:2].copy()
 
+    # ---------------------------------------------------------------- pruning
+    def prune_orientation(self, toward):
+        """Gripper pointing horizontally along `toward`, the jaws closing vertically, so the rising shoot crosses
+        them. (Closing at right angles to the shoot instead tilts the jaws by the shoot's rise, and the open lower
+        finger then swings in against the main stem.) Of the two, the one nearer pointing down (R_down)."""
+        z = toward / np.linalg.norm(toward)
+        candidates = []
+        for s in (1, -1):
+            y = np.array([0.0, 0.0, s])
+            candidates.append(np.stack([np.cross(y, z), y, z], axis=1))
+        return min(candidates, key=lambda R: _angle(R, self.R_down))
+
+    def _turn_needed(self, name):
+        return float(_wrap(REACH_AZIMUTH - self.env.shoot_azimuth(name), 2 * np.pi))
+
+    def _clearance(self, name, cut, toward, R, back):
+        """Least distance from the hand and open fingers, along the path in from `back` metres, to the other uncut
+        shoots, their leaves and the flower."""
+        env = self.env
+        segments = []
+        for other in env.active:
+            if other != name and other not in env.cut:
+                a, d = env.shoot_axis(other)
+                segments.append((a, a + d * env.shoots[other]["length"]))
+                for _, col in env.leaf_geoms[other]:  # each leaf in use, as the line along its blade
+                    if env.model.geom_contype[col]:
+                        centre, along = env.data.geom_xpos[col], env.data.geom_xmat[col].reshape(3, 3)[:, 0]
+                        segments.append((centre - along * 0.022, centre + along * 0.022))
+        base, up = env.stem_axis()
+        segments.append((base + up * (STEM_H - 0.01), base + up * (STEM_H + 0.03)))  # the flower head
+        points = np.concatenate([cut - toward * lam + HAND_POINTS @ R.T for lam in np.linspace(0, back, 8)])
+        return min(_segment_distance(points, a, b).min() for a, b in segments)
+
+    def _plan_prune(self):
+        """The next step of pruning, from where the gripper is: if the shoot nearest to the reachable direction
+        points away, press the button that turns it toward the robot the shorter way and hold it until the shoot is
+        a few degrees from REACH_AZIMUTH; otherwise come in level from the side whose path is clearest, the jaws
+        closing across the shoot inside its cut zone, close until it is cut, open and back out. The last waypoint
+        of each plan calls for the next."""
+        env = self.env
+        speed = self.rng.uniform(0.8, 1.2)
+        R_now = self.des_R if self.des_R is not None else _rotz(self.des_yaw) @ self.R_home
+        remaining = [n for n in env.active if n not in env.cut]
+        self.wp, self.dwell = 0, 0
+        if not remaining:
+            self.waypoints = [(self.des_pos.copy(), 1.0, 0.0, 10**6, R_now)]
+            return
+        name = min(remaining, key=lambda n: abs(self._turn_needed(n)))
+        self.prune_target = name
+        turn = self._turn_needed(name)
+        lane_x = env.data.xpos[env.stand_body][0] - LANE_BACK
+        if abs(turn) > PRUNE_SECTOR:
+            button = next(b for b, (_, sign) in BUTTONS.items() if sign == np.sign(turn))
+            top = env.button_top(button)
+            R = self.R_press
+            # the lowest point of the closed fingertips (a corner, with the hand leaning) goes PRESS_DEPTH below the
+            # cap's top; the centre of the fingertips over the cap's centre, coming straight down
+            tip = R[:, 2] * FINGERTIP
+            lowest = min((tip + R[:, 0] * x)[2] for x in (-0.0105, 0.0105))
+            press = top - tip + [0, 0, -PRESS_DEPTH - lowest + tip[2]]
+            press[:2] = top[:2] - tip[:2]
+            above = press + [0, 0, 0.09]
+
+            sign = np.sign(turn)
+
+            def faced(name=name, sign=sign):
+                return self._turn_needed(name) * sign < TURN_STOP
+
+            plan = [
+                (above, 0.0, 0.40 * speed, 0, self.R_press),
+                (press, 0.0, 0.08 * speed, 300, self.R_press, faced),
+                (above, 0.0, 0.30 * speed, 0, self.R_press),
+                # back toward the robot before anything else: the shoot now faces the arm, leaves and all
+                (np.array([lane_x - 0.03, above[1], 0.20]), 0.0, 0.30 * speed, 0, self.R_down),
+            ]
+        else:
+            a, d = env.shoot_axis(name)
+            cut = a + d * self.rng.uniform(0.031, 0.039)
+            u = d[:2] / np.linalg.norm(d[:2])
+            back = self.rng.uniform(0.13, 0.15)
+            options = []
+            for side in (1, -1):
+                toward = side * np.array([-u[1], u[0], 0.0])
+                R = self.prune_orientation(toward)
+                options.append((self._clearance(name, cut, toward, R, back), side, toward, R))
+            # Pointing even slightly out from the robot's base, the hand cannot keep its jaws upright (the arm runs
+            # out of reach and rolls the wrist, swinging the lower finger into the main stem): of two clear paths,
+            # the one pointing less outward.
+            clear = [o for o in options if o[0] >= SIDE_CLEAR]
+            if clear:
+                _, _, toward, R = min(clear, key=lambda o: o[2][0])
+            else:
+                _, _, toward, R = max(options, key=lambda o: o[0])
+            pre = cut - toward * back
+            lane = np.array([min(lane_x, pre[0]), pre[1], pre[2]])
+
+            def is_cut(name=name):
+                return name in env.cut
+
+            ajar = PRUNE_OPEN
+            plan = [
+                (lane, ajar, 0.35 * speed, 0, R),
+                (pre, ajar, 0.25 * speed, 0, R),
+                (cut, ajar, 0.10 * speed, 2, R),
+                (cut, 0.0, 0.0, 25, R, is_cut),  # close and hold until the shoot is cut
+                (cut, 0.0, 0.0, 2, R),
+                (cut, ajar, 0.0, 3, R),  # open: the cut part falls (on the plate, the pot or the table)
+                (pre, ajar, 0.20 * speed, 0, R),
+                (lane, ajar, 0.30 * speed, 0, R),
+            ]
+        stem = env.stem_axis()[0]
+        if np.linalg.norm(self.des_pos[:2] - stem[:2]) < 0.15 and self.des_pos[2] > 0.2:  # above the plant (at home)
+            plan.insert(
+                0, (np.array([lane_x, self.des_pos[1], self.des_pos[2]]), plan[0][1], 0.35 * speed, 0, plan[0][4])
+            )
+        if _angle(R_now, plan[0][4]) > 0.6:  # turn the hand where it is first (it swings up, away from the plant)
+            plan.insert(0, (self.des_pos.copy(), plan[0][1], 0.1, 0, self.R_down))
+        self.waypoints = plan
+
     def _needs_new_plan(self):
         env = self.env
         if not env.on_table(env.target):
@@ -224,14 +377,17 @@ class ScriptedExpert:
 
     def act(self):
         env = self.env
-        if self.reactive and self._needs_new_plan():
+        if self.reactive and not env.plant_task and self._needs_new_plan():
             if self._track():
                 self.tracks += 1
             else:
                 self.replans += 1
                 self._plan(again=True)
-        target, grip, speed, dwell, *R_target = self.waypoints[self.wp]
-        R_target = R_target[0] if R_target else None
+        # (position, gripper, max speed m/s, dwell steps after arrival[, orientation[, condition]]): with a condition,
+        # the waypoint is left once it holds after arrival, or when the dwell runs out
+        target, grip, speed, dwell, *rest = self.waypoints[self.wp]
+        R_target = rest[0] if rest else None
+        until = rest[1] if len(rest) > 1 else None
         dt = 1.0 / 20.0
         delta = target - self.des_pos
         dist = np.linalg.norm(delta)
@@ -250,11 +406,14 @@ class ScriptedExpert:
         arrived = (
             np.linalg.norm(target - self.des_pos) < 1e-6 and np.linalg.norm(env.tcp_pos() - target) < 0.012 and turned
         )
-        if arrived or speed == 0:
+        if arrived or speed == 0 or until is not None:  # a condition is watched (and its time limit runs) at once
             self.dwell += 1
-            if self.dwell > dwell and self.wp < len(self.waypoints) - 1:
+            finished = self.dwell > dwell or (until is not None and until())
+            if finished and self.wp < len(self.waypoints) - 1:
                 self.wp += 1
                 self.dwell = 0
+            elif finished and env.plant_task:
+                self._plan_prune()
         self.q_cmd = self.solve_ik(self.q_cmd, self.des_pos, self.des_yaw, R_des=self.des_R)
         return np.concatenate([self.q_cmd, [grip]]).astype(np.float32)
 

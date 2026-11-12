@@ -78,10 +78,14 @@ samples. Not done: a longer Qwen run, and a run that changes the conditioning al
 
 ## Phase 4: toward flower trimming  (started 2026-11-12)
 
-**The final goal.** A robot that turns a flower to see it from the side it needs, moves the other
-leaves out of the way, and cuts exactly the part it was asked to cut, correcting itself as leaves
-spring back and the plant sways. One arm; the plant stands on a turntable (or in a pot) that the arm
-can turn.
+**The final goal.** Pruning: a potted plant with a main stem topped by a flower and side shoots
+branching off it. The robot cuts every side shoot off the main stem and leaves the main stem and its
+flower; damaging the flower (touching it, pushing on the main stem, cutting the main stem) is a failure.
+The plant stands on a motorised rotating stand with two push buttons, one for each direction; the arm
+presses a button to turn the plant until a shoot on the far side is in reach. Later: leaves in the way,
+a swaying plant, instructions that name a particular shoot. Steps 1-5 below were the way there with
+simpler scenes; steps 6-8 are the pruning tasks themselves (models built in Blender,
+`sim/pickup/assets/build_plant_blender.py`).
 
 Each step adds one property to the previous task and asks the same three questions: can the scripted
 expert do it, does the best policy so far cope without new data, and what must the demonstrations
@@ -95,9 +99,10 @@ rate. Each breakthrough gets a short video.
 | 3 | **Clutter and occlusion** (`pick_clutter`): four objects and upright leaves that hide them from the front camera | **Works.** 86-87% with leaves hiding the objects from the front camera (best earlier policy 35%); also 86% on the look-alikes |
 | 4 | **A stem to grasp from the side** (`grasp_stem`): flowers on stems standing in heavy bases; close on the named stem inside a height band. The flower on top blocks a grasp from above, so the expert turns the gripper horizontal and comes in across the table (pointing straight out from the base is out of reach) | **Open.** Expert 88%; policies 0-6% at 5M samples on two seeds, 12-14% at 10M (the named stem caught in about 40%, another stem held in 40-47%: the flowers' heads are look-alikes again). Diagnosed: with one second of expert driving at the start the policy catches the named stem in 83% (alone 52%): it fails to commit to a stem and an approach side, which the expert chose by fine distances to the other stems. Holding still for 10 steps is a second, smaller problem |
 | 5 | **A cut** (`cut_stem`): closing on the named stem inside the band for 3 control steps cuts it there and the part above falls; cutting another stem fails | **Works (one seed so far).** Expert 92%. Two changes were needed. The demonstrations must hold the jaws shut 10 frames past the cut (without it the cut ended each demonstration 3 steps after the jaws reached the stem and the policy opened again before its fingers arrived: one flower 1%, with it 97%). And the policy must train long enough to use the colour word: with three flowers it chose the stem at chance after 5M samples (20-22%, another stem cut in 31-50%) and switched suddenly at about 3.6M of 10M samples, ending at 87-89% with another stem cut in 3-6%. Other seeds, and 16000 demonstrations, in progress |
-| 6 | **Leaves in the way that can be touched**: leaves on springs hide the stem; the arm has to push one aside and hold it, or cut past it, and they spring back | To do |
-| 7 | **Turning the plant**: the part to cut faces away; the arm turns the turntable until it can see and reach it | To do |
-| 8 | **All of it**: a plant with several stems and leaves, swaying; "cut the stem below the second flower" | To do |
+| 6 | **One side shoot** (`prune_one`): the plant on its stand, one shoot facing the robot; cut it off, keep the flower | Expert 100%. Training next |
+| 7 | **Turning the plant** (`prune_turn`): one shoot at any angle; press a button to turn it into reach, then cut | Expert 99%. To train |
+| 8 | **Pruning** (`prune`): 1-3 shoots at any angles, turn and cut each, the flower untouched | Expert 100% (about 500 control steps). To train |
+| 9 | **Leaves in the way, swaying, named shoots**: leaves that hide the cut point and spring back, a plant that sways, "cut the lowest shoot" | To do |
 
 Alongside, once the scenes need it: a pretrained vision encoder with patch tokens, a higher resolution
 at the wrist, and a policy that can say in words what it is about to cut (Phase 7).

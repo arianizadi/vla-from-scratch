@@ -120,7 +120,7 @@ def main():
         default="fresh",
         help="noise the sampler starts each chunk from: fresh every time, or the same for a whole episode",
     )
-    ap.add_argument("--max_steps", type=int, default=200)
+    ap.add_argument("--max_steps", type=int, default=None, help="episode length limit (default: the task's own)")
     ap.add_argument("--videos", type=int, default=5, help="number of rollouts to save as mp4")
     ap.add_argument(
         "--traces",
@@ -287,6 +287,7 @@ def main():
                 success=bool(info["success"]),
                 steps=env.steps,
                 wrong_object=wrong_object,
+                damaged=info.get("damaged"),  # pruning: what was damaged, if anything
                 caught=caught,
                 prefix_goal=prefix_goal,
                 disturbed=disturbance.record,

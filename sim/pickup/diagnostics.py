@@ -32,9 +32,9 @@ class GraspProbe:
         tcp = env.tcp_pos()
         dist = {n: float(np.linalg.norm(tcp[:2] - env.object_pos(n)[:2])) for n in env.active}
         nearest = min(dist, key=dist.get)
-        obj = OBJECTS[env.target]
+        obj = OBJECTS.get(env.target, {})  # a plant's shoots are not in OBJECTS
         yaw_err = None
-        if obj["grasp_sym"] is not None:
+        if obj.get("grasp_sym") is not None:
             finger_yaw = env.object_yaw(env.target) + obj["grasp_axis"]
             yaw_err = float(abs(_wrap(finger_yaw - env.tcp_yaw(), obj["grasp_sym"])))
         self.record = dict(
