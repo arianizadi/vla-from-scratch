@@ -21,7 +21,7 @@ from PIL import Image
 
 from .diagnostics import GraspProbe, summarize
 from .disturb import Disturbance
-from .env import PickupEnv
+from .env import CONTROL_HZ, PickupEnv
 
 AUTHKEY = b"pickup-sim"  # must match policy_server.AUTHKEY (not imported: that module needs torch)
 EVAL_SEED_START = 1_000_000
@@ -55,6 +55,22 @@ def write_video(path, frames, fps=20):
                 container.mux(packet)
         for packet in stream.encode():
             container.mux(packet)
+
+
+def trace_step(env, obs, action):
+    """One control step of a rollout as plain numbers, recorded before `action` is applied."""
+
+    def r(values):
+        return [round(float(v), 4) for v in values]
+
+    return dict(
+        tcp=r(env.tcp_pos()),
+        yaw=round(env.tcp_yaw(), 4),
+        grip=round(float(obs["state"][7]), 4),
+        q=r(obs["state"][:7]),
+        action=r(action),
+        objects={n: r([*env.object_pos(n), env.object_yaw(n)]) for n in env.active},
+    )
 
 
 def check_server(info, port, run, number, weights):
@@ -98,6 +114,13 @@ def main():
     )
     ap.add_argument("--max_steps", type=int, default=200)
     ap.add_argument("--videos", type=int, default=5, help="number of rollouts to save as mp4")
+    ap.add_argument(
+        "--traces",
+        type=int,
+        default=0,
+        help="number of rollouts to save as JSON (per control step: joint angles, gripper, gripper position, "
+        "object poses), for replays and plots",
+    )
     ap.add_argument("--out", required=True)
     ap.add_argument("--shutdown_server", action="store_true")
     ap.add_argument("--expert", action="store_true", help="run the scripted expert instead of a served policy")
@@ -176,7 +199,7 @@ def main():
         obs, start_yaw = env.reset(seed=seed), 0.0
         if starter is not None:
             obs, start_yaw = random_start(env, starter, seed)
-        prev_obs, queue, frames = obs, [], []
+        prev_obs, queue, frames, trace = obs, [], [], []
         wrong_object = False  # a non-target object was lifted at any point in the episode
         probe = GraspProbe(env)
         disturbance = Disturbance(env, args.disturb, args.disturb_step, args.disturb_mm / 1000, seed=seed)
@@ -225,6 +248,8 @@ def main():
                 frames.append(np.concatenate([obs["front"], obs["wrist"]], axis=1))
             prev_obs = obs
             action = queue.pop(0)
+            if ep < args.traces:
+                trace.append(trace_step(env, obs, action))
             probe.update(action)  # before the disturbance: the first close is judged on the scene it was aimed at
             disturbance.update(action)
             obs, done, info = env.step(action)
@@ -246,6 +271,22 @@ def main():
         per_target[env.target][1] += 1
         if ep < args.videos:
             write_video(out / f"rollout_{ep:03d}_{env.target}_{'ok' if info['success'] else 'fail'}.mp4", frames)
+        if ep < args.traces:
+            with open(out / f"trace_{ep:03d}_{env.target}_{'ok' if info['success'] else 'fail'}.json", "w") as f:
+                json.dump(
+                    dict(
+                        seed=seed,
+                        target=env.target,
+                        instruction=env.instruction,
+                        objects=list(env.active),
+                        control_hz=CONTROL_HZ,
+                        success=bool(info["success"]),
+                        close_step=episodes[-1]["close_step"],
+                        disturbed=disturbance.record,
+                        steps=trace,
+                    ),
+                    f,
+                )
         done_n = len(episodes)
         print(
             f"[eval] {done_n}/{args.episodes} seed={seed} target={env.target} success={info['success']} "

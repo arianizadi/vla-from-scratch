@@ -7,6 +7,9 @@ Reads the same files as the dashboards (training logs and evaluation results) an
                                          per-episode gripper and object positions of one evaluation,
                                          enough to draw a top-down map (only for evaluations that have them)
     <out>/tolerance.json                 grasp success against placement error, if it was measured
+    <out>/traces/<run>__<task>__<variant>__trace_NNN_*.json
+                                         rollouts saved with eval.py --traces (joint angles, gripper and
+                                         object poses per control step), for replays
 
 Each run in runs.json also lists its "probes": evaluations of one checkpoint under other conditions
 (sampler settings, interventions such as frozen cameras or an expert prefix, disturbances), each with
@@ -17,6 +20,7 @@ the settings it was run with.
 """
 
 import argparse
+import glob
 import json
 import math
 import os
@@ -49,6 +53,16 @@ def compact_episode(e):
             to_xy=[round(v, 4) for v in e["disturbed"]["to_xy"]],
         ),
     )
+
+
+def copy_traces(results_dir, run, task, variant, out):
+    """Copy the rollout traces of one evaluation next to the export; returns their relative paths."""
+    files = []
+    for path in sorted(glob.glob(os.path.join(results_dir, run, task, variant, "trace_*.json"))):
+        name = f"{run}__{task}__{variant or 'plain'}__{os.path.basename(path)}"
+        shutil.copy(path, os.path.join(out, "traces", name))
+        files.append(f"traces/{name}")
+    return files
 
 
 def probe_row(variant, task, results):
@@ -113,6 +127,7 @@ def main():
     state = snapshot(runs, evals, args.curve_points)
     state.pop("gpus", None)  # a property of the machine, not of the runs
     os.makedirs(os.path.join(args.out, "grasp"), exist_ok=True)
+    os.makedirs(os.path.join(args.out, "traces"), exist_ok=True)
 
     written = 0
     for run in state["runs"]:
@@ -137,6 +152,9 @@ def main():
             for row in run["evaluations"]:
                 if (row["checkpoint"], row["weights"], row["task"]) == (checkpoint, weights, task):
                     row["grasp_file"] = f"grasp/{name}"
+        for row in run["evaluations"]:
+            variant = f"ckpt_{row['checkpoint']}_{row['weights']}"
+            row["trace_files"] = copy_traces(args.results, run["name"], row["task"], variant, args.out)
         run["probes"] = []
         for variant, task, results in evals.probes(run["name"]):
             row = probe_row(variant, task, results)
@@ -147,19 +165,27 @@ def main():
                     json.dump(dict(run=run["name"], task=task, variant=variant, episodes=episodes), f)
                 written += 1
                 row["grasp_file"] = f"grasp/{name}"
+            row["trace_files"] = copy_traces(args.results, run["name"], task, variant, args.out)
             run["probes"].append(row)
-    # The scripted expert's evaluation, if present, is the reference for every map.
+    # The scripted expert through the same evaluation loop: the reference for every map and table.
+    # results/<expert>/<task>/results.json is the plain evaluation; subdirectories hold the expert
+    # under other conditions (disturbances, planning again, random starts).
+    state["expert"] = []
     expert = os.path.join(args.results, "expert")
     if os.path.isdir(expert):
-        for task in sorted(os.listdir(expert)):
-            path = os.path.join(expert, task, "results.json")
-            if os.path.exists(path):
-                with open(path) as f:
-                    results = json.load(f)
-                episodes = [compact_episode(e) for e in results.get("per_episode", [])]
-                with open(os.path.join(args.out, "grasp", f"expert__{task}.json"), "w") as f:
-                    json.dump(dict(run="expert", task=task, checkpoint=None, weights=None, episodes=episodes), f)
-                written += 1
+        plain = [("", task, os.path.join(expert, task, "results.json")) for task in sorted(os.listdir(expert))]
+        rows = [(v, t, evals.load(path)) for v, t, path in plain if os.path.exists(path)] + evals.probes("expert")
+        for variant, task, results in rows:
+            row = probe_row(variant or "plain", task, results)
+            row["plans_again"] = bool((results.get("server") or {}).get("reactive", False))
+            episodes = [compact_episode(e) for e in results.get("per_episode", [])]
+            name = f"expert__{task}.json" if not variant else f"expert__{task}__{variant}.json"
+            with open(os.path.join(args.out, "grasp", name), "w") as f:
+                json.dump(dict(run="expert", task=task, variant=variant or None, episodes=episodes), f)
+            written += 1
+            row["grasp_file"] = f"grasp/{name}"
+            row["trace_files"] = copy_traces(args.results, "expert", task, variant, args.out)
+            state["expert"].append(row)
 
     with open(os.path.join(args.out, "runs.json"), "w") as f:
         json.dump(state, f)
