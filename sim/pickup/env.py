@@ -105,6 +105,8 @@ TASKS = {
     "pick_clutter": dict(
         pool=["cube", "can", "hex", "tblock", "cube_orange", "cube_pink", "cube_dark"], num_objects=4, leaves=3
     ),
+    # Control for the look-alike result: the clutter scenes without the leaves.
+    "pick_mixed": dict(pool=["cube", "can", "hex", "tblock", "cube_orange", "cube_pink", "cube_dark"], num_objects=4),
     # Step 4: three flowers on stems; grasp the named one by its stem, from the side, inside its band.
     "grasp_stem": dict(
         pool=["flower_red", "flower_orange", "flower_pink", "flower_purple"],
