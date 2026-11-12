@@ -645,8 +645,9 @@ The same architecture with a randomly initialised backbone:
 | 2.0M | 69% / 81% | 100% / 100% | 1.02 / 1.00 | 13 / 11 mm |
 | 2.2M | 83% / 75% | 100% / 100% | 1.01 / 0.99 | 9 / 9 mm |
 | 2.5M | 77% / 80% | 99% / 100% | 0.96 / 0.99 | 9 / 9 mm |
-
-Still training when this was written: the table holds the checkpoints evaluated so far.
+| 2.7M | 78% / 77% | 99% / 100% | 0.99 / 1.00 | 10 / 8 mm |
+| 3.0M | 79% / 85% | 100% / 100% | 1.00 / 0.99 | 10 / 9 mm |
+| 3.0M (final) | 75% / 85% | 100% / 100% | 1.01 / 1.00 | 9 / 10 mm |
 
 
 ### Qwen3-VL-2B backbone
@@ -676,10 +677,6 @@ Every token, no history, 4000 demonstrations, 0.5M samples (`vla_qwen_tokens_rea
 | 0.5M | 57% / 65% | 100% / 100% | 1.00 / 0.99 | 16 / 13 mm |
 | 0.5M (final) | 70% / 72% | 98% / 99% | 0.95 / 0.99 | 15 / 14 mm |
 
-
-### Runs in progress when this was written
-
-Still training, with no final result here: the from-scratch VLA with a randomly initialised backbone. Its table above shows the checkpoints evaluated so far.
 
 ## Throughput
 

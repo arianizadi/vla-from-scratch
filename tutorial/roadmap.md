@@ -22,7 +22,11 @@ Where this repo is going, and what is already measured. Findings are in [notes.m
 | Patch tokens + instruction, no history, 4000 demos, 5M samples (`dp_vit_lang_reactive`), after the position fix | 91-97% (1000 demos) | **93%** |
 | Same, early windows repeated | | **96%** |
 | Same, random start poses in the demonstrations | | **98%** |
-| Same, demonstrations with recoveries | | 84-89%, and the only one that follows a moved object (79-88%) and retries a missed grasp (78 of 99) |
+| Same, demonstrations with recoveries | | 84-89%; follows a moved object (79-88%) and retries a missed grasp (78 of 99) |
+| Same, random start poses and recoveries | | **94%**, and 89-94% with the object moved at any point, also from a random start pose |
+| Same, a second seed | | 96% with the fixed position table, 90% with the old one |
+| From-scratch VLA, every token, no history, 3M samples | not run | 86% / 87% with the pretrained VLM, 75% / 85% with a randomly initialised one |
+| Qwen3-VL-2B VLA, every token, no history, 0.5M samples | not run | 70% / 72% |
 | Same recipe before the position fix | 91-97% | 83-85% |
 | Same, 1500 demos, 3M samples (before the fix) | | 64% |
 | Same, 1500 demos, 1M samples (before the fix) | | 5% |
@@ -45,10 +49,10 @@ Where this repo is going, and what is already measured. Findings are in [notes.m
 
 Steps taken: instruction tokens next to patch tokens; no history; 4000 demonstrations and 5M
 samples; averaged weights; a sweep of the sampler's settings; the position-table fix; random start
-poses and repeated early windows in the data. In progress: a second seed, and every object of a
-layout named in turn.
+poses and repeated early windows in the data; a second seed; every object of a layout named in turn
+(no gain).
 
-## Phase 2: self-correction  (first result in)
+## Phase 2: self-correction  (works in simulation)
 
 - [x] Evaluation with disturbances: the object is moved during the reach or as the gripper closes
       (`eval.py --disturb`), with the count of second grasp attempts.
@@ -58,17 +62,19 @@ layout named in turn.
 - [x] Policies trained on each, evaluated with and without disturbances: recoveries give
       self-correction (79-88% with a moved object, where clean-data policies score 0-12%); random
       starts give the best plain score (98%) and robustness to the start pose.
-- [ ] The two together, and with repeated early windows (training).
+- [x] The two together: 94% on the unchanged task and 89-94% under every disturbance tried. Adding
+      repeated early windows made it worse (87% / 86%).
 - [ ] A target that keeps moving, not one that jumps once; look-alike objects next to the named one.
 - [ ] Noise-injected demonstrations: execute a perturbed action, record the expert's clean one.
 
-## Phase 3: redo the custom LLM -> VLM -> VLA comparison  (training)
+## Phase 3: redo the custom LLM -> VLM -> VLA comparison  (done)
 
 The first comparison (0% vs 1%) said nothing about pretraining because neither policy could
-localise. Both are being re-run with every token passed to the action head, no history and 4000
-demonstrations (`vla_custom_tokens_reactive.yaml`): pretrained VLM against random-init VLM. Their
-first checkpoints already differ widely (lab notebook). The same conditioning now exists for
-pretrained Hugging Face backbones (`vla_qwen_tokens_reactive.yaml`) and is training as well.
+localise. Re-run with every token passed to the action head, no history and 4000 demonstrations
+(`vla_custom_tokens_reactive.yaml`), the pretrained VLM starts to look after 0.25M samples and the
+randomly initialised one after about 1.0M; they end close, at 86% / 87% and 75% / 85% (trained weights 11 points apart, averaged weights 2). The same conditioning for pretrained Hugging
+Face backbones (`vla_qwen_tokens_reactive.yaml`) takes the Qwen VLA from 5% to 70% / 72% in 0.5M
+samples. Not done: a longer Qwen run, and a run that changes the conditioning alone.
 
 ## Phase 4: toward flower trimming
 
@@ -165,14 +171,14 @@ Problems found in VLA Foundry (or in our own code) while doing this, and their s
 | 2 | Action token appended after batch padding (`vlm_foundry_backbone`) | A short instruction is probed at a different position in training than when served | Fixed, tested |
 | 3 | Same in `vlm_hf_backbone` (Qwen, PaliGemma) | Same | Fixed, tested (shared helper in `base.py`) |
 | 4 | `lowdim_past_timesteps or default` treats 0 as unset | Policy is fed the next state during training | Fixed, tested |
-| 5 | VLA recipes pass one pooled vector to the action head | No localisation on `pick_target` | `conditioning: all_tokens` added for both VLM backbones; effect being measured |
+| 5 | VLA recipes pass one pooled vector to the action head | No localisation on `pick_target` | `conditioning: all_tokens` added for both VLM backbones. With it (and no history, 4000 demonstrations): from-scratch VLA 86% / 87%, Qwen 70% / 72% |
 | 6 | A dead data-loader worker makes training wait forever | Runs hang at 0% GPU | Worked around by `train_resilient.sh`; proper fix is a loader timeout |
 | 7 | Data preset's PaliGemma-style `size` breaks the Qwen processor | Every batch fails | Worked around in `vla_qwen.yaml` |
 | 8 | Full fine-tuning of a 2B VLM does not fit in 24 GB | Out of memory | `num_trainable_vlm_layers` added |
 | 9 | `PassthroughProcessor` feeds 0-255 pixels to a from-scratch ViT | Works, but badly conditioned inputs | To test |
 | 10 | Tutorial notebook says LLM -> VLM weight transfer is not automated | Misleading; `transformer.resume_from_checkpoint` works | Fix in docs |
 | 11 | `collect.py` reported kept / attempted as the expert success rate | Number was meaningless | Fixed |
-| 12 | Rotary position table computed in bfloat16 under autocast | 641 distinct positions out of 2048; neighbouring action tokens shared a position | Fixed, tested; `rotary_legacy_autocast` reproduces the old table bit for bit. Same run: 83% before, 93% after; single cube with history 62-70% before, 96-98% after |
+| 12 | Rotary position table computed in bfloat16 under autocast | 641 distinct positions out of 2048; neighbouring action tokens shared a position | Fixed, tested; `rotary_legacy_autocast` reproduces the old table bit for bit. Same run: 83% before, 93% after; a second pair of seeds 90% and 96%; single cube with history 62-70% before, 96-98% after |
 | 13 | Evaluations on one port reached whichever policy server bound it first | Results filed under the wrong run | Fixed: free ports, the client checks the served checkpoint, mislabelled results are left out of summaries |
 | 14 | The previous-action slot of a window at the start of an episode is a copy of the first action | The expert's first command is an input in training and absent when served | `collect.py --hold_steps` as a data-side fix did not cure a history policy (1-2% after 2.5M samples). To do in the model: slots that are padding are fed to the action head as clean values in training (`torch.where(future_mask, noisy, actions)`) and as noise by the framework's own inference adapter; an absent previous action should be absent in both |
 | 15 | Preprocessing joined any Ray instance it found and passed `num_cpus` to it | Two dataset builds at once: the second dies | Fixed: `--ray_address local`, and no `num_cpus` when joining |

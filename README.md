@@ -5,8 +5,8 @@ model and a vision-language-action policy, each trained from random weights on a
 to a pretrained VLA for comparison. Every claim is backed by a run in this repo, including the runs
 that failed.
 
-> **Status: work in progress.** The simulator, the training and evaluation scripts, the first
-> experiments and the field notes are here. The chapters are being written. See the
+> **Status: work in progress.** The simulator, the training and evaluation scripts, the experiments
+> and the field notes are here. The [chapters](tutorial/README.md) are drafts. See the
 > [roadmap](tutorial/roadmap.md).
 
 ## Why this exists
@@ -81,6 +81,7 @@ sim/pickup/scripts/eval.sh experiments/pickup/my_run pick_target 100 --stale_ima
 | | |
 |---|---|
 | [sim/pickup](sim/pickup/README.md) | MuJoCo tabletop pick-up task (Franka Panda), scripted expert, data collection, training and closed-loop evaluation |
+| [tutorial/chapters](tutorial/README.md) | The tutorial, 37 chapters in draft: language models, vision, VLMs, actions, VLAs, data, training, evaluation, two case studies |
 | [tutorial/notes.md](tutorial/notes.md) | Field notes: what worked, what didn't, and how each was measured |
 | [tutorial/lab-notebook.md](tutorial/lab-notebook.md) | Every number measured here, by run and checkpoint |
 | [tutorial/roadmap.md](tutorial/roadmap.md) | The experiments queued, the chapter outline, and the list of framework fixes |
@@ -103,7 +104,8 @@ Closed-loop success on layouts the policy never saw.
 | Averaged weights lead during the transition | 36% against 4% at 2.0M samples; equal before and after |
 | Two sampling steps are usually enough | 1 flow step 61%, 2 steps 89-90%, 10 steps 83-85%; on six later policies 2 steps matched 10 on four and cost 12 and 19 points on the other two |
 | Know the tolerance of the task | Cube and T block forgive a 2 cm offset. At 1 cm the round objects lose 40% on one simulator build and under 6% on another: measure it where you evaluate |
-| Train/inference mismatches hide in preprocessing | Five so far, none raised an error: a pixel-range bug (captioning 0% -> 85%), a position table computed in half precision (641 distinct positions out of 2048; fixing it took the same run from 83% to 93%), a previous-action slot that holds the answer in training and nothing when served, and two more |
+| Train/inference mismatches hide in preprocessing | Five so far, none raised an error: a pixel-range bug (captioning 0% -> 85%), a position table computed in half precision (641 distinct positions out of 2048; fixing it took one pair of runs from 83% to 93% and a second pair from 90% to 96%), a previous-action slot that holds the answer in training and nothing when served, and two more |
+| A pretrained backbone buys mainly an earlier start | VLA with every token of its backbone: pretrained on captions it starts to look after 0.25M samples, from random weights after about 1.0M; they end close, at 86% / 87% and 75% / 85% (trained weights 11 points apart, averaged weights 2). Qwen with every token: 70% / 72% after 0.5M samples, against 5% with one vector |
 
 Details and the open questions are in the [field notes](tutorial/notes.md).
 

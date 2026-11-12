@@ -24,7 +24,8 @@ Status legend: **confirmed** (measured here), **open** (hypothesis, experiment q
 | Demonstrations in which the object is moved and the expert recovers | The policy follows a moved object (79-88%) and retries a missed grasp (78 of 99 episodes) | 11 |
 | Random start poses and recoveries in the same demonstrations | 94% on the unchanged task and 89-94% with the object moved at any point of the reach or as the gripper closes, also from a random start pose | 11 |
 | Two sampling steps instead of ten | Equal within noise on five of seven policies (84-98%) at a third of the latency; worse on the other two (77% against 96%, 77% against 89%) | 12 |
-| A VLM pretrained on captions as the backbone, every token handed to the action head | In progress. At the first checkpoint (0.25M samples) 43%, where the same model without pretraining is at 0% | 16 |
+| Every token of a VLM handed to the action head, in place of one vector | The from-scratch VLA goes from 0% to 86% / 87%, the Qwen VLA from 5% to 70% / 72% (history and the number of demonstrations changed with it) | 5, 16 |
+| Pretraining the VLM backbone on captions | The policy starts to look after 0.25M samples, not after about 1.0M. It buys an earlier start: they end close, at 86% / 87% and 75% / 85% (trained weights 11 points apart, averaged weights 2) | 16 |
 
 ## What did not work
 
@@ -73,6 +74,8 @@ Status legend: **confirmed** (measured here), **open** (hypothesis, experiment q
 11. Feed inference through exactly the code path used in training, and test that it does.
 12. Checkpoint often and auto-resume; long runs die. Make every evaluation check which checkpoint
     it is talking to.
+13. A pretrained backbone bought mainly an earlier start here. Compare by checkpoint, at
+    equal training samples.
 
 ## 1. Verify the task with an expert first  (confirmed)
 
@@ -139,7 +142,7 @@ table is from. On a second machine with a newer simulator build the same test ga
 and 97% for the hex nut at 10 mm (29% and 70% at 20 mm): measure it where you evaluate. A policy that is
 "usually within 2 cm" would score about 95% on cubes and about 20% on cans.
 
-## 5. One pooled vector is not enough for grasping  (confirmed on `pick_cube`, open on `pick_target`)
+## 5. One pooled vector is not enough for grasping  (confirmed)
 
 | Conditioning the action head receives | Task | Success |
 |---|---|---|
@@ -154,6 +157,11 @@ from-scratch VLAs built that way reached the named object at chance (section 3).
 `vlm_backbone` for Hugging Face models) have `conditioning: all_tokens`, which passes the hidden
 states of every image and text token. `vit_backbone` has `text_tokens`, which adds the instruction
 to a patch-token policy.
+
+**On `pick_target`.** With every token the same two VLAs work: 86% / 87% for the from-scratch one and
+70% / 72% for Qwen, against 0-6% with one vector (section 16). The two versions also differ in history
+and in the number of demonstrations, so this is not the effect of the conditioning alone; a run that
+changes only the conditioning was not made.
 
 ## 6. A failing policy ignores the scene; it does not average  (confirmed)
 
@@ -426,7 +434,10 @@ Five found so far, none of which raised an error:
   other, so nothing looked wrong. The table is now computed in float32. The same run after the fix
   starts to look earlier (58% against 4% after 1.5M samples) and ends higher (93% against 83%, the
   T block at 20/23 against 15/23); the policy with history on the single cube goes from 62-70% to
-  96-98%. One seed each; a second pair is running.
+  96-98%. A second pair of runs with other seeds, trained from one version of the code and differing
+  in the table alone, says the same and puts a size on it: again an earlier start (closed at the named
+  object after 1.0M samples: 83% against 44%), and 96% / 96% at the end against 90% / 89%. With
+  the trained weights the gap at the end is 10 points for one pair of seeds and 6 for the other.
 
 **What to do.** For every model, run a check that pushes the same sample through the training
 pipeline and through the serving path and compares the tensors the model receives.
@@ -437,7 +448,7 @@ One of the machines used was unreliable: stage-3 runs died or hung three times. 
 worker does not crash the trainer; it waits forever at 0% GPU. `scripts/train_resilient.sh` restarts
 from the newest checkpoint when a run exits or when its log stops moving for 7 minutes.
 
-## 16. Pretraining a small VLM on captions  (in progress)
+## 16. Pretraining a backbone: mainly an earlier start  (confirmed, one seed each)
 
 The from-scratch path (91M LLM on web text, then a VLM on 40k captioned sim renders, then a VLA)
 gave 0/100 with pretraining and 1/100 without in the first round. Both policies conditioned the
@@ -445,14 +456,39 @@ action head on a single vector (section 5), had history (section 8) and 1M sampl
 demonstrations (section 7), so neither could have found the object and the comparison said nothing
 about pretraining.
 
-It is being re-run with every token passed to the action head, no history and 4000 demonstrations.
-The runs are not finished; their checkpoints so far are in the lab notebook. The first of them
-already differ: after 0.25M samples the VLA on the pretrained VLM closes at the named object in 97%
-of episodes and succeeds in 43% (averaged weights), and the same architecture with a randomly
-initialised backbone is at chance, 0%.
+Repeated with every token passed to the action head, no history, 4000 demonstrations and 3M samples
+(trained / averaged weights):
 
-The same change is being tried on the pretrained Qwen backbone, which with one conditioning vector
-ended at 5% (closing at the named object 71% of the time, 83 mm off: it points, it does not grasp).
+| Samples | Pretrained backbone: success | closed at the named object | Random backbone: success | closed at the named object |
+|---|---|---|---|---|
+| 0.25M | 5% / 43% | 81% / 97% | 0% / 0% | 33% / 28% |
+| 0.50M | 31% / 50% | 99% / 100% | 0% / 1% | 39% / 33% |
+| 1.0M | 73% / 62% | 99% / 99% | 9% / 4% | 84% / 68% |
+| 1.5M | 74% / 83% | 100% / 100% | 42% / 53% | 98% / 97% |
+| 2.0M | 81% / 88% | 100% / 100% | 69% / 81% | 100% / 100% |
+| 2.5M | 84% / 88% | 100% / 100% | 77% / 80% | 99% / 100% |
+| 3.0M (final) | 86% / 87% | 100% / 100% | 75% / 85% | 100% / 100% |
+
+The backbone that had learned to caption the scene looks from the first checkpoint on. The same
+architecture from random weights spends its first three quarters of a million samples at chance and
+then goes through the same transition, about three quarters of a million samples later. By the end
+they are close: 86% / 87% with the pretrained backbone, 75% / 85% without, 11 points apart with the
+trained weights and 2 with the averaged ones, from one seed each. What the two earlier stages bought
+is mainly the start, and they cost about a quarter of an hour of training each.
+
+Neither is better than the small patch-token policy with no language model in it (90% after the same
+3M samples, 93-98% after 5M), and both train at a quarter of its speed. On a task with four known
+objects and one form of instruction there is nothing for a language model to add.
+
+The pretrained Qwen backbone tells the same story at another scale. With one conditioning vector it
+ended at 5%, closing at the named object 71% of the time and 83 mm off: it pointed, it did not grasp.
+With every token, no history and 4000 demonstrations it reaches 70% / 72% after 0.5M samples, a tenth
+of the small policy's budget, and closes at the named object 71% / 80% of the time after the first
+0.1M. Whether a longer run takes it to the small policy's level was not tried.
+
+**What to do.** Expect a pretrained backbone to shorten the stretch in which nothing seems to happen,
+and measure whether it does more than that before paying for it in speed. Compare at equal training
+samples and by checkpoint: a comparison at one early budget would have read as 43% against 0%.
 
 ## 17. Operating many runs on one machine  (confirmed)
 
@@ -493,12 +529,12 @@ Things that cost time here and have nothing to do with models:
   training and turns one run into a curve; a single final number hides whether the policy was
   still improving, had peaked, or never moved.
 
-## Open questions being tested
+## Open questions
 
-- How much does one run vary? The plain recipe is being repeated with another seed, with and
-  without the position fix.
-- How far does the from-scratch VLA get on its pretrained VLM, against the same model without
-  pretraining and against the Qwen backbone with every token?
+- Does the Qwen backbone with every token reach the small policy's 93-98% with a longer run, and does
+  a pretrained backbone pay off once the objects and the instructions vary more than they do here?
+- Every comparison here is one or two seeds per side. Which of the differences of a few points would
+  survive five?
 - Can a policy with history be made to look? The hold frame alone was not enough. What is left to try
   is in the model: drop the previous action from the inputs and keep the previous frame, or hide the
   previous action at random during training.
