@@ -1,4 +1,4 @@
-"""Disturbances, the re-planning expert and random start poses (sim/pickup/disturb.py, expert.py).
+"""Disturbances, the re-planning expert, random start poses and the look-alike task (sim/pickup/).
 
 Needs MuJoCo, a GL context for the cameras and the Franka model (sim/pickup/scripts/fetch_assets.sh);
 skipped where any of them is missing.
@@ -34,11 +34,11 @@ def env():
     environment.close()
 
 
-def rollout(env, seed, kind, reactive):
+def rollout(env, seed, kind, reactive, speed=0.02):
     env.reset(seed=seed)
     expert = ScriptedExpert(env, seed=0, reactive=reactive)
     expert.reset()
-    disturbance = Disturbance(env, kind, step=15, distance=0.08, seed=seed)
+    disturbance = Disturbance(env, kind, step=15, distance=0.08, seed=seed, speed=speed)
     actions, done, info = [], False, {}
     while not done:
         action = expert.act()
@@ -100,3 +100,58 @@ def test_random_start_keeps_the_layout_and_the_expert_still_succeeds(env):
         while not done:
             _, done, info = env.step(expert.act())
         assert info["success"]
+
+
+def test_drift_slides_the_object_at_its_speed_and_stops_while_it_is_held(env):
+    env.reset(seed=SEEDS[1])
+    others = {n: env.object_pos(n).copy() for n in env.active if n != env.target}
+    drift = Disturbance(env, "drift", seed=5, speed=0.02)
+    start = env.object_pos(env.target)[:2].copy()
+    for _ in range(40):  # two seconds with the gripper open
+        assert drift.update([0] * 7 + [1.0])
+    assert abs(drift.record["path_m"] - 40 * 0.02 / 20) < 1e-9
+    travelled = ((env.object_pos(env.target)[:2] - start) ** 2).sum() ** 0.5
+    assert 0.005 < travelled <= 0.04 + 1e-9, "a smooth path, no jump"
+    end = env.object_pos(env.target)[:2]
+    for name, pos in others.items():
+        assert (env.object_pos(name) == pos).all(), "only the named object moves"
+        assert ((pos[:2] - end) ** 2).sum() ** 0.5 >= 0.11
+    assert not drift.update([0] * 7 + [0.0]), "held: no drift"
+    assert drift.record["to_xy"] == [float(v) for v in end]
+
+
+@pytest.mark.parametrize("speed", [0.01, 0.03])
+def test_only_the_tracking_expert_follows_a_drifting_target(env, speed):
+    for seed in SEEDS:
+        ok_plain, _, record, _ = rollout(env, seed, "drift", reactive=False, speed=speed)
+        assert record["path_m"] > 0.02
+        ok_reactive, _, _, _ = rollout(env, seed, "drift", reactive=True, speed=speed)
+        assert ok_reactive, f"seed {seed}: the watching expert lost a target drifting at {speed} m/s"
+    # the one-plan expert closes where the object was; at 3 cm/s it has moved several cm by then
+    if speed >= 0.03:
+        assert not all(rollout(env, s, "drift", reactive=False, speed=speed)[0] for s in SEEDS)
+
+
+def test_lookalike_layouts_hold_three_cubes_told_apart_by_colour_only():
+    if not PANDA_XML.exists():
+        pytest.skip("Franka model not fetched (sim/pickup/scripts/fetch_assets.sh)")
+    try:
+        env = PickupEnv("pick_lookalike")
+    except Exception as error:
+        pytest.skip(f"cannot render: {error}")
+    try:
+        labels = set()
+        for seed in SEEDS:
+            env.reset(seed=seed)
+            assert len(env.active) == 3 and env.target in env.active
+            assert all(n == "cube" or n.startswith("cube_") for n in env.active)
+            labels.add(env.instruction)
+            expert = ScriptedExpert(env, seed=0)
+            expert.reset()
+            done, info = False, {}
+            while not done:
+                _, done, info = env.step(expert.act())
+            assert info["success"], f"seed {seed}: the expert failed on a look-alike layout"
+        assert all(text.startswith("pick up the ") and text.endswith(" cube") for text in labels)
+    finally:
+        env.close()

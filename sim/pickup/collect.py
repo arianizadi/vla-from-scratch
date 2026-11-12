@@ -35,9 +35,9 @@ def _jpeg(img, quality=95):
 
 
 def _worker(args):
-    task, jobs, out_dir, worker_id, disturb_prob, anywhere, hold_steps = args
+    task, jobs, out_dir, worker_id, disturb_prob, anywhere, hold_steps, drift_prob, drift_cm_s = args
     env = PickupEnv(task)
-    expert = ScriptedExpert(env, seed=worker_id, reactive=disturb_prob > 0)
+    expert = ScriptedExpert(env, seed=worker_id, reactive=disturb_prob > 0 or drift_prob > 0)
     results = []
     for seed, target_index in jobs:
         obs, start_yaw = env.reset(seed=seed, target_index=target_index), 0.0
@@ -48,9 +48,13 @@ def _worker(args):
         # and by how much. Half of the moves come during the reach, half as the gripper closes.
         rng = np.random.default_rng([seed, 7])
         kind = str(rng.choice(["reach", "grasp"])) if rng.random() < disturb_prob else "none"
-        disturbance = Disturbance(
-            env, kind, step=int(rng.integers(5, 30)), distance=float(rng.uniform(0.05, 0.10)), seed=seed
-        )
+        step, distance = int(rng.integers(5, 30)), float(rng.uniform(0.05, 0.10))
+        speed = 0.0
+        if drift_prob > 0:  # drawn after the others, so that datasets made without drift are unchanged
+            drifts, speed = rng.random() < drift_prob, float(rng.uniform(0.5, 1.5)) * drift_cm_s / 100
+            if kind == "none" and drifts:
+                kind = "drift"
+        disturbance = Disturbance(env, kind, step=step, distance=distance, seed=seed, speed=speed)
         frames = {c: [] for c in CAMERAS}
         states, actions = [], []
         done, info = False, {}
@@ -85,6 +89,7 @@ def _worker(args):
                 path=str(tmp),
                 disturbed=kind if disturbance.record and disturbance.record["to_xy"] else "none",
                 replans=expert.replans,
+                tracks=expert.tracks,
             )
         )
     env.close()
@@ -112,6 +117,19 @@ def main():
         help="share of episodes in which the named object is moved once, during the reach or as the gripper "
         "closes, and the expert recovers (plans again, retries the grasp). 0: every demonstration goes to plan, "
         "so the data holds no example of a correction.",
+    )
+    ap.add_argument(
+        "--drift_prob",
+        type=float,
+        default=0.0,
+        help="share of the episodes not otherwise disturbed in which the named object keeps sliding on a smooth "
+        "random path until it is held, and the expert follows it",
+    )
+    ap.add_argument(
+        "--drift_cm_s",
+        type=float,
+        default=2.0,
+        help="typical drift speed in cm/s; each drifting episode draws its speed between 0.5 and 1.5 times this",
     )
     ap.add_argument(
         "--random_start",
@@ -147,7 +165,7 @@ def main():
             next_seed = seeds[-1] + 1
             # With one target per layout the seed's own choice is kept (target_index None).
             jobs = [(seed, i if per_layout > 1 else None) for seed in seeds for i in range(per_layout)]
-            extra = (args.disturb_prob, args.random_start, args.hold_steps)
+            extra = (args.disturb_prob, args.random_start, args.hold_steps, args.drift_prob, args.drift_cm_s)
             chunks = [(args.task, jobs[i :: args.workers], str(out), i, *extra) for i in range(args.workers)]
             for res in pool.map(_worker, chunks):
                 attempted += len(res)
@@ -174,6 +192,7 @@ def main():
                 seed=r["seed"],
                 disturbed=r["disturbed"],
                 replans=r["replans"],
+                tracks=r["tracks"],
             )
         )
         index += n
@@ -200,6 +219,9 @@ def main():
         random_start=args.random_start,
         hold_steps=args.hold_steps,
         disturbed_episodes=sum(r["disturbed"] != "none" for r in kept),
+        drift_prob=args.drift_prob,
+        drift_cm_s=args.drift_cm_s if args.drift_prob > 0 else None,
+        drifting_episodes=sum(r["disturbed"] == "drift" for r in kept),
         data_path="data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
         features={
             "front": dict(dtype="image", shape=[224, 224, 3]),

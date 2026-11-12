@@ -58,9 +58,18 @@ OBJECTS = {
         grasp_axis=np.pi / 2,  # fingers close along the object's local y (the 30 mm stem width)
     ),
 }
+# Look-alikes: the red cube's shape in colours a small step apart, as flowers of one plant are. Only the
+# instruction's colour word tells them apart.
+for _name, _label, _rgba in (
+    ("cube_orange", "orange cube", (0.88, 0.32, 0.04, 1)),
+    ("cube_pink", "pink cube", (0.85, 0.20, 0.42, 1)),
+    ("cube_dark", "dark red cube", (0.42, 0.03, 0.03, 1)),
+):
+    OBJECTS[_name] = dict(OBJECTS["cube"], label=_label, visual=[("cube", _rgba, 0.0)])
 TASKS = {
     "pick_cube": dict(pool=["cube"], num_objects=1),
     "pick_target": dict(pool=["cube", "can", "hex", "tblock"], num_objects=3),
+    "pick_lookalike": dict(pool=["cube", "cube_orange", "cube_pink", "cube_dark"], num_objects=3),
 }
 
 HOME_Q = np.array([0.0, 0.0, 0.0, -1.57079, 0.0, 1.57079, -0.7853])

@@ -154,13 +154,20 @@ def main():
     # Disturbances: how does the policy cope when the scene changes under it? (disturb.py)
     ap.add_argument(
         "--disturb",
-        choices=["none", "reach", "grasp"],
+        choices=["none", "reach", "grasp", "drift"],
         default="none",
         help="move the named object once per episode: 'reach' at --disturb_step, while the gripper is on its way; "
-        "'grasp' at the moment the gripper first closes, so that succeeding takes a second attempt",
+        "'grasp' at the moment the gripper first closes, so that succeeding takes a second attempt; 'drift': the "
+        "object keeps sliding on a smooth random path at --drift_cm_s until it is held",
     )
     ap.add_argument("--disturb_step", type=int, default=15)
     ap.add_argument("--disturb_mm", type=float, default=80.0, help="how far the object is moved")
+    ap.add_argument(
+        "--drift_cm_s",
+        type=float,
+        default=2.0,
+        help="with --disturb drift: how fast the named object slides (cm/s), from the first step until it is held",
+    )
     ap.add_argument(
         "--expert_reactive",
         action="store_true",
@@ -210,7 +217,9 @@ def main():
         prev_obs, queue, frames, trace = obs, [], [], []
         wrong_object = False  # a non-target object was lifted at any point in the episode
         probe = GraspProbe(env)
-        disturbance = Disturbance(env, args.disturb, args.disturb_step, args.disturb_mm / 1000, seed=seed)
+        disturbance = Disturbance(
+            env, args.disturb, args.disturb_step, args.disturb_mm / 1000, seed=seed, speed=args.drift_cm_s / 100
+        )
         if expert is not None:
             expert.reset(yaw=start_yaw)
         prefix_goal = None
@@ -335,7 +344,8 @@ def main():
             first_prev_action=args.first_prev_action,
             disturb=args.disturb,
             disturb_step=args.disturb_step if args.disturb == "reach" else None,
-            disturb_mm=args.disturb_mm if args.disturb != "none" else None,
+            disturb_mm=args.disturb_mm if args.disturb in ("reach", "grasp") else None,
+            drift_cm_s=args.drift_cm_s if args.disturb == "drift" else None,
             disturbed_rate=sum(bool(e["disturbed"] and e["disturbed"]["to_xy"]) for e in episodes) / n,
         ),
         seed_start=args.seed_start,

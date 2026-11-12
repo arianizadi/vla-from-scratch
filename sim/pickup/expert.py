@@ -20,10 +20,15 @@ def _rotz(a):
     return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
 
 
+TRACK_LIMIT = 0.04  # metres: a move of the object up to this is followed by shifting the plan, a larger one re-plans
+
+
 class ScriptedExpert:
     """`reactive=False`: one plan per episode, made at reset. `reactive=True`: the expert also watches
-    the named object and plans again when it has been moved or when a grasp closed on nothing, which
-    gives demonstrations of recovery (see disturb.py)."""
+    the named object. When it has moved a little (up to TRACK_LIMIT, as a drifting target does between
+    two checks) the plan is shifted with it and the expert carries on where it was; when it has jumped
+    further, or a grasp closed on nothing, the expert plans again, which gives demonstrations of
+    recovery (see disturb.py)."""
 
     def __init__(self, env: PickupEnv, seed: int = 0, reactive: bool = False):
         self.env = env
@@ -68,6 +73,7 @@ class ScriptedExpert:
         self.des_yaw = yaw
         self.q_cmd = env.data.ctrl[:7].copy()
         self.replans = 0
+        self.tracks = 0
         self._plan()
 
     def _plan(self, again=False):
@@ -107,11 +113,25 @@ class ScriptedExpert:
         lifting = self.wp == len(self.waypoints) - 1
         return moved or (lifting and env.state()[7] < 0.05)  # the fingers met: nothing is in them
 
+    def _track(self):
+        """Shift the remaining waypoints with an object that has moved a little; True if that was done."""
+        env = self.env
+        delta = env.object_pos(env.target)[:2] - self.planned_xy
+        closing = self.waypoints[self.wp][1] < 0.5
+        if closing or np.linalg.norm(delta) > TRACK_LIMIT:
+            return False
+        self.waypoints = [(p + np.array([delta[0], delta[1], 0.0]), g, s, w) for p, g, s, w in self.waypoints]
+        self.planned_xy = self.planned_xy + delta
+        return True
+
     def act(self):
         env = self.env
         if self.reactive and self._needs_new_plan():
-            self.replans += 1
-            self._plan(again=True)
+            if self._track():
+                self.tracks += 1
+            else:
+                self.replans += 1
+                self._plan(again=True)
         target, grip, speed, dwell = self.waypoints[self.wp]
         dt = 1.0 / 20.0
         delta = target - self.des_pos
