@@ -686,9 +686,9 @@ poses and recoveries (`--random_start --disturb_prob 0.5`), 5M samples, 100 unse
 evaluation, final checkpoint, trained / averaged weights where both are given. "Closed at the named
 object" is the share of first closes nearest the named object.
 
-**In progress:** look-alikes with a second seed (`dp_vit_lang_reactive_lookalike4k_rs_recover_seed43`)
-and for 10M samples (`..._10m`); the clutter scenes without the leaves (`dp_vit_lang_reactive_mixed4k_rs_recover`);
-step 5 (`dp_vit_lang_reactive_cut4k_rs_recover`); the stem grasp for 10M samples (`dp_vit_lang_reactive_stem4k_rs_recover_10m`).
+**In progress:** look-alikes for 10M samples (`dp_vit_lang_reactive_lookalike4k_rs_recover_10m`); the stem grasp
+with other seeds (`..._stem4k_rs_recover_seed43`) and for 10M samples (`..._stem4k_rs_recover_10m`); the cut
+with demonstrations that come in from the outer edge (`dp_vit_lang_reactive_cut4k_rs_recover_outer`).
 
 ### Step 1: a target that keeps moving (`--disturb drift`)
 
@@ -722,18 +722,36 @@ instruction tells them apart. The expert takes the named cube in 100/100 (one pl
 |---|---|---|
 | clean demonstrations, never shown look-alikes | 22/100 | 34% |
 | random starts and recoveries, never shown look-alikes | 24/100 | 33% |
-| trained on look-alikes (`dp_vit_lang_reactive_lookalike4k_rs_recover`) | 35/100 / 28/100 | 43% |
+| trained on look-alikes (`dp_vit_lang_reactive_lookalike4k_rs_recover`, seed 42) | 35/100 / 28/100 | 43% |
+| the same, other seeds (`..._seed43`: `--data.seed 43 --hparams.seed 43`) | 89/100 / 93/100 | |
+| the same, a third pair of seeds (`..._seed44`) | 88/100 / 91/100 | |
+| the same as seed 42 for 10M samples (`..._10m`) | 81/100 / 81/100 after 7 of 11 checkpoints (about 6.4M samples), still rising | |
 | trained on the clutter scenes of step 3, which include the same cubes | 86/100 | 100% |
+| trained on the clutter scenes without the leaves (`dp_vit_lang_reactive_mixed4k_rs_recover`; on its own task 96/100 / 93/100) | 97/100 | |
 
-The policy trained on look-alikes alone never learned to tell them apart: averaged weights, checkpoints 1
-to 11: 28, 34, 30, 38, 54, 25, 22, 36, 33, 37, 28, a wrong cube lifted in 52-71% of episodes throughout.
-Its mistakes are mostly between neighbouring colours (orange and pink taken for each other, dark red
-for red). Moved at step 20 38/100, at the grasp 24/100, random start 38/100. Its training loss ends
-where the clutter run's does (about 0.05). The policy trained on clutter, where the same cubes stand
-among other shapes, picks the named look-alike in 86/100 with no wrong cube lifted. Why one learns
-colour and the other does not is what the runs in progress test: a second seed and twice the samples
-(is the failure a fluke, or late?), and the clutter scenes without the leaves (do other shapes in the
-scene make the difference?).
+Look-alikes are learnable from look-alike scenes alone, but when the policy starts to tell them apart
+depends on the seeds. Averaged weights per checkpoint (about 0.45M samples apart; wrong cube lifted in
+brackets):
+
+| Run | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| seed 42 | 28 (59) | 34 (65) | 30 (67) | 38 (68) | 54 (58) | 25 (67) | 22 (67) | 36 (56) | 33 (57) | 37 (52) | 28 (59) |
+| seed 43 | 24 (52) | 83 (1) | 92 (0) | 93 (0) | 83 (0) | 87 (0) | 89 (0) | 92 (0) | 83 (0) | 90 (0) | 93 (0) |
+| seed 44 | 24 (60) | 36 (64) | 30 (65) | 56 (44) | 88 (3) | 83 (0) | 90 (1) | 91 (0) | 91 (0) | 91 (0) | 91 (0) | |
+| clutter, no leaves (its own task) | 9 (29) | 68 (1) | 84 (0) | 90 (0) | 88 (0) | 95 (0) | 95 (0) | 94 (0) | 91 (0) | 91 (0) | 93 (0) |
+| clutter with leaves (its own task) | 6 (17) | 75 (0) | 81 (0) | 87 (0) | 85 (0) | 83 (0) | 84 (0) | 82 (0) | 82 (0) | 88 (0) | 86 (0) |
+
+The switch is sudden, as on `pick_target` (notes: "Looking at the scene arrives late, and all at once"):
+from a wrong cube in about 60% of episodes to none within one checkpoint. With seed 43 it comes after
+about 0.9M samples, with seed 44 after about 2M, with seed 42 not within 5M. In the two runs whose scenes
+also hold other shapes it came by the second checkpoint. Seed 42 with twice the samples does learn,
+slowly (81/100 after about 6.4M samples, a wrong cube still in 23%). A look-alike run that has not switched by the
+end of its budget looks exactly like one that cannot learn the task; a second seed is what tells them
+apart.
+
+What carries over: the policy trained on clutter without leaves picks the named look-alike in 97/100
+and, never having seen a leaf, 74/100 on clutter with leaves; the look-alike policy with seed 43 (93/100
+on its own task) manages 42/100 on clutter, with a wrong object lifted in 34%.
 
 ### Step 3: clutter and occlusion (`pick_clutter`)
 
@@ -778,6 +796,30 @@ look-alikes (red, orange, pink). The evaluation now also reports `caught_rate`, 
 which the named object was held (stems) or lifted at any step: for the final stem policy, 52/100 caught
 and 6/100 held for 10 steps. Executing 4 actions per chunk instead of 8 does not help (1/100, caught 40/100).
 
+Other seeds and more samples have not changed it so far: `..._stem4k_rs_recover_seed43` and the
+10M-sample run are at 0-5/100 (seed 43 at 4/100 after 9 of 11 checkpoints, 10M at 4/100 after 6 of 11). Where it goes wrong shows when the expert drives the first K control steps
+toward the named stem and the policy takes over (final checkpoint, averaged weights):
+
+| Expert drives | Grasp the stem (10 steps) | Caught at some step | First close nearest the named stem | Cut the named stem (3 steps) |
+|---|---|---|---|---|
+| nothing | 6/100 | 52/100 | 60% | 9/100 (19 other stems cut) |
+| 20 steps (1 s; the expert's close comes at about step 60) | 7/100 | 83/100 | 88% | |
+| 35 steps | 10/100 | 83/100 | 90% | 58/100 (1 other) |
+| 50 steps | 10/100 | 84/100 | 92% | 66/100 (1 other) |
+
+One second of the expert is enough to make the policy catch the named stem most of the time, so the
+first failure is at the very start: committing to a stem and a side. The expert takes the side whose
+path in passes farthest from the other stems, so in a given layout either side is about as likely, and
+the two sides need opposite turns of the wrist from the first step. A second failure is holding still:
+even started well it keeps the stem for 10 steps in only a tenth of the episodes, though for 3 steps (a
+cut) in about 60%.
+
+`collect.py --expert_side preferred` makes the side follow from where the stem stands: in from the outer
+edge of the table toward its middle, the other side only when that path passes within 4 cm of another
+stem. The expert cuts 90/100 that way (92/100 with the clearance rule). A first version, always the side
+away from the front camera, cut only 73/100: it failed on stems right of the robot's middle line (20 of
+36).
+
 ### Step 5: a cut (`cut_stem`)
 
 The same scene; the instruction is "cut the stem of the ... flower". Each flower is built as a base and
@@ -789,6 +831,10 @@ Cutting the named stem is a success; cutting any other ends the episode as a fai
 |---|---|---|
 | expert (one plan, and planning again) | 92/100 | 0/100 |
 | the stem policy of step 4, never shown a cut | 9/100 | 19/100 |
+| trained on cuts (`dp_vit_lang_reactive_cut4k_rs_recover`) | 0/100 / 0/100 | 0/100 / 3/100 |
+
+The policy trained on cuts does worse than the stem policy it was meant to improve on: 0-7/100 over
+its checkpoints. The first-steps problem of step 4 applies unchanged; see the expert-side change above.
 
 ## Throughput
 
