@@ -544,10 +544,17 @@ The plain run again with other seeds for the data order and the initial weights 
 | 3.0M | 84% / 85% | 92% / 88% | 100% / 99% | 100% / 100% | 0.98 / 0.99 | 0.98 / 0.99 |
 | 3.5M | 91% / 90% | 94% / 93% | 100% / 99% | 100% / 100% | 0.98 / 0.98 | 0.98 / 0.99 |
 | 4.0M | 93% / 91% | 91% / 94% | 100% / 100% | 100% / 100% | 0.99 / 0.99 | 0.99 / 0.99 |
-| 4.5M |  | 93% / 95% |  | 100% / 100% |  | 0.99 / 0.99 |
-| 5.0M |  | 96% / 96% |  | 100% / 100% |  | 0.99 / 0.99 |
+| 4.5M | 90% / 93% | 93% / 95% | 99% / 100% | 100% / 100% | 0.97 / 0.98 | 0.99 / 0.99 |
+| 5.0M | 90% / 89% | 96% / 96% | 100% / 100% | 100% / 100% | 0.99 / 0.99 | 0.99 / 0.99 |
 
-The run with the old table was still training when this was written.
+The four runs side by side, final checkpoint, trained weights (averaged weights in brackets where saved):
+
+| Seeds | Old table | Fixed table |
+|---|---|---|
+| first pair | 83/100 (85/100) | 93/100 |
+| second pair (seed 43) | 90/100 (89/100) | 96/100 (96/100) |
+
+The first pair's old-table run was trained from the code as it was before the fix. The second pair was trained from one version of the code and differs in the table alone.
 
 
 ### History, on demonstrations that begin with a hold frame (`dp_vit_lang_pt4k_hold_posfix`)
@@ -620,6 +627,8 @@ Backbone pretrained on captions (stage 2, retrained with the fix):
 | 2.2M | 87% / 90% | 100% / 100% | 0.99 / 0.99 | 8 / 8 mm |
 | 2.5M | 84% / 88% | 100% / 100% | 0.99 / 0.99 | 7 / 7 mm |
 | 2.7M | 88% / 85% | 100% / 100% | 0.99 / 0.99 | 7 / 7 mm |
+| 3.0M | 88% / 86% | 100% / 100% | 0.99 / 1.00 | 7 / 7 mm |
+| 3.0M (final) | 86% / 87% | 100% / 100% | 0.99 / 0.99 | 7 / 6 mm |
 
 
 The same architecture with a randomly initialised backbone:
@@ -634,6 +643,8 @@ The same architecture with a randomly initialised backbone:
 | 1.5M | 42% / 53% | 98% / 97% | 0.95 / 0.95 | 17 / 17 mm |
 | 1.7M | 66% / 59% | 100% / 99% | 0.99 / 1.01 | 11 / 15 mm |
 | 2.0M | 69% / 81% | 100% / 100% | 1.02 / 1.00 | 13 / 11 mm |
+| 2.2M | 83% / 75% | 100% / 100% | 1.01 / 0.99 | 9 / 9 mm |
+| 2.5M | 77% / 80% | 99% / 100% | 0.96 / 0.99 | 9 / 9 mm |
 
 Still training when this was written: the table holds the checkpoints evaluated so far.
 
@@ -663,13 +674,12 @@ Every token, no history, 4000 demonstrations, 0.5M samples (`vla_qwen_tokens_rea
 | 0.35M | 46% / 64% | 100% / 100% | 0.99 / 1.00 | 19 / 15 mm |
 | 0.40M | 68% / 63% | 99% / 100% | 0.97 / 0.99 | 15 / 16 mm |
 | 0.5M | 57% / 65% | 100% / 100% | 1.00 / 0.99 | 16 / 13 mm |
-
-Still training when this was written: the table holds the checkpoints evaluated so far.
+| 0.5M (final) | 70% / 72% | 98% / 99% | 0.95 / 0.99 | 15 / 14 mm |
 
 
 ### Runs in progress when this was written
 
-Still training or being evaluated, with no final result here: the second seed with the old position table; the from-scratch VLA with a randomly initialised backbone; the Qwen backbone with every token. Tables and rows above that say 'still training' show the checkpoints evaluated so far.
+Still training, with no final result here: the from-scratch VLA with a randomly initialised backbone. Its table above shows the checkpoints evaluated so far.
 
 ## Throughput
 
