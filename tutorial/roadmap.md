@@ -146,6 +146,6 @@ Problems found in VLA Foundry (or in our own code) while doing this, and their s
 ## Caveats
 
 - One training seed per run; small differences are noise.
-- The training workstation has a faulty memory line; long runs die or hang and are resumed
-  automatically. Important results are re-run.
+- One of the machines used was unreliable; long runs died or hung and were resumed automatically.
+  Important results are re-run.
 - Everything is simulation with rendered images; nothing here has touched a real camera yet.

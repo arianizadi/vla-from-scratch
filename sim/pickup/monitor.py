@@ -272,7 +272,7 @@ def gpu_table(rows, width):
     return table
 
 
-def frame(runs, evals, width, experiments):
+def frame(runs, evals, width, experiments, show_gpus=True):
     for run in runs:
         run.update()
     counts = {s: sum(r.state == s for r in runs) for s in STATE_MARK}
@@ -282,7 +282,7 @@ def frame(runs, evals, width, experiments):
         Text(f"{STATE_MARK[s]} {counts[s]} {s}", style=STATE_STYLE[s]) for s in STATE_MARK if counts[s]
     )
     parts = [Panel(runs_table(runs, evals, width), title=title, subtitle=summary, border_style="grey50")]
-    gpu_rows = gpus()
+    gpu_rows = gpus() if show_gpus else []
     if gpu_rows:
         parts.append(Panel(gpu_table(gpu_rows, width), title=Text("GPUs", style="bold"), border_style="grey50"))
     legend = "success is closed-loop on unseen layouts · at named = gripper closed at the object the instruction named"
@@ -306,6 +306,7 @@ def main():
     p.add_argument("--task", default=None, help="only show evaluations of this task (default: all)")
     p.add_argument("--runs", nargs="*", default=None, help="only these runs (substring match)")
     p.add_argument("--interval", type=float, default=2.0, help="seconds between refreshes")
+    p.add_argument("--no-gpus", action="store_true", help="leave out the GPU panel")
     p.add_argument("--once", action="store_true", help="print one frame and exit")
     p.add_argument("--svg", default=None, help="with --once: also save the frame as an SVG image")
     p.add_argument("--width", type=int, default=None, help="render width in characters (default: the terminal's)")
@@ -322,7 +323,7 @@ def main():
 
     if args.once:
         console = Console(record=bool(args.svg), width=args.width, force_terminal=bool(args.svg) or None)
-        console.print(frame(current(), evals, console.width, args.experiments))
+        console.print(frame(current(), evals, console.width, args.experiments, not args.no_gpus))
         if args.svg:
             console.save_svg(args.svg, title="vla-from-scratch")
         return
@@ -331,7 +332,7 @@ def main():
     with Live(console=console, screen=True, auto_refresh=False) as live:
         try:
             while True:
-                live.update(frame(current(), evals, console.width, args.experiments), refresh=True)
+                live.update(frame(current(), evals, console.width, args.experiments, not args.no_gpus), refresh=True)
                 time.sleep(args.interval)
         except KeyboardInterrupt:
             pass

@@ -123,7 +123,7 @@ pipeline and through the serving path and compares the tensors the model receive
 
 ## 8. Long runs die  (confirmed)
 
-This machine has a faulty memory line. Stage-3 runs died or hung three times. A dead data-loader
+One of the machines used was unreliable: stage-3 runs died or hung three times. A dead data-loader
 worker does not crash the trainer; it waits forever at 0% GPU. `scripts/train_resilient.sh` restarts
 from the newest checkpoint when a run exits or when its log stops moving for 7 minutes.
 
@@ -144,8 +144,8 @@ Things that cost time here and have nothing to do with models:
   `OMP_NUM_THREADS=4` (and the MKL / OpenBLAS equivalents) each server uses under one core. The
   scripts now set this (`PICKUP_CPU_THREADS`).
 - **Pin the GPU for rendering as well as for compute.** `CUDA_VISIBLE_DEVICES` does not restrict
-  EGL, and EGL's device order is not `nvidia-smi`'s: on a 10-GPU machine EGL devices 3 and 4 were
-  GPUs 0 and 1. MuJoCo 4 orders EGL devices by `CUDA_VISIBLE_DEVICES`, so setting that one variable
+  EGL, and EGL's device order is not `nvidia-smi`'s: on one multi-GPU machine two devices in the
+  middle of EGL's list were GPUs 0 and 1. MuJoCo 4 orders EGL devices by `CUDA_VISIBLE_DEVICES`, so setting that one variable
   per job pins both, provided `MUJOCO_EGL_DEVICE_ID` is left unset. Check with `nvidia-smi` while a
   render is running rather than trusting an index.
 - **Start long jobs detached.** A job started inside an ssh session dies with the connection.

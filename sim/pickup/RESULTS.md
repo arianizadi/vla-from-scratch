@@ -4,10 +4,10 @@ All numbers are closed-loop success rates on layouts the policy never saw (evalu
 `1_000_000+`), single RTX 4090, one training seed per row. Intervals are Wilson 95%.
 Defaults: execute 8 actions per predicted chunk, 10 flow steps.
 
-> **Hardware caveat.** The workstation these first runs used has a faulty memory line. Several
+> **Hardware caveat.** The machine these first runs used was unreliable. Several
 > training runs died or hung (a dead dataloader worker leaves the trainer waiting forever) and were
 > resumed from checkpoints; `scripts/train_resilient.sh` now does that automatically. Treat these
-> numbers as first measurements to be re-run on healthy hardware, not as final benchmarks.
+> numbers as first measurements to be re-run, not as final benchmarks.
 
 ## pick_cube ("pick up the red cube")
 
