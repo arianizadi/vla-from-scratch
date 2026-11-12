@@ -33,7 +33,21 @@ resumed from checkpoints.
 ## Grasp tolerance
 
 Expert with a fixed sideways offset added to its grasp point, random direction, 320 episodes per
-offset (machine A):
+offset. Measured on both machines with the same seeds:
+
+Machine B (MuJoCo 4.0.1), the machine all second-round results come from:
+
+| Offset | Cube | T block | Can | Hex nut | All |
+|---|---|---|---|---|---|
+| 0 mm | 100% | 100% | 100% | 100% | 100% |
+| 5 mm | 97% | 100% | 99% | 99% | 99% |
+| 10 mm | 99% | 100% | 94% | 97% | 98% |
+| 15 mm | 95% | 100% | 76% | 93% | 91% |
+| 20 mm | 93% | 98% | 29% | 70% | 72% |
+| 25 mm | 73% | 89% | 15% | 31% | 52% |
+| 30 mm | 32% | 76% | 3% | 15% | 32% |
+
+Machine A (an earlier MuJoCo 4.0 build; the exact version was not recorded):
 
 | Offset | Cube | T block | Can | Hex nut | All |
 |---|---|---|---|---|---|
@@ -44,6 +58,10 @@ offset (machine A):
 | 20 mm | 93% | 98% | 18% | 25% | 58% |
 | 25 mm | 73% | 89% | 11% | 21% | 49% |
 | 30 mm | 32% | 76% | 0% | 10% | 30% |
+
+The cube and T block columns are identical on the two machines. The can and hex nut, whose
+collision shapes are cylinders, are much easier to grasp on machine B. The simulator build is the
+one known difference between the two; it has not been isolated as the cause.
 
 ## `pick_cube` (machine A)
 
@@ -129,10 +147,39 @@ Open-loop test of the first action chunk (15 steps) from the first frame, 60 lay
 The expert moves the gripper 30 cm in that chunk. The no-language policy gives the same picture
 (32-42% heading for the named object, endpoints 12.9 cm from the expert's).
 
-Runs still in progress when this was written: the history variants, a 4000-demo / 5M-sample pair,
-the Qwen VLA, two data variants (every layout demonstrated with each object named; the same with the
-first frames of each episode up-weighted), and the from-scratch stages for an all-token VLA. Their
-rows are in the generated table at the end of this file.
+All 1500-demo policies at 1M samples, final checkpoint (raw / EMA weights):
+
+| Policy | Success | Nearest object was the named one | Median miss to named |
+|---|---|---|---|
+| `dp_vit`: no language, history | 0% / 0% | 31% / 37% | 207 / 198 mm |
+| `dp_vit_lang`: instruction tokens, history | 3% / 2% | 35% / 29% | 158 / 176 mm |
+| `dp_vit_reactive`: no language, no history | 1% / 1% | 26% / 34% | 175 / 173 mm |
+| `dp_vit_lang_reactive`: instruction tokens, no history | 3% / 5% | 49% / 41% | 127 / 139 mm |
+| `dp_vit_lang_reactive`, every layout demonstrated with each of its 3 objects named (500 layouts) | 0% / 0% | 32% / 29% | 151 / 192 mm |
+| the same data with the windows of frames 0-7 repeated 5 extra times (45% of the windows) | 8% / 15% | 52% / 58% | 113 / 110 mm |
+
+The last row's successes are almost all on the can (8/28 raw, 12/28 EMA).
+
+`dp_vit_lang_reactive` on 4000 demos (one instruction per layout), by checkpoint, while the run was
+still training toward 5M samples (raw / EMA weights):
+
+| Samples | Success | Nearest object was the named one | Median miss to named |
+|---|---|---|---|
+| 0.5M | 0% / 0% | 34% / 26% | 166 / 167 mm |
+| 1.0M | 0% / 1% | 35% / 32% | 138 / 154 mm |
+| 1.5M | 4% / 2% | 61% / 49% | 102 / 104 mm |
+| 2.0M | 4% / 36% | 95% / 98% | 32 / 18 mm |
+
+At 2.0M samples the EMA weights succeed on 9/28 cans, 10/24 cubes, 13/25 hex nuts and 4/23 T blocks.
+The same configuration with history (`dp_vit_lang` on the same 4000 demos) was at 1% with a 31-32%
+named-object rate at 1.0M samples.
+
+The from-scratch stages were repeated on machine B: language model final loss 4.15; VLM final loss
+0.058, held-out captioning check 249/300 = 83% exact ordering and 279/300 = 93% leftmost object.
+
+Runs still in progress when this was written: the 4000-demo / 5M-sample pair (with and
+without history), the Qwen VLA, a 3M-sample run on the 1500 demos, the all-token VLA with and without
+pretraining, and two single-cube controls.
 
 ## Throughput
 
