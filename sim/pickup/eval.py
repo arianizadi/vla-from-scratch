@@ -21,7 +21,7 @@ from PIL import Image
 
 from .diagnostics import GraspProbe, summarize
 from .disturb import Disturbance
-from .env import CONTROL_HZ, PickupEnv
+from .env import BUTTONS, CONTROL_HZ, PRESS_TRAVEL, REACH_AZIMUTH, PickupEnv
 
 AUTHKEY = b"pickup-sim"  # must match policy_server.AUTHKEY (not imported: that module needs torch)
 EVAL_SEED_START = 1_000_000
@@ -104,6 +104,28 @@ def check_server(info, port, run, number, weights):
             "Another evaluation is using this port; give each one its own (eval.sh picks a free port "
             "unless PICKUP_PORT is set)."
         )
+
+
+def _wrap_pi(a):
+    return (a + np.pi) % (2 * np.pi) - np.pi
+
+
+def _turning_summary(episodes):
+    """Pruning: how efficiently the plant was turned. For one-shoot tasks, `needed` is the turn that brings the shoot
+    to point at the robot the short way; a first press is `short_way` when it turns that way."""
+    eps = [e for e in episodes if e.get("turned_deg") is not None]
+    if not eps:
+        return None
+    pressed = [e for e in eps if e["first_press"] is not None and abs(e["start_offset_deg"]) > 25]
+    ok = [e for e in eps if e["success"]]
+    return dict(
+        mean_turned_deg_success=float(np.mean([e["turned_deg"] for e in ok])) if ok else None,
+        mean_needed_deg_success=float(np.mean([abs(e["start_offset_deg"]) for e in ok])) if ok else None,
+        first_press_short_way=sum(e["first_press"] == np.sign(e["start_offset_deg"]) for e in pressed) / len(pressed)
+        if pressed
+        else None,
+        pressed_when_out_of_reach=len(pressed) / max(1, sum(abs(e["start_offset_deg"]) > 25 for e in eps)),
+    )
 
 
 def main():
@@ -239,6 +261,11 @@ def main():
             env.target = named
         first_obs, first_query = obs, True
         done, info = False, {}
+        # pruning efficiency: how far the plate turned, against how far the first shoot had to turn into reach
+        turn = None
+        if env.plant_task:
+            off0 = float(_wrap_pi(REACH_AZIMUTH - env.shoot_azimuth(env.active[0])))
+            turn = dict(plate=env.plate_angle(), turned=0.0, offset0=off0, first_press=None)
         while not done:
             if expert is not None:
                 queue = [expert.act()]
@@ -277,6 +304,13 @@ def main():
             probe.update(action)  # before the disturbance: the first close is judged on the scene it was aimed at
             disturbance.update(action)
             obs, done, info = env.step(action)
+            if turn is not None:
+                angle = env.plate_angle()
+                turn["turned"] += abs(angle - turn["plate"])
+                turn["plate"] = angle
+                if turn["first_press"] is None:
+                    down = [b for b in BUTTONS if env.button_travel(b) > PRESS_TRAVEL]
+                    turn["first_press"] = BUTTONS[down[0]][1] if down else None
             wrong_object = wrong_object or bool(info["wrong_object"])
             caught = caught or env.target in info["lifted"]
         episodes.append(
@@ -288,6 +322,12 @@ def main():
                 steps=env.steps,
                 wrong_object=wrong_object,
                 damaged=info.get("damaged"),  # pruning: what was damaged, if anything
+                # pruning: degrees the plate turned; how far the first shoot pointed from the robot at the start; the
+                # turning direction of the first button press (+1 counter-clockwise, which brings a shoot with a
+                # positive offset toward the robot the short way)
+                turned_deg=round(float(np.degrees(turn["turned"])), 1) if turn else None,
+                start_offset_deg=round(float(np.degrees(turn["offset0"])), 1) if turn else None,
+                first_press=turn["first_press"] if turn else None,
                 caught=caught,
                 prefix_goal=prefix_goal,
                 disturbed=disturbance.record,
@@ -334,6 +374,7 @@ def main():
         success_ci95=[max(0.0, centre - half), min(1.0, centre + half)],
         mean_steps_success=float(np.mean([e["steps"] for e in episodes if e["success"]])) if k else None,
         wrong_object_rate=sum(e["wrong_object"] for e in episodes) / n,
+        turning=_turning_summary(episodes),
         caught_rate=sum(e["caught"] for e in episodes) / n,
         per_target={t: dict(successes=s, episodes=m, success_rate=s / m) for t, (s, m) in sorted(per_target.items())},
         grasp=summarize(episodes),
