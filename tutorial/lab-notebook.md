@@ -686,10 +686,8 @@ poses and recoveries (`--random_start --disturb_prob 0.5`), 5M samples, 100 unse
 evaluation, final checkpoint, trained / averaged weights where both are given. "Closed at the named
 object" is the share of first closes nearest the named object.
 
-**In progress:** the cut with demonstrations that keep the jaws shut after the cut (`..._cut4k_rs_recover_outer_tail10`,
-two seeds); one flower to cut, with and without that tail (`..._cutone4k_rs_recover_outer`, two seeds, and
-`..._cutone4k_rs_recover_outer_tail10`); the cut for 10M samples, from 4000 and from 16000 demonstrations
-(`..._cut4k_rs_recover_outer_10m`, `..._cut16k_rs_recover_outer_10m`).
+**In progress:** the three-flower cut with the jaws held shut after the cut, for 10M samples, from 4000 and
+from 16000 demonstrations (`..._cut4k_rs_recover_outer_tail10_10m`, `..._cut16k_rs_recover_outer_tail10_10m`).
 
 ### Step 1: a target that keeps moving (`--disturb drift`)
 
@@ -852,8 +850,38 @@ only the last 6-7 frames of each one (the stem demonstrations hold it for 13-14)
 the scene show a shut gripper still waiting for a stem.
 
 `collect.py --tail_steps N` keeps recording N frames after each success with the robot holding its last
-command, so every cut demonstration ends with the jaws shut for 16-17 frames. Runs with 10 such frames
-are in progress.
+command, so every cut demonstration ends with the jaws shut for 16-17 frames. To separate cutting from
+choosing the stem, `cut_one` is the same cut with a single flower (the expert cuts 100/100 with either
+side rule). Final checkpoint, trained / averaged weights; all demonstrations come in from the outer edge:
+
+| Policy | Task | Cut the named stem | Cut another stem | First close nearest the named stem |
+|---|---|---|---|---|
+| one flower (`dp_vit_lang_reactive_cutone4k_rs_recover_outer`) | `cut_one` | 0/100 / 1/100 | | |
+| the same, other seeds (`..._seed43`) | `cut_one` | 0/100 / 0/100 | | |
+| one flower, jaws held shut 10 frames past the cut (`..._cutone4k_rs_recover_outer_tail10`) | `cut_one` | **98/100 / 97/100** | | |
+| three flowers, the same tail (`..._cut4k_rs_recover_outer_tail10`) | `cut_stem` | 23/100 / 22/100 | 51/100 / 50/100 | 26% / 30% |
+| the same, other seeds (`..._cut4k_rs_recover_outer_tail10_seed43`) | `cut_stem` | 21/100 / 20/100 | 28/100 / 31/100 | 33% / 31% |
+
+Averaged weights per checkpoint, cut (another stem cut in brackets):
+
+| Run | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| one flower, no tail | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 1 |
+| one flower, tail | 36 | 80 | 87 | 92 | 92 | 99 | 97 | 100 | 99 | 95 | 97 |
+| three flowers, tail | 14 (18) | 21 (30) | 22 (29) | 15 (45) | 27 (44) | 18 (47) | 23 (54) | 20 (47) | 24 (46) | 25 (49) | 22 (50) |
+| three flowers, tail, seed 43 | 7 (14) | 13 (32) | 11 (33) | 24 (30) | 16 (34) | 16 (33) | 18 (38) | 25 (29) | 22 (33) | 20 (24) | 20 (31) |
+
+Ten frames of a held gripper are the whole difference between a policy that never cuts and one that cuts
+97 times in 100, from its first checkpoint on (36 after about 0.45M samples). With three flowers the
+cutting itself is solved too: once the named stem is between the jaws it is cut almost every time (caught
+24, cut 22). What is left is choosing the stem: the first close is nearest the named stem in 26-33% of
+episodes, which is chance with three flowers, and another stem is cut in 31-50%. The instruction's colour
+word is not used at all, the step-2 problem in a scene where it did not solve itself (red, orange and pink
+heads are look-alikes; purple is the only colour far from the others).
+
+A video of the one-flower policy, final checkpoint, averaged weights, 10 episodes recorded, 10 cut, 5
+shown: `flower-step5a-cut-one-stem.mp4` (after each cut a script opens the jaws so that the top can be
+seen to fall).
 
 ## Throughput
 
