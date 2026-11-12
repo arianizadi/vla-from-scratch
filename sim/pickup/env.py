@@ -113,6 +113,13 @@ TASKS = {
         instruction="cut the stem of the {label}",
         cut=True,
     ),
+    # Step 5a: the motor half of step 5 on its own. One flower, so there is no wrong stem to pick.
+    "cut_one": dict(
+        pool=["flower_red", "flower_orange", "flower_pink", "flower_purple"],
+        num_objects=1,
+        instruction="cut the stem of the {label}",
+        cut=True,
+    ),
     # Control for the look-alike result: the clutter scenes without the leaves.
     "pick_mixed": dict(pool=["cube", "can", "hex", "tblock", "cube_orange", "cube_pink", "cube_dark"], num_objects=4),
     # Step 4: three flowers on stems; grasp the named one by its stem, from the side, inside its band.

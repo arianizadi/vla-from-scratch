@@ -222,10 +222,11 @@ def _stem_env(task):
         pytest.skip(f"cannot render: {error}")
 
 
-def test_the_expert_cuts_the_named_stem_and_the_top_comes_free():
+@pytest.mark.parametrize("task", ["cut_stem", "cut_one"])
+def test_the_expert_cuts_the_named_stem_and_the_top_comes_free(task):
     import numpy as np
 
-    env = _stem_env("cut_stem")
+    env = _stem_env(task)
     try:
         wins = 0
         for seed in SEEDS:
