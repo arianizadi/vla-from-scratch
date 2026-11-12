@@ -686,9 +686,8 @@ poses and recoveries (`--random_start --disturb_prob 0.5`), 5M samples, 100 unse
 evaluation, final checkpoint, trained / averaged weights where both are given. "Closed at the named
 object" is the share of first closes nearest the named object.
 
-**In progress:** the three-flower cut for 10M samples from 16000 demonstrations
-(`..._cut16k_rs_recover_outer_tail10_10m`), and the 4000-demonstration 10M run with other seeds
-(`..._cut4k_rs_recover_outer_tail10_10m_seed43`, `..._seed44`).
+**In progress:** the pruning tasks (steps 6-8 of the roadmap) with the new physics:
+`dp_vit_lang_reactive_prune_one4k_rs_tail10`, `..._prune_turn4k_rs_tail10_10m`, `..._prune2k_rs_tail10_10m`.
 
 **Physics change (after the runs of steps 1-5 above).** An audit of every contact found the arm sinking
 into solid things: with MuJoCo's default soft contacts (time constant 0.02 s) the position-controlled arm
@@ -905,10 +904,21 @@ the same late and sudden switch as the look-alike cubes of step 2. That is befor
 so the difference is not simply more samples: the learning rate follows a cosine over the planned budget
 (`lr_scheduler: cosine`, peak 5e-4), and at 3.6M samples this run still had about 71% of its peak rate, the
 5M run about 18%. One seed of each so far. By flower: red 23/24, pink 23/25,
-orange 22/28, purple 19/23 (averaged weights). From 16000 demonstrations
-(`..._cut16k_rs_recover_outer_tail10_10m`) the switch has not come after 8 of 11 checkpoints (averaged
-weights 16, 23, 19, 22, 20, 21, 34, 29; another stem cut in 30-64%): four times the demonstrations, at the
-same number of samples, means each one is seen a quarter as often.
+orange 22/28, purple 19/23 (averaged weights). Other seeds of the same run
+(averaged weights per checkpoint, another stem cut in brackets):
+
+| Run | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| seed 42 | 21 (32) | 19 (50) | 26 (43) | 65 (23) | 76 (9) | 80 (3) | 79 (3) | 84 (4) | 84 (8) | 82 (8) | 87 (6) |
+| seed 43 (`..._10m_seed43`) | 15 (25) | 19 (38) | 19 (38) | 21 (49) | 24 (45) | 31 (37) | 37 (41) | 35 (43) | 47 (38) | 34 (46) | 36 (35) |
+| seed 44 (`..._10m_seed44`) | 13 (36) | 26 (38) | 17 (38) | 68 (10) | 84 (3) | 87 (3) | 92 (2) | 87 (0) | 92 (1) | 91 (1) | 88 (1) |
+| 16000 demonstrations (`..._cut16k_rs_recover_outer_tail10_10m`) | 16 (30) | 23 (44) | 19 (48) | 22 (61) | 20 (57) | 21 (64) | 34 (57) | 29 (52) | 26 (56) | 32 (53) | 31 (56) |
+
+Two seeds of three switch at the same checkpoint (about 3.6M samples) and end at 87-88/100 with another
+stem cut in 1-6%; the third climbs slowly and ends at 36. From 16000 demonstrations the switch never comes
+within 10M samples: four times the demonstrations at the same number of samples means each one is seen a
+quarter as often. As with the look-alike cubes, a run that has not switched looks the same as one that
+cannot; other seeds tell them apart.
 
 ## Throughput
 
