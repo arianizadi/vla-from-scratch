@@ -18,15 +18,26 @@ separate one cause from another.
 
 ## What you get
 
-**A dashboard that shows what the loss hides.** Every run with its progress, loss and speed, next
-to the closed-loop success of each of its checkpoints, how often the gripper closed at the object
-the instruction named, and how far it missed.
+**A live monitor that shows what the loss hides.** Every run with its progress, loss and speed,
+next to the closed-loop success of each of its checkpoints, how often the gripper closed at the
+object the instruction named, and how far it missed; GPU load on top. It is a small web server on
+the training machine (Python standard library only, nothing to build) and updates as the runs train.
 
-![Terminal dashboard of training runs](tutorial/img/monitor.svg)
+![The training monitor: GPU load and every run with its closed-loop results](tutorial/img/monitor-web-overview.png)
 
 ```bash
-.venv/bin/python -m sim.pickup.monitor
+.venv/bin/python -m sim.pickup.monitor_server                        # on the training machine
+sim/pickup/scripts/monitor_remote.sh <ssh-host> <repo-directory>     # or from your own computer: starts it over ssh, opens the browser
 ```
+
+Each run has a page: the loss, the success of every checkpoint with its interval (trained and
+averaged weights), where the gripper closed in each of the 100 evaluation episodes, and the table
+behind the charts. Drag the checkpoint slider and watch the cloud of grasp attempts tighten.
+
+![One run: loss, closed-loop success per checkpoint, where the gripper closed, per-object results](tutorial/img/monitor-web-run.png)
+
+The same table is available in a terminal (`.venv/bin/python -m sim.pickup.monitor`), and runs can
+be laid over each other on the monitor's Compare page.
 
 **A picture of how a policy fails.** Each dot is where the gripper closed in one evaluation
 episode, relative to the object. The scripted expert (top) lands inside the 1 cm ring every time.

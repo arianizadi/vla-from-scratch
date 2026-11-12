@@ -142,6 +142,8 @@ only, so from another computer reach it through an ssh port forward:
 ssh -L 8765:127.0.0.1:8765 <training-machine>          # on your computer; then open http://localhost:8765
 ```
 
+![The page of one run in the graphical monitor](../../tutorial/img/monitor-web-run.png)
+
 From your own computer, one script does both and opens the browser. Ctrl-C ends the ssh session
 and, with it, the server on the training machine:
 
