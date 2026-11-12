@@ -103,6 +103,19 @@ class Run:
             return None
 
     @property
+    def about(self):
+        """One line saying what this run is for, from <run>.about, or None.
+
+        Run names are short and say little to anyone but their author. train.sh writes this file when
+        PICKUP_ABOUT is set; it can also be written by hand at any time.
+        """
+        try:
+            with open(os.path.join(self.experiments, f"{self.name}.about"), errors="ignore") as f:
+                return f.readline().strip()[:300] or None
+        except OSError:
+            return None
+
+    @property
     def stopped_note(self):
         """Why the run was stopped on purpose, or None if it was not.
 
@@ -318,6 +331,7 @@ def snapshot(runs, evals, curve_points=300):
         out.append(
             dict(
                 name=run.name,
+                about=run.about,  # one line on what the run is for, if somebody wrote one
                 state=state,
                 note=run.stopped_note if state == "stopped" else None,  # why a stopped run was stopped
                 samples_seen=run.seen,

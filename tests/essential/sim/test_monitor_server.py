@@ -31,6 +31,7 @@ VIDEO = bytes(range(256))
 GPUS = [dict(index=0, name="Test GPU", util=87.0, mem_used_mb=1024.0, mem_total_mb=24564.0, temp_c=61.0)]
 RUN_KEYS = {
     "name",
+    "about",
     "state",
     "note",
     "samples_seen",
@@ -244,6 +245,18 @@ def test_run_in_progress_then_stalled_then_resumed(tree):
     os.utime(log, (time.time() - 3600, time.time() - 3600))
     assert run.state == "stalled"
     assert runstate.Run(str(tree.experiments), "never_started").state == "waiting"
+
+
+def test_a_run_can_say_what_it_is_for(tree):
+    run = runstate.Run(str(tree.experiments), "alpha")
+    run.update()
+    assert run.about is None
+    (tree.experiments / "alpha.about").write_text("4000 demonstrations, no history\nmore\n")
+    assert run.about == "4000 demonstrations, no history"
+    shown = runstate.snapshot([run], runstate.Evals(str(tree.results)))["runs"][0]
+    assert shown["about"] == "4000 demonstrations, no history"
+    (tree.experiments / "alpha.about").write_text("\n")
+    assert run.about is None
 
 
 def test_a_run_ended_on_purpose_is_stopped_not_stalled(tree):

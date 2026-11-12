@@ -6,11 +6,14 @@
 # PICKUP_NUM_CHECKPOINTS) so a crash never costs more than a sixth of the job. Resume by re-running the
 # same command with --model.resume_from_checkpoint <path to checkpoint_N.pt>, or use train_resilient.sh,
 # which does that by itself. Environment and GPU selection: see _common.sh.
+# PICKUP_ABOUT="one line on what this run is for" is saved as experiments/pickup/<run_name>.about and
+# shown next to the run's name by the monitors.
 set -euo pipefail
 cfg=${1:?config name}; dataset=${2:?dataset name}; name=${3:?run name}; samples=${4:?total samples}; shift 4
 . "$(dirname "$0")/_common.sh"
 shards=data/preprocessed/$dataset/shards
 mkdir -p experiments/pickup
+if [ -n "${PICKUP_ABOUT:-}" ]; then printf '%s\n' "$PICKUP_ABOUT" > "experiments/pickup/$name.about"; fi
 "${foundry_python[@]}" vla_foundry/main.py \
   --config_path "sim/pickup/configs/$cfg.yaml" \
   --data.dataset_manifest "['$shards/manifest.jsonl']" \

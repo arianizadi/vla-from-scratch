@@ -72,6 +72,7 @@ export function createDetail(route) {
   const chip = h("span", { class: "chip" });
   const restarts = h("span", { class: "restarts", hidden: true }, restartIcon(), h("b", { class: "num" }));
   const status = h("span", { class: "detail-status" });
+  const about = h("p", { class: "detail-about", hidden: true });
   const bar = h("i");
   const facts = {
     progress: fact("Progress"),
@@ -86,6 +87,7 @@ export function createDetail(route) {
     { class: "detail-head" },
     h("a", { class: "back", href: "#/" }, backIcon(), "Runs"),
     h("div", { class: "detail-title" }, h("h1", { class: "detail-name id", text: name }), chip, restarts, status),
+    about,
     h("div", { class: "detail-progress", "aria-hidden": "true" }, bar),
     h(
       "dl",
@@ -267,6 +269,8 @@ export function createDetail(route) {
       head.dataset.state = run.state;
       chip.replaceChildren(stateIcon(run.state), STATE_LABEL[run.state] || run.state);
     }
+    setText(about, run.about || "");
+    about.hidden = !run.about;
     restarts.hidden = !(run.restarts > 0);
     setText(restarts.lastChild, run.restarts);
     attr(restarts, "title", `restarted ${run.restarts} time${run.restarts === 1 ? "" : "s"}`);

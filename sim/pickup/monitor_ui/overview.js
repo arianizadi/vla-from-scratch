@@ -57,12 +57,14 @@ function createCard(name) {
     h("div", { class: "card-spark" }, sparkLegend, successSpark.el),
   );
   const none = h("p", { class: "card-none", hidden: true });
+  const about = h("p", { class: "card-about", hidden: true });
   const el = h(
     "a",
     { class: "card", href: runHref(name) },
     h("div", { class: "card-progress", "aria-hidden": "true" }, bar),
     h("div", { class: "card-head" }, chip, restarts, status),
     h("h2", { class: "card-name id", text: name }),
+    about,
     h("div", { class: "card-figs two" }, progress.el, loss.el),
     closed,
     none,
@@ -70,6 +72,7 @@ function createCard(name) {
   );
   el.__refs = {
     bar,
+    about,
     chip,
     restarts,
     status,
@@ -108,6 +111,8 @@ function updateCard(el, item, successTop) {
   const { run, summary } = item;
   const r = el.__refs;
   setText(r.status, statusText(run));
+  setText(r.about, run.about || "");
+  r.about.hidden = !run.about;
   const transition = store.transitions.get(run.name);
   if (transition && transition.serial === store.serial && r.state && r.state !== run.state) replay(el, "changed");
   if (r.state !== run.state) {
