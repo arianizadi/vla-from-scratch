@@ -19,50 +19,56 @@ Where this repo is going, and what is already measured. Findings are in [notes.m
 | Policy | `pick_cube` | `pick_target` |
 |---|---|---|
 | Scripted expert | 49/50 | 99-100/100 |
-| Patch tokens + instruction, no history, 4000 demos, 5M samples (`dp_vit_lang_reactive`) | 91-97% (1000 demos) | **85%** |
-| Same, 1500 demos, 3M samples | | 64% |
-| Same, 1500 demos, 1M samples | | 5% |
-| Patch tokens + instruction, with history, 4000 demos, 3M samples | 62-70% (1000 demos) | 2% |
-| Qwen3-VL-2B VLA, one conditioning vector, 1500 demos | not run | 6% |
+| Patch tokens + instruction, no history, 4000 demos, 5M samples (`dp_vit_lang_reactive`), after the position fix | 91-97% (1000 demos) | **93%** |
+| Same, early windows repeated | | **96%** |
+| Same, random start poses in the demonstrations | | **98%** |
+| Same, demonstrations with recoveries | | 84-89%, and the only one that follows a moved object (79-88%) and retries a missed grasp (78 of 99) |
+| Same recipe before the position fix | 91-97% | 83-85% |
+| Same, 1500 demos, 3M samples (before the fix) | | 64% |
+| Same, 1500 demos, 1M samples (before the fix) | | 5% |
+| Patch tokens + instruction, with history | 96-98% after the fix, 62-70% before | 2% (4000 demos, 3M samples, before the fix) |
+| Qwen3-VL-2B VLA, one conditioning vector, 1500 demos | not run | 5-6% |
 | Custom LLM -> VLM -> VLA, one conditioning vector, with history | not run | 0% (1% with a random-init VLM) |
 
-**What was learned on the way** (field notes, sections 6-11)
+**What was learned on the way** (field notes)
 
 - The first-round policies were not imprecise; where they closed the gripper did not depend on the
   scene. One conditioning vector was one cause. The previous action as an input was another. A
-  training budget that ended before the policy started to look was the third.
+  training budget that ended before the policy started to look was the third. A position table
+  computed in half precision was the fourth.
 - Looking at the scene arrives late and all at once: 0% at 1M samples, 36% at 2M, 70% at 2.5M.
-- The 85% policy looks once and then follows its own arm. It does not follow an object that is moved
-  and does not retry a grasp that missed. That is the next thing to fix.
-- What still fails on the static task is the grasp angle of the T block (55%) and the cube (82%).
+- A policy trained on clean demonstrations from one start pose looks once and then follows its own
+  arm, whatever its score. What the demonstrations contain decides what it looks at: random start
+  poses make it watch during the reach, recoveries make it correct itself.
 
 ## Phase 1: make `pick_target` work  (done)
 
 Steps taken: instruction tokens next to patch tokens; no history; 4000 demonstrations and 5M
-samples; averaged weights; a sweep of the sampler's settings. Open inside this phase: the grasp
-angle, and how much earlier the policy starts to look when the early windows are repeated or every
-object of a layout is named.
+samples; averaged weights; a sweep of the sampler's settings; the position-table fix; random start
+poses and repeated early windows in the data. In progress: a second seed, and every object of a
+layout named in turn.
 
-## Phase 2: self-correction  (in progress)
-
-The demonstrations were single clean passes from one start pose, and the policy trained on them
-ignores everything that happens after its first look.
+## Phase 2: self-correction  (first result in)
 
 - [x] Evaluation with disturbances: the object is moved during the reach or as the gripper closes
       (`eval.py --disturb`), with the count of second grasp attempts.
 - [x] An expert that plans again when the object has moved or a grasp closed on nothing, and
       demonstrations recorded with it (`collect.py --disturb_prob`).
 - [x] Random start poses (`--random_start`), so that the arm's position alone does not give the goal away.
-- [ ] Policies trained on each of these and on both together, evaluated with and without disturbances.
+- [x] Policies trained on each, evaluated with and without disturbances: recoveries give
+      self-correction (79-88% with a moved object, where clean-data policies score 0-12%); random
+      starts give the best plain score (98%) and robustness to the start pose.
+- [ ] The two together, and with repeated early windows (training).
+- [ ] A target that keeps moving, not one that jumps once; look-alike objects next to the named one.
 - [ ] Noise-injected demonstrations: execute a perturbed action, record the expert's clean one.
-- [ ] A target that keeps moving, not one that jumps once.
 
-## Phase 3: redo the custom LLM -> VLM -> VLA comparison  (in progress)
+## Phase 3: redo the custom LLM -> VLM -> VLA comparison  (training)
 
-The first comparison (0% vs 1%) says nothing about pretraining because neither policy could
+The first comparison (0% vs 1%) said nothing about pretraining because neither policy could
 localise. Both are being re-run with every token passed to the action head, no history and 4000
-demonstrations (`vla_custom_tokens_reactive.yaml`): pretrained VLM against random-init VLM. To do
-after that: the same conditioning for the Qwen backbone.
+demonstrations (`vla_custom_tokens_reactive.yaml`): pretrained VLM against random-init VLM. Their
+first checkpoints already differ widely (lab notebook). The same conditioning now exists for
+pretrained Hugging Face backbones (`vla_qwen_tokens_reactive.yaml`) and is training as well.
 
 ## Phase 4: toward flower trimming
 
@@ -122,23 +128,25 @@ Problems found in VLA Foundry (or in our own code) while doing this, and their s
 |---|---|---|---|
 | 1 | `SimpleVLMProcessor` left uint8 tensors at 0-255 while scaling PIL / numpy images | VLM ignored images at inference (captioning 0%) | Fixed, tested |
 | 2 | Action token appended after batch padding (`vlm_foundry_backbone`) | A short instruction is probed at a different position in training than when served | Fixed, tested |
-| 3 | Same in `vlm_hf_backbone` (Qwen, PaliGemma) | Same | To do |
+| 3 | Same in `vlm_hf_backbone` (Qwen, PaliGemma) | Same | Fixed, tested (shared helper in `base.py`) |
 | 4 | `lowdim_past_timesteps or default` treats 0 as unset | Policy is fed the next state during training | Fixed, tested |
-| 5 | VLA recipes pass one pooled vector to the action head | No localisation on `pick_target` | `all_tokens` mode added for the Foundry VLM backbone; effect being measured |
+| 5 | VLA recipes pass one pooled vector to the action head | No localisation on `pick_target` | `conditioning: all_tokens` added for both VLM backbones; effect being measured |
 | 6 | A dead data-loader worker makes training wait forever | Runs hang at 0% GPU | Worked around by `train_resilient.sh`; proper fix is a loader timeout |
 | 7 | Data preset's PaliGemma-style `size` breaks the Qwen processor | Every batch fails | Worked around in `vla_qwen.yaml` |
 | 8 | Full fine-tuning of a 2B VLM does not fit in 24 GB | Out of memory | `num_trainable_vlm_layers` added |
 | 9 | `PassthroughProcessor` feeds 0-255 pixels to a from-scratch ViT | Works, but badly conditioned inputs | To test |
 | 10 | Tutorial notebook says LLM -> VLM weight transfer is not automated | Misleading; `transformer.resume_from_checkpoint` works | Fix in docs |
 | 11 | `collect.py` reported kept / attempted as the expert success rate | Number was meaningless | Fixed |
-| 12 | Rotary position table computed in bfloat16 under autocast | 641 distinct positions out of 2048; neighbouring action tokens shared a position | Fixed, tested; `rotary_legacy_autocast` reproduces the old table for old checkpoints. Effect being measured |
+| 12 | Rotary position table computed in bfloat16 under autocast | 641 distinct positions out of 2048; neighbouring action tokens shared a position | Fixed, tested; `rotary_legacy_autocast` reproduces the old table bit for bit. Same run: 83% before, 93% after; single cube with history 62-70% before, 96-98% after |
 | 13 | Evaluations on one port reached whichever policy server bound it first | Results filed under the wrong run | Fixed: free ports, the client checks the served checkpoint, mislabelled results are left out of summaries |
-| 14 | The previous-action slot of a window at the start of an episode is a copy of the first action | The expert's first command is an input in training and absent when served | `collect.py --hold_steps` as a data-side fix, being measured; a padding option in the data pipeline is to do |
+| 14 | The previous-action slot of a window at the start of an episode is a copy of the first action | The expert's first command is an input in training and absent when served | `collect.py --hold_steps` as a data-side fix did not cure a history policy (1-2% after 2.5M samples). To do in the model: slots that are padding are fed to the action head as clean values in training (`torch.where(future_mask, noisy, actions)`) and as noise by the framework's own inference adapter; an absent previous action should be absent in both |
 | 15 | Preprocessing joined any Ray instance it found and passed `num_cpus` to it | Two dataset builds at once: the second dies | Fixed: `--ray_address local`, and no `num_cpus` when joining |
-| 16 | Resuming a run with EMA switched on fails if its checkpoints were written without EMA | A run cannot gain averaged weights after its start | To do: start the average from the resumed weights |
-| 17 | Install notes say `uv sync` then `uv pip install -e .` | The second command re-resolves outside the lockfile | To fix in the docs; `uv sync` alone installs the project |
-| 18 | Two tests assume a nonexistent absolute path raises FileNotFoundError | They fail where the path's parent is not writable (PermissionError) | To fix |
+| 16 | Resuming a run with EMA switched on failed if its checkpoints were written without EMA | A run could not gain averaged weights after its start | Fixed, tested: the average starts from the resumed weights. The pickup configs now switch EMA on |
+| 17 | Install notes said `uv sync` then `uv pip install -e .` | The second command re-resolves outside the lockfile | Fixed in the docs; `uv sync` alone installs the project |
+| 18 | Tests used `/nonexistent` as a missing path | That directory exists, unreadable, on some systems (PermissionError) | Fixed: they use pytest's `tmp_path` |
 | 19 | Windows are shuffled by shard, not by sample | Not measured | To test |
+| 20 | A queue or wrapper that reuses a run name starts a second trainer in a live run's directory | Two trainers write the same checkpoints | To do: `train_resilient.sh` should refuse a run whose log is being written |
+| 21 | `eval.py` writes `results.json` in place | A reader can see half a file | To do: write to a temporary file and rename |
 
 ## Caveats
 
