@@ -148,7 +148,8 @@ VLA Foundry's VLA recipe (`vlm_backbone`, `vlm_foundry_backbone`) appends an act
 prompt and passes only that token's hidden states to the action head: again one vector. Both
 from-scratch VLAs built that way reached the named object at chance (section 3).
 
-**Fix in this fork.** `vlm_foundry_backbone` has `conditioning: all_tokens`, which passes the hidden
+**Fix in this fork.** Both VLM backbones (`vlm_foundry_backbone` for the from-scratch VLM,
+`vlm_backbone` for Hugging Face models) have `conditioning: all_tokens`, which passes the hidden
 states of every image and text token. `vit_backbone` has `text_tokens`, which adds the instruction
 to a patch-token policy.
 
@@ -179,7 +180,7 @@ slope of one against the other separates "imprecise" (slope near 1, scattered) f
 ## 7. Looking at the scene arrives late, and all at once  (confirmed)
 
 The policy that works here is the patch-token policy with the instruction as extra tokens and no
-history (`dp_vit_lang_reactive`, 36M parameters). After 1M training samples on 1500 demonstrations it
+history (`dp_vit_lang_reactive`, 49M parameters). After 1M training samples on 1500 demonstrations it
 scored 3-5% and closed the gripper at the named object 41-49% of the time (chance is 33%). That looked
 like a design that does not work. The same policy on 4000 demonstrations, evaluated at every
 checkpoint (trained weights / averaged weights):
@@ -222,8 +223,10 @@ just executed. Here that turned a working design into one that never starts.
 | no history | 0-1% | 4-36% | 75-81% |
 | with history | 1% | 1-3% | 2% |
 
-On the single cube, where there is nothing to choose, history costs less but still costs: 62-70%
-against 91-97% without it.
+On the single cube, where there is nothing to choose, history costs nothing. The first comparison there
+(62% / 70% with history against 95% / 91% without) looked like a cost, but the two runs also differed in
+their language input and pixel range, and the gap was the position bug of section 14: trained again
+with the table fixed, the history policy ends at 96% / 98%.
 
 The history policy is not blind. The same checkpoint (2.5M samples):
 
@@ -235,6 +238,11 @@ The history policy is not blind. The same checkpoint (2.5M samples):
 
 One expert action is enough for it to find the named object 97% of the time. It learned to read the
 target from the previous action, and never needed the instruction or the image for that.
+
+The three-object runs with history were trained before the position fix, which hit them harder than
+the runs without (16 action-step tokens on 4 positions against 15 on 8). The fix does not rescue them:
+the history policy trained after it, on demonstrations that begin with a hold frame, is as blind (see
+below). A history run on the plain demonstrations has not been repeated after the fix.
 
 **Why.** From the second step of a demonstration on, the previous action is the best predictor of
 the next one. And in the windows that start at the first frame, where there is no previous action,
@@ -334,7 +342,9 @@ occurs in the demonstrations does not appear in the policy, whatever its success
 
 **Averaged weights.** Runs keep a running average of their weights (EMA) next to the trained ones.
 During the transition the average is far ahead: 36% against 4% at 2.0M samples, 70% against 56% at
-2.5M. Before it and after it the two are equal within noise. Saving both costs one extra copy of the
+2.5M. Before it and after it the two are equal within noise. It is not a rule: in the 3M-sample run on
+1500 demonstrations the two stay within 9 points of each other and the trained weights are ahead as
+often as not. Saving both costs one extra copy of the
 model.
 
 **Flow steps.** The sampler turns noise into an action chunk in a number of steps. On the 85%
@@ -372,12 +382,11 @@ Five found so far, none of which raised an error:
   passes at 85% after the fix.
 - **Padding moves the probe.** The action token was appended after the batch padding. In training a
   short instruction sits in a batch with longer ones, so its action token is one position later
-  (behind a padding token) than when the same instruction is served alone. Fixed: the token goes
-  directly after the last real token. Effect on success not yet measured.
+  (behind a padding token) than when the same instruction is served alone. Fixed in both VLM
+  backbones: the token goes directly after the last real token. Effect on success not measured.
 - **Zero means "unset".** `lowdim_past_timesteps or default` treats 0 past steps as missing and
   falls back to 1, which hands the policy the state one step in the future during training. Found by
-  reading the code before running such a config; the fix and its test are written and land with
-  the next code change.
+  reading the code before running such a config. Fixed, with a test.
 
 - **The previous action at the first frame.** Section 8: the slot is filled with the expert's first
   command in training and with the hold command when served.
@@ -433,9 +442,9 @@ Things that cost time here and have nothing to do with models:
 - **Start long jobs detached.** A job started inside an ssh session dies with the connection.
 - **Do not edit a shell script while it is running.** Bash reads scripts as it goes; an in-place
   edit made a running evaluation fail with a syntax error halfway through.
-- **Follow the lockfile.** The framework's install notes say `uv sync` and then
+- **Follow the lockfile.** The framework's install notes said `uv sync` and then
   `uv pip install -e .`. The second command re-resolves outside the lockfile and silently replaced a
-  pinned dependency with a newer commit. `uv sync` alone already installs the project.
+  pinned dependency with a newer release. `uv sync` alone already installs the project.
 - **Give every evaluation its own port, and make it check what answers.** Two evaluations started
   on one port both talked to the policy server that had bound it first. The second one ran to the
   end and filed the other run's success rate under its own name; about 40 results here were wrong

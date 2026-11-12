@@ -1,7 +1,8 @@
 # vla_custom.yaml with one change: the action head is conditioned on the hidden states of every image
 # and text token of the VLM (conditioning: all_tokens) instead of on a single action-token vector.
 # With one vector the from-scratch VLAs never localised anything on pick_target (they closed the
-# gripper ~9 cm from the nearest object and reached the named object at chance, see RESULTS.md).
+# gripper ~9 cm from the nearest object and reached the named object at chance, see
+# tutorial/lab-notebook.md).
 # Pass the VLM with --model.vision_language_backbone.resume_from_checkpoint <.../checkpoint_N.pt>.
 save_path: experiments/pickup
 wandb: false

@@ -9,6 +9,10 @@ Two machines were used. **Machine A** has one 24 GB GPU (RTX 4090). **Machine B*
 (L40S) and 128 CPU cores. Machine A was unreliable; its runs died or hung several times and were
 resumed from checkpoints.
 
+Every run up to and including the section "`pick_target`, second round" was trained with a position
+table computed in half precision (see the bug table), on both machines. The runs trained with the
+corrected table are in the section "After the position fix" and nowhere else.
+
 ## Tasks and data
 
 | | |
@@ -38,7 +42,13 @@ Every frame of a demonstration starts one training window, so windows = frames.
 | `pick_target_4k_recover` | 4000 | 293,541 | same seeds as `pick_target_4k`; in 1505 episodes the object is moved once (during the reach or as the gripper closes) and the expert plans again |
 | `pick_target_4k_rs` | 4000 | 241,318 | same seeds; every episode starts from a random gripper pose above the table |
 | `pick_target_4k_rs_recover` | 4000 | 275,550 | random start poses, and the object is moved once in 1456 episodes |
+| `pick_target_4k_rs_recover_early` | 4000 | 435,550 | `pick_target_4k_rs_recover` with the windows that start in frames 0-7 present 6 times |
 | `pick_target_4k_hold` | 4000 | 267,075 | same seeds; every episode begins with one frame of the robot at rest |
+
+How each was made (`sim/pickup/collect.py` options through `make_dataset.sh`): `*_cf*` with
+`--targets_per_layout 3`; `*_recover` with `--disturb_prob 0.5`; `*_rs*` with `--random_start`;
+`*_hold` with `--hold_steps 1`; `*_early` from the dataset named, with
+`sim/pickup/boost_early_windows.py --max_frame 7 --repeat 5`.
 
 Training budgets in passes over the data: 1M samples on `pick_target_1500` are 10.1 epochs, 3M are
 30.4; 5M samples on `pick_target_4k` are 19.0 epochs; 1.5M on `pick_cube_1k` are 22.9.
@@ -146,8 +156,10 @@ about 3 mm) around step 34-44, as the expert does.
 
 ## `pick_target`, second round (machine B)
 
-All policies in this section are the 36M-parameter one: a flow-matching action transformer on the patch
-tokens of a small ViT trained from scratch. "Language" adds the instruction as tokens. "History" =
+All policies in this section are the patch-token policy: a flow-matching action transformer on the patch
+tokens of a small ViT trained from scratch, 36.3M parameters (`dp_vit`, `dp_vit_reactive`). "Language"
+adds the instruction as tokens and, with their embedding table (49,280 x 256), 12.6M parameters: 48.9M
+(`dp_vit_lang`, `dp_vit_lang_reactive`). "History" =
 frames t-1 and t, states t-1 and t, and the previous action as inputs. "No history" (`*_reactive`) =
 one frame per camera, the current state, no previous action. Every evaluation is 100 unseen layouts,
 8 actions executed per chunk, 10 flow steps, unless stated. "raw" = the trained weights, "EMA" = their
@@ -159,7 +171,9 @@ scene. **Closed at the named object**: the object nearest the gripper when it fi
 named one (chance 33%).
 
 Runs marked "position fix" were trained after the position-table bug (see the bug table) was fixed;
-the others before. Evaluations always use the code a run was trained with.
+the others before. Evaluations always use the code a run was trained with. Runs on machine B save 10
+checkpoints over their budget (`PICKUP_NUM_CHECKPOINTS=10`) and one more at the end, which is why the
+tables below have a row every tenth of the budget and a row marked "final".
 
 ### Final checkpoints
 
@@ -174,7 +188,7 @@ the others before. Evaluations always use the code a run was trained with.
 | `dp_vit_lang`: language, history | 4000 | 3.0M (stopped) | 2% / 2% | 30% / 35% | 0.11 / 0.08 | 183 / 164 mm | 3% (raw, 2.0M) |
 
 The three rows of `dp_vit_lang_reactive` differ only in the number of demonstrations and of training
-samples. The learning-rate schedule (cosine to zero) is stretched over each run's own budget.
+samples. The learning-rate schedule (a cosine from 5e-4 down to 1e-5) is stretched over each run's own budget.
 
 ### Does the closing position depend on the scene?
 
@@ -351,7 +365,11 @@ No history (`dp_vit_lang_reactive_cube1k`):
 | 1.50M (final) | 95% / 91% | 100% / 100% | 1.00 / 0.99 | 7 / 6 mm |
 
 
-With history (`dp_vit_cube1k`, no language input; the task has one instruction):
+With history (`dp_vit_cube1k`, no language input; the task has one instruction). The two runs differ
+in more than history: this one has no instruction tokens and is fed pixels in 0-255 where the other
+gets them scaled. Trained again after the position fix it ends at 96% / 98% (section "Single cube
+with history, after the fix"), so what held it at 62-70% here was the position table, in which its 16
+action-step tokens shared 4 positions, not history:
 
 | Samples | Success (raw / EMA) | Closed at the named object | Slope | Median miss to named |
 |---|---|---|---|---|
@@ -398,8 +416,10 @@ The expert moves the gripper 30 cm in that chunk. The no-language policy gives t
 ### From-scratch stages on machine B
 
 Language model final loss 4.15. VLM final loss 0.058; held-out captioning check 249/300 = 83% exact
-ordering and 279/300 = 93% leftmost object. Both were trained before the position fix; the language
-model's sequences are 256 tokens long and are not affected by it, the VLM's are 320 tokens and are.
+ordering and 279/300 = 93% leftmost object. Both were trained before the position fix. The language
+model's sequences are 256 tokens long: no two of its positions were merged (the old table rounded
+their angles to 8 significant bits). The VLM's are 320 tokens long, and positions above 256 were merged
+in pairs.
 The VLM retrained after the fix (same data and budget): final loss 0.059, captioning check 267/300 =
 89% exact ordering and 286/300 = 95% leftmost object.
 
@@ -601,10 +621,16 @@ Still training or being evaluated, with no final result here: every object named
 | `dp_vit` / `dp_vit_lang` (4 images) | about 620 samples/s | about 540 samples/s |
 | `dp_vit_reactive` / `dp_vit_lang_reactive` (2 images) | not run | about 1100 samples/s alone on a GPU; 570-700 while 4-5 policy servers evaluate on the same GPU |
 | `vla_custom` (130M) | 165 samples/s | not yet run |
+| `vla_custom_tokens_reactive` (130M, every token, 2 images) | not run | about 260 samples/s; about 190 while its checkpoints are evaluated on the same GPU |
 | `vla_qwen` (2.2B, 306M trainable, batch 16) | 49 samples/s | 45-48 samples/s |
+| `vla_qwen_tokens_reactive` (2.2B, every token, 2 images, batch 16) | not run | about 62 samples/s; about 35 while its checkpoints are evaluated on the same GPU |
 | Language model stage (91M, batch 32, 256 tokens) | 550 samples/s | 520-545 samples/s |
 
-Policy inference per chunk: 20-65 ms for the 36M policy, about 190 ms for the Qwen VLA (machine A).
+Wall time on machine B, one GPU per run, with every checkpoint evaluated on the same GPU as it appeared: the 5M-sample runs of
+`dp_vit_lang_reactive` took 77 to 87 minutes each; the 1.5M-sample single-cube runs took 33 minutes
+without history and 53 with.
+
+Policy inference per chunk: 20-65 ms for the 36M policy (`dp_vit`), about 190 ms for the Qwen VLA (machine A).
 
 ## Operations
 
@@ -628,10 +654,10 @@ Policy inference per chunk: 20-65 ms for the 36M policy, about 190 ms for the Qw
 | Problem | Effect | Fix |
 |---|---|---|
 | `SimpleVLMProcessor` scaled PIL and numpy images to [0, 1] but left uint8 tensors at 0-255; training fed tensors | the VLM ignored images at inference (captioning 0%) | scale uint8 tensors too; test added |
-| Action token appended after the batch padding (`vlm_foundry_backbone`) | a short instruction is probed one position later, behind a padding token, in a training batch than when served alone | insert it after the last real token; test added. Effect on success not measured |
+| Action token appended after the batch padding (`vlm_foundry_backbone`, and the Hugging Face wrapper `vlm_backbone`) | a short instruction is probed one position later, behind a padding token, in a training batch than when served alone | insert it after the last real token; test added. Effect on success not measured |
 | `lowdim_past_timesteps or default` treats 0 as unset | with 0 past steps the proprioception input contains the state one step in the future | explicit `is None` check; test added |
-| Both VLA recipes condition the action head on one vector | see the `pick_target` tables | `conditioning: all_tokens` for the from-scratch VLM backbone; effect not yet measured |
+| Both VLA recipes condition the action head on one vector | see the `pick_target` tables | `conditioning: all_tokens` for both VLM backbones (`vla_custom_tokens_reactive.yaml`, `vla_qwen_tokens_reactive.yaml`); see the from-scratch VLA and the Qwen backbone in "After the position fix" |
 | A dead data-loader worker leaves the trainer waiting forever | runs hang at 0% GPU | `train_resilient.sh` restarts on exit or on a stalled log |
-| The rotary position table was computed in bfloat16 under autocast, which keeps 8 significant bits | positions above 256 collapse onto even numbers, above 512 onto multiples of 4: 641 distinct positions out of 2048. In the no-history policy (425 tokens before the actions) 15 action tokens shared 8 positions; with history (about 820) 16 shared 4 | the table is computed in float32 and then cast; test added. Effect: see 'The same run before and after the fix' (one seed each; a second pair is running) and the single cube with history |
+| The rotary position table was computed in bfloat16 under autocast, which keeps 8 significant bits | positions above 256 collapse onto even numbers, above 512 onto multiples of 4: 641 distinct positions out of 2048. In the no-history policy (426 tokens before the actions: one for the noise level, 32 for the instruction, 392 patches, one for the joint state) the 15 action-step tokens, at positions 426-440, shared 8 positions; with history (about 820) 16 shared 4 | the table is computed in float32 and then cast; test added. Effect: see 'The same run before and after the fix' (one seed each; a second pair is running) and the single cube with history |
 | Evaluations shared a port (see Operations) | results filed under the wrong run | `eval.sh` takes a free port and waits for its own server; the client stops unless the server reports the checkpoint it asked for; `summarize.py` leaves out results whose recorded checkpoint does not match |
 | The previous-action input of a window at the start of a demonstration is filled with a copy of the first action | the expert's first command, which already points at the target, is an input in training and absent when served (see "What the history policy depends on") | `collect.py --hold_steps 1` begins every demonstration with a frame of the robot at rest; test of the effect in progress |
