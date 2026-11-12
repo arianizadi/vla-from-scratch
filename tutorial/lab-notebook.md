@@ -688,14 +688,14 @@ object" is the share of first closes nearest the named object.
 
 **In progress:** look-alikes with a second seed (`dp_vit_lang_reactive_lookalike4k_rs_recover_seed43`)
 and for 10M samples (`..._10m`); the clutter scenes without the leaves (`dp_vit_lang_reactive_mixed4k_rs_recover`);
-step 5 (`dp_vit_lang_reactive_cut4k_rs_recover`); the last two checkpoints of the stem run.
+step 5 (`dp_vit_lang_reactive_cut4k_rs_recover`); the stem grasp for 10M samples (`dp_vit_lang_reactive_stem4k_rs_recover_10m`).
 
 ### Step 1: a target that keeps moving (`--disturb drift`)
 
 The named object slides on a winding path at a fixed speed whenever the gripper is open (it turns away
 from the edge of the area and from the other objects). The demonstrations of
 `dp_vit_lang_reactive_pt4k_rs_recover_drift` (dataset `pick_target_4k_rs_recover_drift`): 1237 of the
-4000 slide at 2 cm/s while the expert follows the object; 789 are moved during the reach and 672 at the
+4000 slide while the expert follows the object, each at its own speed drawn between 1 and 3 cm/s (`--drift_cm_s 2`: 0.5 to 1.5 times it); 789 are moved during the reach and 672 at the
 grasp; 1302 are undisturbed.
 
 | Who | 1 cm/s | 2 cm/s | 4 cm/s |
@@ -765,9 +765,10 @@ before reaching the stem and never closes, in 2 it closes and fails.
 | Policy | Grasp the stem |
 |---|---|
 | random starts and recoveries on `pick_target`, never shown stems | 0/100 |
-| trained on stems (`dp_vit_lang_reactive_stem4k_rs_recover`), checkpoints 1 to 8 | 0-5/100 |
+| trained on stems (`dp_vit_lang_reactive_stem4k_rs_recover`) | 4/100 / 6/100 |
 
-Where the stem policy fails (checkpoint 9, averaged weights; 30 layouts rolled out with every control
+Over its checkpoints 1 to 11 the stem policy never passes 10/100 (averaged weights: 0, 1, 0, 3, 5, 5, 2, 4, 5, 3, 6).
+Where it fails (checkpoint 9, averaged weights; 30 layouts rolled out with every control
 step recorded): in 16 it never closes within 3 cm of the named stem; in 13 the stem is held by the test
 above at some step, but the hold lasts 3-9 steps before a finger loses the stem; 1 succeeds. Over the
 closed steps within 3 cm of the named stem, no finger touches it 56% of the time, the stem is outside the
