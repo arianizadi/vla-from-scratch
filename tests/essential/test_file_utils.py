@@ -68,3 +68,35 @@ class TestCheckDirectoryHasFilesWithPrefix:
             assert len(result) == 2
             assert "episode_file.tar" in result
             assert "episode_subdir" in result
+
+
+class TestGetLatestCheckpoint:
+    """The newest checkpoint is the one with the highest number, not the last in alphabetical order."""
+
+    def test_ten_or_more_checkpoints(self, tmp_path):
+        from vla_foundry.file_utils import get_latest_checkpoint
+
+        checkpoints = tmp_path / "checkpoints"
+        checkpoints.mkdir()
+        for number in range(1, 12):
+            (checkpoints / f"checkpoint_{number}.pt").touch()
+            (checkpoints / f"ema_{number}.pt").touch()
+        # Alphabetically checkpoint_9.pt is last; the newest is checkpoint_11.pt.
+        assert os.path.basename(get_latest_checkpoint(str(tmp_path))) == "checkpoint_11.pt"
+        assert os.path.basename(get_latest_checkpoint(str(checkpoints))) == "checkpoint_11.pt"
+
+    def test_no_checkpoints(self, tmp_path):
+        from vla_foundry.file_utils import get_latest_checkpoint
+
+        (tmp_path / "checkpoints").mkdir()
+        assert get_latest_checkpoint(str(tmp_path)) is None
+
+    def test_the_vlm_inference_script_uses_it(self):
+        # inference_vlm.py once sorted the file names as text and so loaded checkpoint_9.pt of a longer run.
+        import inspect
+
+        from vla_foundry.inference import inference_vlm
+
+        source = inspect.getsource(inference_vlm)
+        assert "get_latest_checkpoint(args.experiment_dir)" in source
+        assert "sorted(glob" not in source

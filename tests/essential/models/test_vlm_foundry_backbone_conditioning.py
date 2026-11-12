@@ -1,5 +1,7 @@
 """Conditioning modes of the VLM Foundry backbone and their independence from batch padding."""
 
+from types import SimpleNamespace
+
 import pytest
 import torch
 import yaml
@@ -66,3 +68,19 @@ def test_all_tokens_rejects_prompts_longer_than_conditioning_len(tmp_path):
     ids, mask = prompt([3, 4])
     with pytest.raises(ValueError):
         backbone.get_action_conditioning(ids, torch.rand(1, 3, 28, 28), attention_mask=mask)
+
+
+def test_images_are_resized_to_the_size_of_a_from_scratch_vit(tmp_path):
+    backbone = make(tmp_path)
+    ids, mask = prompt([3, 4])
+    _, pixels, *_ = backbone._prepare_inputs(ids, torch.rand(1, 2, 3, 56, 56), attention_mask=mask)
+    assert pixels.shape == (2, 3, 28, 28)
+
+
+def test_a_vision_tower_without_img_size_gets_the_images_as_they_are(tmp_path):
+    """A pretrained tower (vit_hf) has no img_size; reading it used to raise AttributeError."""
+    backbone = make(tmp_path)
+    backbone._model.model_params = SimpleNamespace(vit=SimpleNamespace())
+    ids, mask = prompt([3, 4])
+    _, pixels, *_ = backbone._prepare_inputs(ids, torch.rand(1, 2, 3, 56, 56), attention_mask=mask)
+    assert pixels.shape == (2, 3, 56, 56)

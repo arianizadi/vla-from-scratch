@@ -147,6 +147,8 @@ about 3 mm) around step 34-44, as the expert does.
 | 2. VLM | stage 1 + ViT (224 px, patch 14, 256 wide, 6 layers) + linear projector, 96.5M | 40,000 captioned sim renders | 400k samples, about 15 min at 437 samples/s | loss 0.058; on 300 held-out scenes it lists the objects in left-to-right order 85% of the time (256/300) and names the leftmost object 95% (285/300) |
 | 3. VLA | stage 2 + flow-matching action transformer, 130.0M, everything trainable | 1500 `pick_target` demos | 1.0M samples, about 1.7 h at 165 samples/s | 0/100 (see above) |
 
+- Stage 1 trains on the end of each document: the tokenizer's published configuration truncates on
+  the left, so of a document longer than 257 tokens the last 257 are kept.
 - Stage 1 ran out of memory at batch 128: the float32 logits for 128 x 256 tokens over a 49,280-word
   vocabulary are 6.5 GB per tensor.
 - Before the pixel-range fix (below) the stage-2 model scored 1/300 on exact ordering and 70/300 on

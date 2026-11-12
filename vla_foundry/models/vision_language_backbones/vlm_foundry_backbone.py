@@ -77,8 +77,12 @@ class VLMFoundryBackboneWrapper(BaseBackboneWrapper):
         if pixel_values is not None:
             # The data processor (SmolVLM2) upscales images to 512×512 tiles, but the custom
             # ViT was trained at a different resolution. Resize to the ViT's native img_size.
-            vit_img_size = self._model.model_params.vit.img_size
-            if pixel_values.shape[-1] != vit_img_size or pixel_values.shape[-2] != vit_img_size:
+            # A pretrained vision tower (vit_hf) has no img_size: its processor already produces
+            # the size it expects, so the images are passed on as they are.
+            vit_img_size = getattr(self._model.model_params.vit, "img_size", None)
+            if vit_img_size is not None and (
+                pixel_values.shape[-1] != vit_img_size or pixel_values.shape[-2] != vit_img_size
+            ):
                 orig_shape = pixel_values.shape
                 pv = pixel_values.reshape(-1, *orig_shape[-3:]).float()
                 pv = torch.nn.functional.interpolate(

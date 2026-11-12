@@ -147,6 +147,10 @@ Problems found in VLA Foundry (or in our own code) while doing this, and their s
 | 19 | Windows are shuffled by shard, not by sample | Not measured | To test |
 | 20 | A queue or wrapper that reuses a run name starts a second trainer in a live run's directory | Two trainers write the same checkpoints | Fixed, tested: `train_resilient.sh` holds `<run>.pid` while it runs and a second copy with the same name exits |
 | 21 | `eval.py` wrote `results.json` and the trace files in place | A monitor reading them could see half a file | Fixed: written to a temporary file and renamed |
+| 22 | `inference_vlm.py` chose its checkpoint by sorting the file names as text | With ten or more checkpoints it loaded `checkpoint_9.pt`, not the newest | Fixed, tested: it uses `get_latest_checkpoint` |
+| 23 | `vlm_foundry_backbone` read `vit.img_size`, which a pretrained vision tower (`vit_hf`) does not have | AttributeError as soon as such a VLM is used as a policy backbone | Fixed, tested: the images are passed on as the tower's processor made them. The rest of that route has not been run here |
+| 24 | The stage-1 tokenizer truncates on the left (its published configuration) | The language model is trained on the last 257 tokens of every longer document, not the first | Recorded, not changed; effect not measured |
+| 25 | A Hugging Face backbone's rotary frequencies are a non-persistent buffer: training casts it to bfloat16 with the model, the policy server builds the model in float32 | The backbone may see slightly different position angles in training and when served | To test (read from the code, not measured) |
 
 ## Caveats
 

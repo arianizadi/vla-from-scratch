@@ -14,7 +14,6 @@ Usage:
 """
 
 import argparse
-import glob
 import os
 
 import requests
@@ -22,7 +21,7 @@ import torch
 from PIL import Image, ImageOps
 
 from vla_foundry.data.processor import apply_chat_template, get_processor
-from vla_foundry.file_utils import load_model_checkpoint
+from vla_foundry.file_utils import get_latest_checkpoint, load_model_checkpoint
 from vla_foundry.models import create_model
 from vla_foundry.params.train_experiment_params import TrainExperimentParams, load_params_from_yaml
 
@@ -81,8 +80,8 @@ def main():
     if args.checkpoint:
         ckpt_path = f"{args.experiment_dir}/checkpoints/{args.checkpoint}"
     else:
-        ckpts = sorted(glob.glob(f"{args.experiment_dir}/checkpoints/checkpoint_*.pt"))
-        ckpt_path = ckpts[-1] if ckpts else f"{args.experiment_dir}/checkpoints/checkpoint_1.pt"
+        # Numeric order: a plain sort puts checkpoint_10.pt before checkpoint_9.pt.
+        ckpt_path = get_latest_checkpoint(args.experiment_dir) or f"{args.experiment_dir}/checkpoints/checkpoint_1.pt"
     print(f"Loading {ckpt_path}")
     load_model_checkpoint(model, ckpt_path)
 
