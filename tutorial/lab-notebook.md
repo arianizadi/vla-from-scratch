@@ -402,18 +402,24 @@ are in the training set 6 times instead of once (45% of all windows).
 
 ### First action chunk, open loop
 
-Open-loop test of the first action chunk (15 steps) from the first frame, 60 layouts,
-`dp_vit_lang_reactive` at 0.9M samples:
+Open-loop test of the first action chunk (15 steps) from the first frame of an episode; the chunk is
+not executed. `dp_vit_lang_reactive_pt1500` (1500 demonstrations, the 1M-sample run) at 0.9M samples,
+trained weights, 60 layouts per column: seeds 0-59, which are in its demonstrations, and seeds
+1,000,000-1,000,059, which are not. The end point of a chunk is the gripper position that its last
+joint target gives by forward kinematics. A chunk "heads for" the object whose direction from the
+start pose is closest to the chunk's direction of travel in the table plane.
 
 | | Training layouts | Unseen layouts |
 |---|---|---|
 | Expert's chunk heads for the named object | 100% | 100% |
 | Policy's chunk heads for the named object | 35% | 48% |
-| Distance between the policy's and the expert's chunk endpoint (median) | 12.1 cm | 11.2 cm |
-| Distance between two samples of the policy for the same input (median) | 10.9 cm | 10.8 cm |
+| With another object of the layout named instead, the policy's chunk heads for that one | 42% | 43% |
+| Distance between the policy's and the expert's chunk end point (median) | 12.1 cm | 11.2 cm |
+| Distance between the policy's end points for the two instructions, one draw each (median) | 10.9 cm | 10.8 cm |
 
-The expert moves the gripper 30 cm in that chunk. The no-language policy gives the same picture
-(32-42% heading for the named object, endpoints 12.9 cm from the expert's).
+The expert moves the gripper 30 cm in that chunk. The policy without a language input
+(`dp_vit_reactive_pt1500`, final checkpoint) gives the same picture: 32-42% heading for the named
+object, end points 12.9 cm from the expert's.
 
 ### From-scratch stages on machine B
 
