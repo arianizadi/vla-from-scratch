@@ -35,7 +35,7 @@ def _jpeg(img, quality=95):
 
 
 def _worker(args):
-    task, jobs, out_dir, worker_id, disturb_prob, anywhere = args
+    task, jobs, out_dir, worker_id, disturb_prob, anywhere, hold_steps = args
     env = PickupEnv(task)
     expert = ScriptedExpert(env, seed=worker_id, reactive=disturb_prob > 0)
     results = []
@@ -55,7 +55,8 @@ def _worker(args):
         states, actions = [], []
         done, info = False, {}
         while not done:
-            action = expert.act()
+            # The first hold_steps frames record the robot at rest under its hold command.
+            action = env.last_action.copy() if len(actions) < hold_steps else expert.act()
             for c in CAMERAS:
                 frames[c].append(_jpeg(obs[c]))
             states.append(obs["state"])
@@ -118,6 +119,15 @@ def main():
         help="start every episode from a random gripper pose above the table instead of the home pose. From "
         "one fixed start, the arm's own position gives the goal away after a few steps of any reach.",
     )
+    ap.add_argument(
+        "--hold_steps",
+        type=int,
+        default=0,
+        help="begin every episode with this many frames of the robot holding still. A policy that is given its "
+        "previous action is served the hold command before its first step; without such frames, the first "
+        "training window fills that slot with a copy of the expert's first command, which already points at the "
+        "target.",
+    )
     args = ap.parse_args()
     num_objects = TASKS[args.task]["num_objects"]
     assert 1 <= args.targets_per_layout <= num_objects, f"{args.task} has {num_objects} objects per layout"
@@ -137,7 +147,7 @@ def main():
             next_seed = seeds[-1] + 1
             # With one target per layout the seed's own choice is kept (target_index None).
             jobs = [(seed, i if per_layout > 1 else None) for seed in seeds for i in range(per_layout)]
-            extra = (args.disturb_prob, args.random_start)
+            extra = (args.disturb_prob, args.random_start, args.hold_steps)
             chunks = [(args.task, jobs[i :: args.workers], str(out), i, *extra) for i in range(args.workers)]
             for res in pool.map(_worker, chunks):
                 attempted += len(res)
@@ -188,6 +198,7 @@ def main():
         targets_per_layout=per_layout,
         disturb_prob=args.disturb_prob,
         random_start=args.random_start,
+        hold_steps=args.hold_steps,
         disturbed_episodes=sum(r["disturbed"] != "none" for r in kept),
         data_path="data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
         features={
