@@ -291,17 +291,17 @@ class TestRoboticsProcessorLoad:
             if os.path.exists(temp_config_path):
                 os.unlink(temp_config_path)
 
-    def test_robotics_processor_load_nonexistent_file(self):
+    def test_robotics_processor_load_nonexistent_file(self, tmp_path):
         """Test RoboticsProcessor.load() with nonexistent config file."""
         # draccus.load throws a different exception for nonexistent files
         with pytest.raises((FileNotFoundError, Exception)):
-            RoboticsProcessor.load("/nonexistent/config.yaml")
+            RoboticsProcessor.load(str(tmp_path / "missing" / "config.yaml"))
 
-    def test_robotics_processor_from_pretrained_nonexistent_dir(self):
+    def test_robotics_processor_from_pretrained_nonexistent_dir(self, tmp_path):
         """Test RoboticsProcessor.from_pretrained() with nonexistent directory."""
         # draccus.load throws a different exception for nonexistent files
         with pytest.raises((FileNotFoundError, Exception)):
-            RoboticsProcessor.from_pretrained("/nonexistent/dir")
+            RoboticsProcessor.from_pretrained(str(tmp_path / "missing"))
 
     @patch("vla_foundry.data.processor.robotics_processor.get_processor")
     def test_robotics_processor_with_actual_dataset_statistics(
@@ -587,24 +587,26 @@ class TestRoboticsNormalizerLoad:
             if os.path.exists(temp_config_path):
                 os.unlink(temp_config_path)
 
-    def test_robotics_normalizer_load_nonexistent_config(self, temp_stats_file):
+    # The missing paths below are under pytest's tmp_path. A fixed path such as /nonexistent is a real,
+    # unreadable directory on some systems, where opening a file in it raises PermissionError.
+    def test_robotics_normalizer_load_nonexistent_config(self, temp_stats_file, tmp_path):
         """Test RoboticsNormalizer.load() with nonexistent config file."""
         # The actual load method has a bug, but we test the error it would produce
         # when trying to load a nonexistent file
         with pytest.raises((FileNotFoundError, AttributeError)):
-            RoboticsNormalizer.load("/nonexistent/config.yaml", temp_stats_file)
+            RoboticsNormalizer.load(str(tmp_path / "missing" / "config.yaml"), temp_stats_file)
 
-    def test_robotics_normalizer_load_nonexistent_stats(self, temp_normalization_config_file):
+    def test_robotics_normalizer_load_nonexistent_stats(self, temp_normalization_config_file, tmp_path):
         """Test RoboticsNormalizer.load() with nonexistent statistics file."""
         # The load method has a bug, but we can still test that it would fail
         with pytest.raises((FileNotFoundError, AttributeError)):
-            RoboticsNormalizer.load(temp_normalization_config_file, "/nonexistent/stats.json")
+            RoboticsNormalizer.load(temp_normalization_config_file, str(tmp_path / "missing" / "stats.json"))
 
-    def test_robotics_normalizer_from_pretrained_nonexistent_dir(self):
+    def test_robotics_normalizer_from_pretrained_nonexistent_dir(self, tmp_path):
         """Test RoboticsNormalizer.from_pretrained() with nonexistent directory."""
         # The from_pretrained method has a bug, but we can still test error handling
         with pytest.raises((FileNotFoundError, AttributeError)):
-            RoboticsNormalizer.from_pretrained("/nonexistent/dir")
+            RoboticsNormalizer.from_pretrained(str(tmp_path / "missing"))
 
     def test_robotics_normalizer_from_pretrained_missing_config(self, sample_statistics_data):
         """Test RoboticsNormalizer.from_pretrained() with missing config file."""

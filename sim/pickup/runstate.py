@@ -12,6 +12,8 @@ import re
 import subprocess
 import time
 
+from .summarize import close_slope, served_checkpoint_matches
+
 PROGRESS = re.compile(
     r"Train Checkpoint: (\d+) \[\s*(\d+)/(\d+) \(\s*\d+%\)\] Loss: ([\d.]+|nan).*? ([\d.]+)/s,.*?LR: ([\d.e+-]+)"
 )
@@ -153,10 +155,27 @@ class Evals:
                 running += 1
                 continue
             try:
-                rows.append((int(m.group(1)), m.group(2), os.path.basename(os.path.dirname(d)), self.load(path)))
+                results = self.load(path)
             except (OSError, json.JSONDecodeError):
                 continue
+            if not served_checkpoint_matches(results, name, int(m.group(1)), m.group(2)):
+                continue  # answered by another run's policy server (two evaluations on one port)
+            rows.append((int(m.group(1)), m.group(2), os.path.basename(os.path.dirname(d)), results))
         return sorted(rows, key=lambda r: (r[2], r[0], r[1])), running
+
+    def probes(self, name):
+        """Evaluations of a run under other conditions than a plain checkpoint evaluation (sampler
+        settings, interventions, disturbances): [(variant, task, results dict), ...] sorted."""
+        rows = []
+        for path in glob.glob(os.path.join(self.results, name, self.task or "*", "*", "results.json")):
+            variant = os.path.basename(os.path.dirname(path))
+            if re.fullmatch(r"ckpt_(\d+)_(raw|ema)", variant):
+                continue
+            try:
+                rows.append((variant, os.path.basename(os.path.dirname(os.path.dirname(path))), self.load(path)))
+            except (OSError, json.JSONDecodeError):
+                continue
+        return sorted(rows, key=lambda r: (r[1], r[0]))
 
 
 def gpus():
@@ -218,6 +237,8 @@ def evaluation_row(checkpoint, weights, task, results, samples=None):
         median_miss_nearest_mm=grasp.get("median_xy_err_nearest_mm"),
         within_10mm=grasp.get("within_10mm_of_target_rate"),
         within_20mm=grasp.get("within_20mm_of_target_rate"),
+        close_slope=close_slope(results),
+        retried_rate=grasp.get("retried_rate"),
         wrong_object_rate=results.get("wrong_object_rate"),
         per_target={
             k: dict(successes=v["successes"], episodes=v["episodes"]) for k, v in results.get("per_target", {}).items()

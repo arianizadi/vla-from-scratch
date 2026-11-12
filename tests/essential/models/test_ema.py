@@ -320,3 +320,25 @@ class TestEMACheckpoints:
             assert new_ema_model.optimization_step.item() == original_optimization_step + 5, (
                 "Optimization step should continue from restored value"
             )
+
+
+@pytest.mark.parametrize(("ema_type", "kwargs"), [("vanilla", {"alpha": 0.999}), ("ema", {})])
+def test_start_from_sets_the_average_to_the_given_weights(ema_type, kwargs):
+    """A run resumed with EMA switched on starts its average at the resumed weights."""
+    torch.manual_seed(0)
+    model = torch.nn.Sequential(torch.nn.Linear(4, 8), torch.nn.BatchNorm1d(8), torch.nn.Linear(8, 2))
+    ema = create_ema_model(model, ema_type=ema_type, **kwargs)
+    with torch.no_grad():  # the model moves on (as if a checkpoint had been loaded into it)
+        for p in model.parameters():
+            p.add_(torch.randn_like(p))
+        model[1].running_mean.add_(1.0)
+    assert not torch.equal(next(ema.model.parameters()), next(model.parameters()))
+
+    ema.start_from(model)
+
+    for averaged, current in zip(ema.model.parameters(), model.parameters(), strict=True):
+        assert torch.equal(averaged, current)
+    assert torch.equal(ema.model[1].running_mean, model[1].running_mean)
+    ema.step(model)  # and the next update leaves it there, since the model has not changed
+    for averaged, current in zip(ema.model.parameters(), model.parameters(), strict=True):
+        assert torch.allclose(averaged, current)

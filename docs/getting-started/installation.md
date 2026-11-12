@@ -16,8 +16,7 @@ git clone https://github.com/TRI-ML/vla_foundry.git
 cd vla_foundry
 
 # Create environment and install dependencies
-uv sync
-uv pip install -e .
+uv sync   # installs the dependencies and the project itself, at the versions in uv.lock
 ```
 
 ## Running Scripts

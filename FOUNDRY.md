@@ -46,8 +46,7 @@ VLA Foundry is a framework for training Vision-Language-Action models. We suppor
 ## Installation
 We recommend using [uv](https://docs.astral.sh/uv/getting-started/installation/) for environment management. Please follow the uv documentation for installation. Once uv is installed, create a Python 3.12 virtual environment using uv and install the project dependencies with the command below:
 ```bash
-uv sync
-uv pip install -e .
+uv sync   # installs the dependencies and the project itself, at the versions in uv.lock
 ```
 The recommended workflow is to run scripts directly with `uv` via `uv run <script> <args>`.
 Alternatively, to activate the virtual env you can then run `source .venv/bin/activate` then proceed as usual (though should still use `uv` for package and dependency management).

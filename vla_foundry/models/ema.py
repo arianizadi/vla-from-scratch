@@ -32,6 +32,20 @@ class EMABaseModel(torch.nn.Module):
         """Return the averaged model."""
         raise NotImplementedError()
 
+    @torch.no_grad()
+    def start_from(self, new_model):
+        """Set the average to `new_model`'s current weights and buffers.
+
+        For a run that is resumed with EMA switched on from a checkpoint written without it: the
+        average then begins at the resumed weights, not at the random initialisation the wrapper was
+        built from.
+        """
+        averaged = self.model
+        for mine, theirs in zip(averaged.parameters(), new_model.parameters(), strict=True):
+            mine.copy_(theirs.to(device=mine.device, dtype=mine.dtype))
+        for mine, theirs in zip(averaged.buffers(), new_model.buffers(), strict=True):
+            mine.copy_(theirs.to(device=mine.device, dtype=mine.dtype))
+
 
 class VanillaEMAModel(EMABaseModel):
     """Simple EMA with fixed decay rate."""

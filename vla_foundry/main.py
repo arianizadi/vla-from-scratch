@@ -227,7 +227,14 @@ def main():
             # Replace "checkpoint_" with "ema_" to get EMA checkpoint path
             ema_checkpoint_file = checkpoint_file.replace("checkpoint_", "ema_")
             ema_checkpoint_path = os.path.join(checkpoint_dir, ema_checkpoint_file)
-            load_ema_checkpoint(ema_model, ema_checkpoint_path)
+            if file_exists(ema_checkpoint_path):
+                load_ema_checkpoint(ema_model, ema_checkpoint_path)
+            else:
+                # The checkpoint was written by a run without EMA: begin the average here.
+                logging.warning(
+                    f"No EMA checkpoint at '{ema_checkpoint_path}'. Starting the average from the resumed weights."
+                )
+                ema_model.start_from(model)
 
     # Create LR scheduler, loss function.
     scheduler = create_scheduler(cfg.hparams, optimizer, cfg.total_train_samples)
