@@ -66,6 +66,36 @@ for _name, _label, _rgba in (
     ("cube_dark", "dark red cube", (0.42, 0.03, 0.03, 1)),
 ):
     OBJECTS[_name] = dict(OBJECTS["cube"], label=_label, visual=[("cube", _rgba, 0.0)])
+# Flowers on stems (flower-trimming step 4): a heavy base, a thin stem and a flower head, built from primitives.
+# The flower on top blocks a grasp from above, so the stem is taken from the side ("side"), inside a band of
+# heights on the stem ("band": the gripper's centre point, metres above the table).
+STEM_GREEN = (0.20, 0.50, 0.15, 1)
+POT = (0.35, 0.22, 0.14, 1)
+for _colour, _rgba in (
+    ("red", (0.86, 0.10, 0.12, 1)),
+    ("orange", (0.93, 0.47, 0.08, 1)),
+    ("pink", (0.93, 0.45, 0.70, 1)),
+    ("purple", (0.46, 0.22, 0.72, 1)),
+):
+    OBJECTS[f"flower_{_colour}"] = dict(
+        label=f"{_colour} flower",
+        visual=[],
+        prim_visual=[
+            ("cylinder", (0.035, 0.008), POT, 0.0),
+            ("capsule", (0.005, 0.07), STEM_GREEN, 0.083),
+            ("sphere", (0.021,), _rgba, 0.172),
+        ],
+        collision=[
+            ("cylinder", (0.035, 0.008), 0.0, 8000),
+            ("capsule", (0.005, 0.07), 0.083, 600),
+            ("sphere", (0.021,), 0.172, 150),
+        ],
+        rest_z=0.008,
+        grasp="side",
+        band=(0.07, 0.11),
+        grasp_sym=None,
+        grasp_axis=0.0,
+    )
 TASKS = {
     "pick_cube": dict(pool=["cube"], num_objects=1),
     "pick_target": dict(pool=["cube", "can", "hex", "tblock"], num_objects=3),
@@ -74,6 +104,12 @@ TASKS = {
     # the front camera. The leaves are seen but not touched (no collision): this task is about seeing.
     "pick_clutter": dict(
         pool=["cube", "can", "hex", "tblock", "cube_orange", "cube_pink", "cube_dark"], num_objects=4, leaves=3
+    ),
+    # Step 4: three flowers on stems; grasp the named one by its stem, from the side, inside its band.
+    "grasp_stem": dict(
+        pool=["flower_red", "flower_orange", "flower_pink", "flower_purple"],
+        num_objects=3,
+        instruction="grasp the stem of the {label}",
     ),
 }
 MAX_LEAVES = 4
@@ -169,18 +205,23 @@ def build_model() -> mujoco.MjModel:
         name="wrist", pos=[0.075, 0, 0.035], quat=_look_at_quat([0.075, 0, 0.035], [0, 0, 0.17], up=(1, 0, 0)), fovy=80
     )
 
-    geom_types = {"box": mujoco.mjtGeom.mjGEOM_BOX, "cylinder": mujoco.mjtGeom.mjGEOM_CYLINDER}
+    geom_types = {
+        "box": mujoco.mjtGeom.mjGEOM_BOX,
+        "cylinder": mujoco.mjtGeom.mjGEOM_CYLINDER,
+        "capsule": mujoco.mjtGeom.mjGEOM_CAPSULE,
+        "sphere": mujoco.mjtGeom.mjGEOM_SPHERE,
+    }
     for i, (name, obj) in enumerate(OBJECTS.items()):
         body = wb.add_body(name=name, pos=[2.0 + 0.3 * i, 2.0, -0.76 + obj["rest_z"]])
         body.add_freejoint()
-        for j, (gtype, size, z) in enumerate(obj["collision"]):
+        for j, (gtype, size, z, *density) in enumerate(obj["collision"]):
             body.add_geom(
                 name=f"{name}_col{j}",
                 type=geom_types[gtype],
                 size=list(size) + [0] * (3 - len(size)),
                 pos=[0, 0, z],
                 group=3,
-                density=600,
+                density=density[0] if density else 600,
                 friction=[1.5, 0.01, 0.0002],
                 condim=4,
                 solref=[0.004, 1],
@@ -190,6 +231,17 @@ def build_model() -> mujoco.MjModel:
             body.add_geom(
                 type=mujoco.mjtGeom.mjGEOM_MESH,
                 meshname=mesh_name,
+                pos=[0, 0, z],
+                rgba=list(rgba),
+                contype=0,
+                conaffinity=0,
+                group=2,
+                density=0,
+            )
+        for gtype, size, rgba, z in obj.get("prim_visual", []):
+            body.add_geom(
+                type=geom_types[gtype],
+                size=list(size) + [0] * (3 - len(size)),
                 pos=[0, 0, z],
                 rgba=list(rgba),
                 contype=0,
@@ -219,6 +271,8 @@ class PickupEnv:
         self.obj_qadr = {n: self.model.joint(self.model.body(n).jntadr[0]).qposadr[0] for n in OBJECTS}
         self.obj_vadr = {n: self.model.joint(self.model.body(n).jntadr[0]).dofadr[0] for n in OBJECTS}
         self.leaf_mocap = [int(self.model.body(f"leaf{i}").mocapid[0]) for i in range(MAX_LEAVES)]
+        self.finger_bodies = (self.model.body("left_finger").id, self.model.body("right_finger").id)
+        self.obj_body = {n: self.model.body(n).id for n in OBJECTS}
         self.leaves: list[list[float]] = []  # [x, y, yaw] of each leaf in use
         self.active: list[str] = []
         self.target: str = ""
@@ -243,7 +297,7 @@ class PickupEnv:
         self.target = str(rng.choice(self.active))  # always drawn, so the layout does not depend on target_index
         if target_index is not None:
             self.target = str(self.active[target_index])
-        self.instruction = f"pick up the {OBJECTS[self.target]['label']}"
+        self.instruction = cfg.get("instruction", "pick up the {label}").format(label=OBJECTS[self.target]["label"])
 
         placed = []
         for i, name in enumerate(OBJECTS):
@@ -280,6 +334,15 @@ class PickupEnv:
         self.last_action = np.concatenate([self.data.ctrl[:7], [self.data.ctrl[7] / 255.0]]).astype(np.float32)
         self.steps += 1
 
+        if OBJECTS[self.target].get("grasp") == "side":
+            # A stem counts as taken when both fingers touch it inside its band and it still stands.
+            held = [n for n in self.active if self.holds_stem(n)]
+            target_up = self.target in held
+            self.lift_count = self.lift_count + 1 if target_up else 0
+            success = self.lift_count >= HOLD_STEPS
+            done = success or self.steps >= self.max_steps
+            info = dict(success=success, lifted=held, wrong_object=bool(held) and not target_up)
+            return self.get_obs(), done, info
         lifted = self.lifted_objects()
         target_up = self.target in lifted
         self.lift_count = self.lift_count + 1 if target_up else 0
@@ -289,6 +352,30 @@ class PickupEnv:
         return self.get_obs(), done, info
 
     # ---------------------------------------------------------------- queries
+    def holds_stem(self, name):
+        """The gripper has closed on `name`: the gripper is commanded shut, the stem lies between the fingers and
+        inside the fingertips' depth, and a finger presses on it; the gripper's centre is inside the stem's band,
+        and the stem still stands (< 20 degrees). The fingers are coupled, so on a stem that cannot slide to the
+        middle they stop when the first one touches it; for a cut, a stem caught between the jaws is enough."""
+        d, body = self.data, self.obj_body[name]
+        touching = any(
+            {self.model.geom_bodyid[d.contact[i].geom1], self.model.geom_bodyid[d.contact[i].geom2]} == {f, body}
+            for i in range(d.ncon)
+            for f in self.finger_bodies
+        )
+        lo, hi = OBJECTS[name]["band"]
+        tcp = self.tcp_pos()
+        R = d.site_xmat[self.tcp_id].reshape(3, 3)
+        base = self.object_pos(name)
+        rel = R.T @ (np.array([base[0], base[1], tcp[2]]) - tcp)  # the stem's axis at the gripper's height, hand frame
+        opening = float(self.state()[7]) * 0.08
+        between = abs(rel[1]) < opening / 2 and abs(rel[2]) < 0.015
+        closed = self.data.ctrl[7] < 0.5 * 255
+        adr = self.obj_qadr[name]
+        x, y = d.qpos[adr + 4], d.qpos[adr + 5]
+        upright = 1 - 2 * (x * x + y * y) > np.cos(np.radians(20))  # the body's z axis against the world's
+        return bool(touching and between and closed and lo <= tcp[2] <= hi and upright)
+
     def lifted_objects(self):
         return [n for n in self.active if self.object_pos(n)[2] - self.rest_z[n] > LIFT_HEIGHT]
 

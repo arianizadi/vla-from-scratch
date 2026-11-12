@@ -20,6 +20,28 @@ def _rotz(a):
     return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
 
 
+def _turn_toward(R, R_target, max_angle):
+    """R rotated toward R_target by at most max_angle (radians), about the axis that joins them."""
+    q, qt, dq = np.zeros(4), np.zeros(4), np.zeros(4)
+    mujoco.mju_mat2Quat(q, R.reshape(-1))
+    mujoco.mju_mat2Quat(qt, R_target.reshape(-1))
+    inv = np.zeros(4)
+    mujoco.mju_negQuat(inv, q)
+    mujoco.mju_mulQuat(dq, qt, inv)
+    if dq[0] < 0:
+        dq = -dq
+    angle = 2 * np.arccos(np.clip(dq[0], -1, 1))
+    if angle <= max_angle:
+        return R_target.copy(), angle
+    axis = dq[1:] / np.linalg.norm(dq[1:])
+    step, out = np.zeros(4), np.zeros(4)
+    mujoco.mju_axisAngle2Quat(step, axis, max_angle)
+    mujoco.mju_mulQuat(out, step, q)
+    R_out = np.zeros(9)
+    mujoco.mju_quat2Mat(R_out, out)
+    return R_out.reshape(3, 3), angle
+
+
 TRACK_LIMIT = 0.04  # metres: a move of the object up to this is followed by shifting the plan, a larger one re-plans
 
 
@@ -42,9 +64,12 @@ class ScriptedExpert:
         self.yaw_home = float(np.arctan2(self.R_home[1, 1], self.R_home[0, 1]))
 
     # --------------------------------------------------------------------- IK
-    def solve_ik(self, q_init, pos, yaw_offset, iters=30, damping=0.05):
+    def solve_ik(self, q_init, pos, yaw_offset, iters=30, damping=0.05, R_des=None):
+        """Joint targets that put the gripper's centre at `pos`, pointing down with the yaw offset given, or in
+        the orientation `R_des` when that is given (a grasp from the side)."""
         m, d, sid = self.env.model, self.ik_data, self.env.tcp_id
-        R_des = _rotz(yaw_offset) @ self.R_home
+        if R_des is None:
+            R_des = _rotz(yaw_offset) @ self.R_home
         q = np.array(q_init, dtype=float)
         jacp, jacr = np.zeros((3, m.nv)), np.zeros((3, m.nv))
         for _ in range(iters):
@@ -71,6 +96,7 @@ class ScriptedExpert:
         env = self.env
         self.des_pos = env.tcp_pos()
         self.des_yaw = yaw
+        self.des_R = None  # set when a grasp from the side turns the gripper away from pointing down
         self.q_cmd = env.data.ctrl[:7].copy()
         self.replans = 0
         self.tracks = 0
@@ -80,6 +106,8 @@ class ScriptedExpert:
         """Waypoints for the named object where it is now, starting from the current set-point."""
         env = self.env
         obj = OBJECTS[env.target]
+        if obj.get("grasp") == "side":
+            return self._plan_side(again)
         p = env.object_pos(env.target)
         if obj["grasp_sym"] is None:
             yaw_off = self.rng.uniform(-0.3, 0.3)
@@ -105,6 +133,61 @@ class ScriptedExpert:
         self.yaw_off = yaw_off
         self.planned_xy = p[:2].copy()
 
+    def side_orientation(self, toward):
+        """Gripper pointing horizontally along `toward` (unit, in the table plane), fingers closing sideways.
+        Of the two such orientations, the one nearer the gripper pointing down (less wrist roll)."""
+        z = np.array([toward[0], toward[1], 0.0])
+        best = None
+        for sign in (1, -1):
+            y = sign * np.array([-toward[1], toward[0], 0.0])
+            R = np.stack([np.cross(y, z), y, z], axis=1)
+            angle = np.arccos(np.clip((np.trace(R @ self.R_home.T) - 1) / 2, -1, 1))
+            if best is None or angle < best[0]:
+                best = (angle, R)
+        return best[1]
+
+    def _plan_side(self, again=False):
+        """Take a stem from the side: rise and turn the gripper horizontal well back from the stem, come level
+        with the band, move in until the stem is between the fingers, close and hold."""
+        env = self.env
+        obj = OBJECTS[env.target]
+        p = env.object_pos(env.target)
+        # Across the table, at right angles to the line from the robot's base (at the origin): pointing straight
+        # out from the base is out of reach for a horizontal gripper, across is in reach everywhere on the table.
+        # Of the two sides, the one whose path in passes farthest from the other stems.
+        radial = p[:2] / np.linalg.norm(p[:2])
+        back = self.rng.uniform(0.12, 0.15)
+        others = [env.object_pos(n)[:2] for n in env.active if n != env.target]
+
+        def clearance(u):
+            a, b = p[:2] - u * back, p[:2]
+            t = [np.clip((o - a) @ (b - a) / ((b - a) @ (b - a)), 0, 1) for o in others]
+            gaps = [np.linalg.norm(o - (a + k * (b - a))) for o, k in zip(others, t, strict=True)]
+            return min(gaps, default=1.0)
+
+        toward = max((np.array([-radial[1], radial[0]]), np.array([radial[1], -radial[0]])), key=clearance)
+        R = self.side_orientation(toward)
+        lo, hi = obj["band"]
+        z = self.rng.uniform(lo + 0.01, hi - 0.01)
+        xy_noise = self.rng.normal(0, 0.002, 2)
+        grasp = np.array([p[0] + xy_noise[0], p[1] + xy_noise[1], z])
+        speed = self.rng.uniform(0.8, 1.2)
+        pre = grasp - np.array([toward[0], toward[1], 0.0]) * back
+        self.waypoints = [
+            (pre + [0, 0, 0.12], 1.0, 0.40 * speed, 0, R),
+            (pre, 1.0, 0.25 * speed, 0, R),
+            (grasp, 1.0, 0.12 * speed, 2, R),
+            (grasp, 0.0, 0.0, 1000, R),
+        ]
+        if again:  # back out along the gripper's own axis before anything else
+            axis = self.des_R[:, 2] if self.des_R is not None else np.array([toward[0], toward[1], 0.0])
+            out = self.des_pos - np.array([axis[0], axis[1], 0.0]) * 0.10
+            self.waypoints.insert(0, (out, 1.0, 0.25 * speed, 0, R))
+        self.wp = 0
+        self.dwell = 0
+        self.yaw_off = self.des_yaw
+        self.planned_xy = p[:2].copy()
+
     def _needs_new_plan(self):
         env = self.env
         if not env.on_table(env.target):
@@ -120,7 +203,7 @@ class ScriptedExpert:
         closing = self.waypoints[self.wp][1] < 0.5
         if closing or np.linalg.norm(delta) > TRACK_LIMIT:
             return False
-        self.waypoints = [(p + np.array([delta[0], delta[1], 0.0]), g, s, w) for p, g, s, w in self.waypoints]
+        self.waypoints = [(p + np.array([delta[0], delta[1], 0.0]), *rest) for p, *rest in self.waypoints]
         self.planned_xy = self.planned_xy + delta
         return True
 
@@ -132,26 +215,32 @@ class ScriptedExpert:
             else:
                 self.replans += 1
                 self._plan(again=True)
-        target, grip, speed, dwell = self.waypoints[self.wp]
+        target, grip, speed, dwell, *R_target = self.waypoints[self.wp]
+        R_target = R_target[0] if R_target else None
         dt = 1.0 / 20.0
         delta = target - self.des_pos
         dist = np.linalg.norm(delta)
         step = speed * dt
         self.des_pos = target.copy() if dist <= step or speed == 0 else self.des_pos + delta / dist * step
-        dyaw = self.yaw_off - self.des_yaw
-        self.des_yaw += np.clip(dyaw, -0.12, 0.12)
+        if R_target is None:
+            dyaw = self.yaw_off - self.des_yaw
+            self.des_yaw += np.clip(dyaw, -0.12, 0.12)
+            turned = abs(self.yaw_off - self.des_yaw) < 1e-6
+        else:  # turn toward the waypoint's orientation, at most 0.08 rad per control step
+            if self.des_R is None:
+                self.des_R = _rotz(self.des_yaw) @ self.R_home
+            self.des_R, left = _turn_toward(self.des_R, R_target, 0.08)
+            turned = left <= 0.08
 
         arrived = (
-            np.linalg.norm(target - self.des_pos) < 1e-6
-            and np.linalg.norm(env.tcp_pos() - target) < 0.012
-            and abs(self.yaw_off - self.des_yaw) < 1e-6
+            np.linalg.norm(target - self.des_pos) < 1e-6 and np.linalg.norm(env.tcp_pos() - target) < 0.012 and turned
         )
         if arrived or speed == 0:
             self.dwell += 1
             if self.dwell > dwell and self.wp < len(self.waypoints) - 1:
                 self.wp += 1
                 self.dwell = 0
-        self.q_cmd = self.solve_ik(self.q_cmd, self.des_pos, self.des_yaw)
+        self.q_cmd = self.solve_ik(self.q_cmd, self.des_pos, self.des_yaw, R_des=self.des_R)
         return np.concatenate([self.q_cmd, [grip]]).astype(np.float32)
 
 

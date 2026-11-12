@@ -16,7 +16,7 @@ if str(REPOSITORY) not in sys.path:  # sim/ is not an installed package
 pytest.importorskip("mujoco")
 
 from sim.pickup.disturb import Disturbance  # noqa: E402
-from sim.pickup.env import PANDA_XML, PickupEnv  # noqa: E402
+from sim.pickup.env import OBJECTS, PANDA_XML, PickupEnv  # noqa: E402
 from sim.pickup.expert import ScriptedExpert, random_start  # noqa: E402
 
 SEEDS = (1_000_000, 1_000_001, 1_000_002)
@@ -184,3 +184,30 @@ def test_tasks_without_leaves_park_them_out_of_view(env):
     env.reset(seed=SEEDS[0])
     assert env.leaves == []
     assert all(env.data.mocap_pos[i][2] < -0.5 for i in env.leaf_mocap)
+
+
+def test_the_expert_takes_a_flower_by_its_stem_from_the_side():
+    if not PANDA_XML.exists():
+        pytest.skip("Franka model not fetched (sim/pickup/scripts/fetch_assets.sh)")
+    try:
+        env = PickupEnv("grasp_stem")
+    except Exception as error:
+        pytest.skip(f"cannot render: {error}")
+    try:
+        wins = 0
+        for seed in SEEDS:
+            env.reset(seed=seed)
+            assert env.instruction.startswith("grasp the stem of the ") and env.instruction.endswith(" flower")
+            expert = ScriptedExpert(env, seed=0, reactive=True)
+            expert.reset()
+            done, info = False, {}
+            while not done:
+                _, done, info = env.step(expert.act())
+            wins += info["success"]
+            if info["success"]:
+                lo, hi = OBJECTS[env.target]["band"]
+                assert lo <= env.tcp_pos()[2] <= hi, "taken outside the band"
+                assert abs(env.data.site_xmat[env.tcp_id].reshape(3, 3)[2, 2]) < 0.2, "the gripper was not horizontal"
+        assert wins >= 2, f"the expert took {wins} of {len(SEEDS)} stems"
+    finally:
+        env.close()
