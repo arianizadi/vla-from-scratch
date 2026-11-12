@@ -11,19 +11,27 @@ Status legend: **confirmed** (measured here), **open** (hypothesis, experiment q
 
 1. Check the environment with a scripted expert before training anything.
 2. Judge policies by closed-loop success only. Training loss and open-loop error do not predict it.
-3. When a policy fails, measure *how* it fails before changing anything.
+3. When a policy fails, measure *how* it fails before changing anything: record where the gripper
+   closed and where the objects were.
 4. Know how much error the task tolerates.
 5. Give the action head spatial tokens, not one pooled vector.
-6. If the scene is ambiguous, the instruction must reach the action head.
-7. Feed inference through exactly the code path used in training, and test that it does.
-8. Checkpoint often and auto-resume; long runs die.
+6. A policy that ignores the scene may only be under-trained. Looking at the scene arrives late
+   and all at once; evaluate every checkpoint and train past the point where it would appear.
+7. Do not give the policy its previous action without testing what it does with it. Here it used it
+   in place of the cameras.
+8. A policy that succeeds may still look at the scene only once. Test it with something that moves.
+9. Save averaged weights and evaluate both sets. Sweep the sampler's settings: fewer steps were enough.
+10. Feed inference through exactly the code path used in training, and test that it does.
+11. Checkpoint often and auto-resume; long runs die. Make every evaluation check which checkpoint
+    it is talking to.
 
 ## 1. Verify the task with an expert first  (confirmed)
 
 **What we did.** `sim/pickup/eval.py --expert` runs the scripted grasp expert through the same
 evaluation loop, seeds and success test as a learned policy.
 
-**Result.** 99/100 on `pick_target`, closing the gripper 5 mm (median) from the object.
+**Result.** 99/100 on `pick_target` on one machine and 100/100 on the other, closing the gripper
+5 mm (median) from the object.
 
 **Why it matters.** Every policy scored 0-6% on this task. Without the expert number you cannot tell
 a broken simulator, an impossible task or a wrong success test from a policy that has not learned.
@@ -77,7 +85,9 @@ The rollout videos looked like near misses; the measurements say otherwise.
 | 20 mm | 93% | 98% | 18% | 25% |
 | 30 mm | 32% | 76% | 0% | 10% |
 
-The cube and T block forgive 2 cm. The two round objects need 1 cm or better. A policy that is
+The cube and T block forgive 2 cm. The two round objects need 1 cm or better on the machine this
+table is from. On a second machine with a newer simulator build the same test gave 94% for the can
+and 97% for the hex nut at 10 mm (29% and 70% at 20 mm): measure it where you evaluate. A policy that is
 "usually within 2 cm" would score about 95% on cubes and about 20% on cans.
 
 ## 5. One pooled vector is not enough for grasping  (confirmed on `pick_cube`, open on `pick_target`)
@@ -118,9 +128,139 @@ instruction and still did not use the image.
 slope of one against the other separates "imprecise" (slope near 1, scattered) from "not looking"
 (slope near 0) in one number. `sim/pickup/eval.py` writes both and the summary reports the slope.
 
-## 7. Train/inference mismatches hide in preprocessing  (confirmed)
+## 7. Looking at the scene arrives late, and all at once  (confirmed)
 
-Three found so far, none of which raised an error:
+The policy that works here is the patch-token policy with the instruction as extra tokens and no
+history (`dp_vit_lang_reactive`, 36M parameters). After 1M training samples on 1500 demonstrations it
+scored 3-5% and closed the gripper at the named object 41-49% of the time (chance is 33%). That looked
+like a design that does not work. The same policy on 4000 demonstrations, evaluated at every
+checkpoint (trained weights / averaged weights):
+
+| Training samples | Success | Closed at the named object | Slope | Median miss |
+|---|---|---|---|---|
+| 0.5M | 0% / 0% | 34% / 26% | 0.02 / -0.06 | 166 / 167 mm |
+| 1.0M | 0% / 1% | 35% / 32% | 0.11 / 0.14 | 138 / 154 mm |
+| 1.5M | 4% / 2% | 61% / 49% | 0.47 / 0.37 | 102 / 104 mm |
+| 2.0M | 4% / 36% | 95% / 98% | 0.81 / 0.96 | 32 / 18 mm |
+| 2.5M | 56% / 70% | 98% / 100% | 0.94 / 0.98 | 14 / 13 mm |
+| 3.0M | 81% / 75% | 100% / 99% | 0.98 / 0.97 | 9 / 9 mm |
+| 5.0M | 83% / 85% | 100% / 100% | 0.98 / 0.98 | 7 / 7 mm |
+
+For 1M samples nothing happens. Between 1.5M and 2.5M the policy goes from not using the scene to
+using it. The slope moves first, then the miss shrinks, then success follows.
+
+The 1500 demonstrations were enough too. Trained for 3M samples instead of 1M, the same policy does
+the same thing, earlier: 0-3% up to 1.2M, 18-21% at 1.5M, 43-44% at 1.8M, 62-70% at 3M. The 1M run
+had ended inside the transition, with its learning rate already near zero.
+
+**What to do.** Evaluate every checkpoint and plot the slope next to success. A flat 0% says nothing
+about what comes next; a slope that has started to move does. Do not judge a design on a budget that
+ends before the transition of a comparable run.
+
+**Why so late (partly tested).** In a demonstration only the first moments need the image and the
+instruction; after that the arm's own position says where it is going (section 9). So few training
+windows reward looking. Repeating the windows from the first 8 frames of each demonstration five extra
+times brings the transition forward. Two runs on the same code (both after the position fix of
+section 12, both still in progress): at 1.0M samples the plain one closes at the named object 65% of
+the time (slope 0.58), the one with repeated early windows 99% (slope 0.93), and at 1.5M the latter
+already succeeds in 76% of the layouts.
+
+## 8. The previous action as an input  (confirmed)
+
+Many policies are given a short history: the previous frame, the previous state and the action they
+just executed. Here that turned a working design into one that never starts.
+
+| `pick_target`, 4000 demonstrations | 1.0M | 2.0M | 3.0M |
+|---|---|---|---|
+| no history | 0-1% | 4-36% | 75-81% |
+| with history | 1% | 1-3% | 2% |
+
+On the single cube, where there is nothing to choose, history costs less but still costs: 62-70%
+against 91-97% without it.
+
+The history policy is not blind. The same checkpoint (2.5M samples):
+
+| What it is given at the start | Success | Closed at the named object |
+|---|---|---|
+| as served: the previous action is the hold command | 1% | 30% |
+| the previous action is the expert's first command | 22% | 97% |
+| the expert drives the first 10 steps | 77% | 100% |
+
+One expert action is enough for it to find the named object 97% of the time. It learned to read the
+target from the previous action, and never needed the instruction or the image for that.
+
+**Why.** From the second step of a demonstration on, the previous action is the best predictor of
+the next one. And in the windows that start at the first frame, where there is no previous action,
+the framework fills the slot with a copy of the first action: the expert's first command, which
+already points at the target. In training the answer is always in the input. When the policy is
+served, the slot holds what the robot is really doing before it moves, which is nothing.
+
+**What to do.** Start without history. If you add it, run the two probes above
+(`eval.py --first_prev_action expert`, `--expert_prefix 10`): a policy that scores far better with
+them than without is leaning on its own past. `collect.py --hold_steps 1` begins every demonstration
+with a frame of the robot at rest, so that the first windows contain what serving will provide;
+whether a history policy trained that way finds the object is being tested.
+
+## 9. Success is not the same as looking  (confirmed)
+
+The 85% policy has no history, so every chunk it plans starts from the current camera images. It
+still does not use them the way one would hope:
+
+| Test (same checkpoint) | Success | Where it closed the gripper |
+|---|---|---|
+| as trained | 85% | at the named object in 100% of episodes, 7 mm off |
+| shown the first frame's images for the whole episode | 1% | at the named object in 99%, 17 mm off |
+| the expert drives the first 25 steps toward another object | 0% | at that other object in 100% |
+| the named object is moved 8 cm at step 20 of the reach | 0/96 | 8 mm from where the object was |
+| the named object is moved 8 cm at step 10 | 9% | 39 mm from the old place, 49 mm from the new |
+| the object is moved as the gripper closes | 1/99 | - |
+
+It decides where to go from the first look and then follows its own arm: from a fixed home pose every
+reach is a straight line, so a few steps in, the joint angles say where the line ends. The images
+matter again only for the last centimetres. Nothing in the demonstrations ever contradicts this
+strategy, because nothing in them ever moves and no grasp ever fails.
+
+**Why it matters.** The success rate on a static benchmark cannot show this. A robot that has to
+work around things that move, or to try again after a miss, needs exactly the behaviour this policy
+lacks.
+
+**What to do.** Add a disturbance to the evaluation (`eval.py --disturb reach` and `--disturb grasp`)
+before trusting a policy outside the conditions it was trained in. Two changes to the data are being
+tested here: demonstrations in which the object is moved and the expert plans again and retries
+(`collect.py --disturb_prob`), and random start poses, which take away the straight line from home
+(`--random_start`). The scripted expert that plans again succeeds 40/40 under both disturbances.
+
+## 10. Averaged weights and the sampler's settings  (confirmed)
+
+**Averaged weights.** Runs keep a running average of their weights (EMA) next to the trained ones.
+During the transition the average is far ahead: 36% against 4% at 2.0M samples, 70% against 56% at
+2.5M. Before it and after it the two are equal within noise. Saving both costs one extra copy of the
+model.
+
+**Flow steps.** The sampler turns noise into an action chunk in a number of steps. On the 85%
+policy, 100 layouts per setting (a second 100 in brackets): 1 step 61%; 2 steps 89% (90%); 4 steps
+88% (86%); 10 steps, the default, 85% (83%); 20 steps 79%. Two steps cost 25 ms per chunk, ten cost
+71 ms.
+
+**Actions executed per chunk.** The policy predicts 15 actions. Executing 2 of them before planning
+again gives 76%, 4 gives 84%, 8 gives 85%, all 15 gives 84%. Planning more often does not help, and
+on the T block it hurts (8/23 at 2 actions, 15/23 at 8).
+
+**Tried, did not help.** Starting every chunk of an episode from the same noise, so that successive
+chunks would make the same choices: 80% at 8 actions per chunk, 55% at 4, 39% at 2.
+
+## 11. What still fails  (confirmed)
+
+Pooled over the checkpoints from 3M samples on: green can 93%, blue hex nut 94%, red cube 82%,
+yellow T block 55%. The can and the hex nut can be grasped at any angle. The cube and the T block
+cannot, and their failures are angle errors: a median of 64 degrees off on the failed T-block grasps,
+with the gripper stopped 9 mm above the grasp height, on top of the bar. The object is the right
+one and the position is about 15 mm off (median). The failures are spread over all object orientations; they do
+not cluster where the expert's choice between two equivalent grasps flips.
+
+## 12. Train/inference mismatches hide in preprocessing  (confirmed)
+
+Five found so far, none of which raised an error:
 
 - **Pixel range.** `SimpleVLMProcessor` scaled PIL and numpy images to [0, 1] but left uint8 tensors
   at 0-255. Training fed tensors, inference fed PIL. The VLM scored 0% on a captioning check that it
@@ -134,23 +274,33 @@ Three found so far, none of which raised an error:
   reading the code before running such a config; the fix and its test are written and land with
   the next code change.
 
+- **The previous action at the first frame.** Section 8: the slot is filled with the expert's first
+  command in training and with the hold command when served.
+- **Positions computed in half precision.** The table of rotary position angles was built under
+  bfloat16 autocast, which keeps 8 significant bits. Positions above 256 collapsed onto even numbers
+  and above 512 onto multiples of 4: 641 distinct positions out of 2048. In the no-history policy 15
+  action tokens shared 8 positions; with history, 16 shared 4. Training and serving agreed with each
+  other, so nothing looked wrong. The table is now computed in float32; the comparison of the same
+  run before and after is in progress.
+
 **What to do.** For every model, run a check that pushes the same sample through the training
 pipeline and through the serving path and compares the tensors the model receives.
 
-## 8. Long runs die  (confirmed)
+## 13. Long runs die  (confirmed)
 
 One of the machines used was unreliable: stage-3 runs died or hung three times. A dead data-loader
 worker does not crash the trainer; it waits forever at 0% GPU. `scripts/train_resilient.sh` restarts
 from the newest checkpoint when a run exits or when its log stops moving for 7 minutes.
 
-## 9. Pretraining a small VLM on captions  (inconclusive)
+## 14. Pretraining a small VLM on captions  (inconclusive)
 
 The from-scratch path (91M LLM on web text, then a VLM on 40k captioned sim renders, then a VLA)
-gave 0/100 with pretraining and 1/100 without. Because of section 5 neither policy could localise
-anything, so this comparison says nothing yet about pretraining. It will be re-run with
-`conditioning: all_tokens`.
+gave 0/100 with pretraining and 1/100 without. Both policies conditioned the action head on a single
+vector (section 5), had history (section 8) and 1M samples on 1500 demonstrations (section 7), so
+neither could have found the object and the comparison says nothing about pretraining. It is being
+re-run with every token passed to the action head, no history and 4000 demonstrations.
 
-## 10. Operating many runs on one machine  (confirmed)
+## 15. Operating many runs on one machine  (confirmed)
 
 Things that cost time here and have nothing to do with models:
 
@@ -170,15 +320,23 @@ Things that cost time here and have nothing to do with models:
 - **Follow the lockfile.** The framework's install notes say `uv sync` and then
   `uv pip install -e .`. The second command re-resolves outside the lockfile and silently replaced a
   pinned dependency with a newer commit. `uv sync` alone already installs the project.
+- **Give every evaluation its own port, and make it check what answers.** Two evaluations started
+  on one port both talked to the policy server that had bound it first. The second one ran to the
+  end and filed the other run's success rate under its own name; about 40 results here were wrong
+  that way before one of them looked too good. `eval.sh` now takes a free port, and the client stops
+  unless the server reports the run and checkpoint it asked for.
 - **Evaluate while training.** Evaluating every checkpoint as it appears costs little next to
   training and turns one run into a curve; a single final number hides whether the policy was
   still improving, had peaked, or never moved.
 
 ## Open questions being tested
 
-- Does adding the instruction to the patch-token policy fix target selection? (`dp_vit_lang`)
-- Does removing the previous action and the second frame force the policy to look at the scene on
-  every step? (`dp_vit_lang_reactive`)
-- How far do more demonstrations and more epochs take the best of those?
-- Do averaged (EMA) weights help?
-- Does demonstration data with recoveries make the policy correct its own misses?
+- Does the position fix change the result of the 4000-demonstration run?
+- How much earlier does the transition come when the early windows are repeated, or when every
+  object of a layout is named in turn?
+- Do demonstrations with recoveries, or random start poses, make the policy follow an object that
+  moves and retry a grasp that missed?
+- Does a history policy find the object when its demonstrations begin with a hold frame?
+- Does pretraining the VLM help the from-scratch VLA once it can see (section 14)?
+- What does the orientation of the T block need: more data, more resolution, or demonstrations
+  that correct the angle late?
