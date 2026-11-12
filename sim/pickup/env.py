@@ -195,7 +195,9 @@ class PickupEnv:
         self.rest_z: dict[str, float] = {}
 
     # ------------------------------------------------------------------ reset
-    def reset(self, seed: int):
+    def reset(self, seed: int, target_index: int | None = None):
+        """Build the layout of `seed`. `target_index` names one of the layout's objects (0, 1, ...) as
+        the target instead of the seed's own choice, which gives the same scene with another instruction."""
         rng = np.random.default_rng(seed)
         m, d = self.model, self.data
         mujoco.mj_resetData(m, d)
@@ -207,7 +209,9 @@ class PickupEnv:
 
         cfg = TASKS[self.task]
         self.active = list(rng.choice(cfg["pool"], size=cfg["num_objects"], replace=False))
-        self.target = str(rng.choice(self.active))
+        self.target = str(rng.choice(self.active))  # always drawn, so the layout does not depend on target_index
+        if target_index is not None:
+            self.target = str(self.active[target_index])
         self.instruction = f"pick up the {OBJECTS[self.target]['label']}"
 
         placed = []

@@ -21,7 +21,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from PIL import Image
 
-from .env import CONTROL_HZ, PickupEnv
+from .env import CONTROL_HZ, TASKS, PickupEnv
 from .expert import ScriptedExpert
 
 CAMERAS = ("front", "wrist")
@@ -34,12 +34,12 @@ def _jpeg(img, quality=95):
 
 
 def _worker(args):
-    task, seeds, out_dir, worker_id = args
+    task, jobs, out_dir, worker_id = args
     env = PickupEnv(task)
     expert = ScriptedExpert(env, seed=worker_id)
     results = []
-    for seed in seeds:
-        obs = env.reset(seed=seed)
+    for seed, target_index in jobs:
+        obs = env.reset(seed=seed, target_index=target_index)
         expert.reset()
         frames = {c: [] for c in CAMERAS}
         states, actions = [], []
@@ -54,7 +54,7 @@ def _worker(args):
         if not info["success"]:
             results.append(dict(seed=seed, success=False))
             continue
-        tmp = Path(out_dir) / "tmp" / f"seed_{seed:07d}.parquet"
+        tmp = Path(out_dir) / "tmp" / f"seed_{seed:07d}_{target_index or 0}.parquet"
         table = pa.table(
             {
                 **{c: pa.array([{"bytes": b, "path": None} for b in frames[c]]) for c in CAMERAS},
@@ -63,7 +63,16 @@ def _worker(args):
             }
         )
         pq.write_table(table, tmp)
-        results.append(dict(seed=seed, success=True, length=len(actions), instruction=env.instruction, path=str(tmp)))
+        results.append(
+            dict(
+                seed=seed,
+                target_index=target_index or 0,
+                success=True,
+                length=len(actions),
+                instruction=env.instruction,
+                path=str(tmp),
+            )
+        )
     env.close()
     return results
 
@@ -75,7 +84,17 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--seed", type=int, default=0, help="first environment seed (training seeds are < 1_000_000)")
     ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument(
+        "--targets_per_layout",
+        type=int,
+        default=1,
+        help="demonstrate this many different targets in every layout (pick_target: up to 3). With 1, each "
+        "layout appears with a single instruction, and nothing in the data shows that the instruction matters.",
+    )
     args = ap.parse_args()
+    num_objects = TASKS[args.task]["num_objects"]
+    assert 1 <= args.targets_per_layout <= num_objects, f"{args.task} has {num_objects} objects per layout"
+    per_layout = args.targets_per_layout
 
     out = Path(args.out)
     (out / "tmp").mkdir(parents=True, exist_ok=True)
@@ -83,17 +102,20 @@ def main():
     (out / "data" / "chunk-000").mkdir(parents=True, exist_ok=True)
 
     t0 = time.time()
-    kept, attempted, next_seed = [], 0, args.seed
+    kept, attempted, successes, next_seed = [], 0, 0, args.seed
     with mp.get_context("spawn").Pool(args.workers) as pool:
         while len(kept) < args.episodes:
             need = args.episodes - len(kept)
-            seeds = list(range(next_seed, next_seed + max(need + need // 10, args.workers)))
+            seeds = list(range(next_seed, next_seed + max(-(-(need + need // 10) // per_layout), args.workers)))
             next_seed = seeds[-1] + 1
-            chunks = [(args.task, seeds[i :: args.workers], str(out), i) for i in range(args.workers)]
+            # With one target per layout the seed's own choice is kept (target_index None).
+            jobs = [(seed, i if per_layout > 1 else None) for seed in seeds for i in range(per_layout)]
+            chunks = [(args.task, jobs[i :: args.workers], str(out), i) for i in range(args.workers)]
             for res in pool.map(_worker, chunks):
                 attempted += len(res)
+                successes += sum(r["success"] for r in res)
                 kept.extend(r for r in res if r["success"])
-    kept = sorted(kept, key=lambda r: r["seed"])[: args.episodes]
+    kept = sorted(kept, key=lambda r: (r["seed"], r["target_index"]))[: args.episodes]
 
     tasks, episodes, index = {}, [], 0
     for ep_idx, r in enumerate(kept):
@@ -124,8 +146,9 @@ def main():
         total_episodes=len(episodes),
         total_frames=index,
         total_tasks=len(tasks),
-        expert_success_rate=len([1 for _ in kept]) / max(attempted, 1) if attempted else None,
+        expert_success_rate=successes / attempted if attempted else None,
         expert_attempted=attempted,
+        targets_per_layout=per_layout,
         data_path="data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
         features={
             "front": dict(dtype="image", shape=[224, 224, 3]),
