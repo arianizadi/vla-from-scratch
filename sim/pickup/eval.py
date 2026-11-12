@@ -216,6 +216,7 @@ def main():
             obs, start_yaw = random_start(env, starter, seed)
         prev_obs, queue, frames, trace = obs, [], [], []
         wrong_object = False  # a non-target object was lifted at any point in the episode
+        caught = False  # the named object was lifted (stems: held) at some step, if only briefly
         probe = GraspProbe(env)
         disturbance = Disturbance(
             env, args.disturb, args.disturb_step, args.disturb_mm / 1000, seed=seed, speed=args.drift_cm_s / 100
@@ -271,6 +272,7 @@ def main():
             disturbance.update(action)
             obs, done, info = env.step(action)
             wrong_object = wrong_object or bool(info["wrong_object"])
+            caught = caught or env.target in info["lifted"]
         episodes.append(
             dict(
                 seed=seed,
@@ -279,6 +281,7 @@ def main():
                 success=bool(info["success"]),
                 steps=env.steps,
                 wrong_object=wrong_object,
+                caught=caught,
                 prefix_goal=prefix_goal,
                 disturbed=disturbance.record,
                 **probe.result(),
@@ -324,6 +327,7 @@ def main():
         success_ci95=[max(0.0, centre - half), min(1.0, centre + half)],
         mean_steps_success=float(np.mean([e["steps"] for e in episodes if e["success"]])) if k else None,
         wrong_object_rate=sum(e["wrong_object"] for e in episodes) / n,
+        caught_rate=sum(e["caught"] for e in episodes) / n,
         per_target={t: dict(successes=s, episodes=m, success_rate=s / m) for t, (s, m) in sorted(per_target.items())},
         grasp=summarize(episodes),
         inference_latency_ms=dict(

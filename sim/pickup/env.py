@@ -105,6 +105,14 @@ TASKS = {
     "pick_clutter": dict(
         pool=["cube", "can", "hex", "tblock", "cube_orange", "cube_pink", "cube_dark"], num_objects=4, leaves=3
     ),
+    # Step 5: the same scene; closing the jaws on a stem inside its band cuts it, and the part above falls.
+    # Cutting any other stem ends the episode as a failure.
+    "cut_stem": dict(
+        pool=["flower_red", "flower_orange", "flower_pink", "flower_purple"],
+        num_objects=3,
+        instruction="cut the stem of the {label}",
+        cut=True,
+    ),
     # Control for the look-alike result: the clutter scenes without the leaves.
     "pick_mixed": dict(pool=["cube", "can", "hex", "tblock", "cube_orange", "cube_pink", "cube_dark"], num_objects=4),
     # Step 4: three flowers on stems; grasp the named one by its stem, from the side, inside its band.
@@ -127,6 +135,8 @@ SPAWN_X = (0.38, 0.62)
 SPAWN_Y = (-0.22, 0.22)
 LIFT_HEIGHT = 0.08  # metres above rest height that counts as "lifted"
 HOLD_STEPS = 10  # consecutive lifted control steps required for success
+CUT_STEPS = 3  # cut_stem: consecutive control steps of env.holds_stem that cut a stem
+SPLIT_Z = 0.09  # cut_stem: where a flower's top part meets its base until a cut (metres above the base frame)
 
 
 def _look_at_quat(pos, target, up=(0, 0, 1)):
@@ -143,7 +153,24 @@ def _look_at_quat(pos, target, up=(0, 0, 1)):
     return quat
 
 
-def build_model() -> mujoco.MjModel:
+def _split_stem(entries, z_at, split):
+    """Split a flower's geoms at height `split`: (base part, top part). The stem capsule is cut in two; anything
+    whose centre lies above the split goes to the top. `z_at` is the index of the height in each entry."""
+    base, top = [], []
+    for entry in entries:
+        entry = list(entry)
+        if entry[0] == "capsule":
+            radius, half = entry[1]
+            lo, hi = entry[z_at] - half, entry[z_at] + half
+            base.append([*entry[:1], (radius, (split - lo) / 2), *entry[2:z_at], (lo + split) / 2, *entry[z_at + 1 :]])
+            top.append([*entry[:1], (radius, (hi - split) / 2), *entry[2:z_at], (split + hi) / 2, *entry[z_at + 1 :]])
+        else:
+            (top if entry[z_at] > split else base).append(entry)
+    return base, top
+
+
+def build_model(cut_stems: bool = False) -> mujoco.MjModel:
+    """`cut_stems`: build each flower as a base and a top part held together by a weld that a cut releases."""
     spec = mujoco.MjSpec.from_file(str(PANDA_XML))
     spec.option.timestep = TIMESTEP
     spec.option.impratio = 10
@@ -213,12 +240,11 @@ def build_model() -> mujoco.MjModel:
         "capsule": mujoco.mjtGeom.mjGEOM_CAPSULE,
         "sphere": mujoco.mjtGeom.mjGEOM_SPHERE,
     }
-    for i, (name, obj) in enumerate(OBJECTS.items()):
-        body = wb.add_body(name=name, pos=[2.0 + 0.3 * i, 2.0, -0.76 + obj["rest_z"]])
-        body.add_freejoint()
-        for j, (gtype, size, z, *density) in enumerate(obj["collision"]):
+
+    def add_collision(body, prefix, entries):
+        for j, (gtype, size, z, *density) in enumerate(entries):
             body.add_geom(
-                name=f"{name}_col{j}",
+                name=f"{prefix}_col{j}",
                 type=geom_types[gtype],
                 size=list(size) + [0] * (3 - len(size)),
                 pos=[0, 0, z],
@@ -229,10 +255,13 @@ def build_model() -> mujoco.MjModel:
                 solref=[0.004, 1],
                 solimp=[0.95, 0.99, 0.001, 0.5, 2],
             )
-        for mesh_name, rgba, z in obj["visual"]:
+
+    def add_prim_visual(body, prefix, entries):
+        for j, (gtype, size, rgba, z) in enumerate(entries):
             body.add_geom(
-                type=mujoco.mjtGeom.mjGEOM_MESH,
-                meshname=mesh_name,
+                name=f"{prefix}_vis{j}",
+                type=geom_types[gtype],
+                size=list(size) + [0] * (3 - len(size)),
                 pos=[0, 0, z],
                 rgba=list(rgba),
                 contype=0,
@@ -240,10 +269,34 @@ def build_model() -> mujoco.MjModel:
                 group=2,
                 density=0,
             )
-        for gtype, size, rgba, z in obj.get("prim_visual", []):
+
+    for i, (name, obj) in enumerate(OBJECTS.items()):
+        pos = [2.0 + 0.3 * i, 2.0, -0.76 + obj["rest_z"]]
+        body = wb.add_body(name=name, pos=pos)
+        body.add_freejoint()
+        collision, prim_visual = obj["collision"], obj.get("prim_visual", [])
+        split = cut_stems and obj.get("grasp") == "side"
+        if split:
+            collision, top_collision = _split_stem(collision, 2, SPLIT_Z)
+            prim_visual, top_visual = _split_stem(prim_visual, 3, SPLIT_Z)
+        add_collision(body, name, collision)
+        add_prim_visual(body, name, prim_visual)
+        if split:
+            top = wb.add_body(name=f"{name}_top", pos=pos)  # same frame as the base: the weld's pose is identity
+            top.add_freejoint()
+            add_collision(top, f"{name}_top", top_collision)
+            add_prim_visual(top, f"{name}_top", top_visual)
+            exclude = spec.add_exclude()
+            exclude.bodyname1, exclude.bodyname2 = name, f"{name}_top"
+            weld = spec.add_equality()
+            weld.name, weld.type, weld.objtype = f"{name}_weld", mujoco.mjtEq.mjEQ_WELD, mujoco.mjtObj.mjOBJ_BODY
+            weld.name1, weld.name2 = f"{name}_top", name
+            weld.data = [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0]
+            weld.solref = [0.005, 1]
+        for mesh_name, rgba, z in obj["visual"]:
             body.add_geom(
-                type=geom_types[gtype],
-                size=list(size) + [0] * (3 - len(size)),
+                type=mujoco.mjtGeom.mjGEOM_MESH,
+                meshname=mesh_name,
                 pos=[0, 0, z],
                 rgba=list(rgba),
                 contype=0,
@@ -264,7 +317,8 @@ class PickupEnv:
         self.task = task
         self.image_size = image_size
         self.max_steps = max_steps
-        self.model = build_model()
+        self.cut_task = bool(TASKS[task].get("cut"))
+        self.model = build_model(cut_stems=self.cut_task)
         self.data = mujoco.MjData(self.model)
         self.renderer = mujoco.Renderer(self.model, image_size, image_size)
         self.tcp_id = self.model.site("tcp").id
@@ -275,6 +329,25 @@ class PickupEnv:
         self.leaf_mocap = [int(self.model.body(f"leaf{i}").mocapid[0]) for i in range(MAX_LEAVES)]
         self.finger_bodies = (self.model.body("left_finger").id, self.model.body("right_finger").id)
         self.obj_body = {n: self.model.body(n).id for n in OBJECTS}
+        # cut_stem: each flower's top part, its weld, and its two stem pieces (resized at a cut)
+        self.stems = [n for n in OBJECTS if self.cut_task and OBJECTS[n].get("grasp") == "side"]
+        m = self.model
+        self.top_body = {n: m.body(f"{n}_top").id for n in self.stems}
+        self.top_qadr = {n: m.joint(m.body(f"{n}_top").jntadr[0]).qposadr[0] for n in self.stems}
+        self.top_vadr = {n: m.joint(m.body(f"{n}_top").jntadr[0]).dofadr[0] for n in self.stems}
+        self.weld = {n: m.equality(f"{n}_weld").id for n in self.stems}
+        self.stem_pieces = {
+            n: [
+                g
+                for g in range(m.ngeom)
+                if m.geom_bodyid[g] in (self.obj_body[n], self.top_body[n])
+                and m.geom_type[g] == mujoco.mjtGeom.mjGEOM_CAPSULE
+            ]
+            for n in self.stems
+        }
+        self._geom_defaults = (m.geom_size.copy(), m.geom_pos.copy(), m.geom_rbound.copy(), m.geom_aabb.copy())
+        self.cut: set[str] = set()
+        self.hold_counts: dict[str, int] = {}
         self.leaves: list[list[float]] = []  # [x, y, yaw] of each leaf in use
         self.active: list[str] = []
         self.target: str = ""
@@ -317,6 +390,12 @@ class PickupEnv:
                 d.qpos[adr : adr + 3] = [2.0 + 0.3 * i, 2.0, -0.76 + OBJECTS[name]["rest_z"]]
                 d.qpos[adr + 3 : adr + 7] = [1, 0, 0, 0]
         self._place_leaves(rng, placed, cfg.get("leaves", 0))  # draws only for tasks with leaves
+        if self.cut_task:  # whole flowers again: stem pieces back to their first length, welds on, tops in place
+            m.geom_size[:], m.geom_pos[:], m.geom_rbound[:], m.geom_aabb[:] = self._geom_defaults
+            for n in self.stems:
+                d.eq_active[self.weld[n]] = 1
+                self._sync_top(n)
+            self.cut, self.hold_counts = set(), {}
         mujoco.mj_forward(m, d)
         for _ in range(100):  # let objects settle
             mujoco.mj_step(m, d)
@@ -337,9 +416,19 @@ class PickupEnv:
         self.steps += 1
 
         if OBJECTS[self.target].get("grasp") == "side":
-            # A stem counts as taken when both fingers touch it inside its band and it still stands.
+            # A stem counts as taken while env.holds_stem holds; success needs HOLD_STEPS steps in a row.
             held = [n for n in self.active if self.holds_stem(n)]
             target_up = self.target in held
+            if self.cut_task:
+                for n in self.active:
+                    self.hold_counts[n] = self.hold_counts.get(n, 0) + 1 if n in held else 0
+                    if self.hold_counts[n] >= CUT_STEPS and n not in self.cut:
+                        self._cut(n)
+                wrong = any(n != self.target for n in self.cut)
+                success = self.target in self.cut and not wrong
+                done = success or wrong or self.steps >= self.max_steps
+                info = dict(success=success, lifted=held, wrong_object=wrong, cut=sorted(self.cut))
+                return self.get_obs(), done, info
             self.lift_count = self.lift_count + 1 if target_up else 0
             success = self.lift_count >= HOLD_STEPS
             done = success or self.steps >= self.max_steps
@@ -359,11 +448,13 @@ class PickupEnv:
         inside the fingertips' depth, and a finger presses on it; the gripper's centre is inside the stem's band,
         and the stem still stands (< 20 degrees). The fingers are coupled, so on a stem that cannot slide to the
         middle they stop when the first one touches it; for a cut, a stem caught between the jaws is enough."""
-        d, body = self.data, self.obj_body[name]
+        d = self.data
+        bodies = (self.obj_body[name], self.top_body[name]) if name in self.top_body else (self.obj_body[name],)
         touching = any(
             {self.model.geom_bodyid[d.contact[i].geom1], self.model.geom_bodyid[d.contact[i].geom2]} == {f, body}
             for i in range(d.ncon)
             for f in self.finger_bodies
+            for body in bodies
         )
         lo, hi = OBJECTS[name]["band"]
         tcp = self.tcp_pos()
@@ -430,7 +521,35 @@ class PickupEnv:
         self.data.qpos[adr + 2] = self.rest_z[name] + 0.002
         self.data.qpos[adr + 3 : adr + 7] = [np.cos(yaw / 2), 0, 0, np.sin(yaw / 2)]
         self.data.qvel[vadr : vadr + 6] = 0
+        if name in self.top_body and name not in self.cut:
+            self._sync_top(name)
         mujoco.mj_forward(self.model, self.data)
+
+    def _sync_top(self, name):
+        """Put a flower's top part back on its base (same pose, at rest)."""
+        adr, top = self.obj_qadr[name], self.top_qadr[name]
+        self.data.qpos[top : top + 7] = self.data.qpos[adr : adr + 7]
+        self.data.qvel[self.top_vadr[name] : self.top_vadr[name] + 6] = 0
+
+    def _cut(self, name):
+        """Cut a stem where the jaws are: the base keeps the stem below, the top part keeps the stem above and
+        is let go (its weld is switched off)."""
+        m = self.model
+        lo, hi = OBJECTS[name]["band"]
+        z = float(np.clip(self.tcp_pos()[2], lo, hi) - self.object_pos(name)[2])  # in the flower's frame
+        for g in self.stem_pieces[name]:
+            radius, half, centre = m.geom_size[g][0], m.geom_size[g][1], m.geom_pos[g][2]
+            if m.geom_bodyid[g] == self.obj_body[name]:
+                bottom, top = centre - half, z - 0.002
+            else:
+                bottom, top = z + 0.002, centre + half
+            half = max((top - bottom) / 2, 0.001)
+            m.geom_size[g][1], m.geom_pos[g][2] = half, (top + bottom) / 2
+            m.geom_rbound[g] = radius + half
+            m.geom_aabb[g] = [0, 0, 0, radius, radius, half + radius]
+        self.data.eq_active[self.weld[name]] = 0
+        self.cut.add(name)
+        mujoco.mj_forward(m, self.data)
 
     def on_table(self, name):
         """Is the object still resting at table height (not lifted, not carried)?"""

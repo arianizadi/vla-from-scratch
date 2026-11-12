@@ -211,3 +211,75 @@ def test_the_expert_takes_a_flower_by_its_stem_from_the_side():
         assert wins >= 2, f"the expert took {wins} of {len(SEEDS)} stems"
     finally:
         env.close()
+
+
+def _stem_env(task):
+    if not PANDA_XML.exists():
+        pytest.skip("Franka model not fetched (sim/pickup/scripts/fetch_assets.sh)")
+    try:
+        return PickupEnv(task)
+    except Exception as error:
+        pytest.skip(f"cannot render: {error}")
+
+
+def test_the_expert_cuts_the_named_stem_and_the_top_comes_free():
+    import numpy as np
+
+    env = _stem_env("cut_stem")
+    try:
+        wins = 0
+        for seed in SEEDS:
+            env.reset(seed=seed)
+            assert env.instruction.startswith("cut the stem of the ")
+            top = env.top_qadr[env.target]
+            assert np.allclose(env.data.qpos[top : top + 3], env.object_pos(env.target), atol=2e-3), (
+                "top not on its base"
+            )
+            expert = ScriptedExpert(env, seed=0, reactive=True)
+            expert.reset()
+            done, info = False, {}
+            while not done:
+                _, done, info = env.step(expert.act())
+            wins += info["success"]
+            if info["success"]:
+                assert info["cut"] == [env.target]
+                assert not env.data.eq_active[env.weld[env.target]], "the weld still holds the top"
+                for _ in range(40):  # open the jaws and back off: the top part is free and falls
+                    env.step(np.concatenate([env.last_action[:7], [1.0]]))
+                piece = env.top_body[env.target]
+                assert env.data.xipos[piece][2] < 0.06, "the top part did not fall"  # it stood at about 0.15 m
+        assert wins >= 2, f"the expert cut {wins} of {len(SEEDS)} stems"
+    finally:
+        env.close()
+
+
+def test_cutting_another_stem_fails_the_episode():
+    env = _stem_env("cut_stem")
+    try:
+        for seed in SEEDS:
+            env.reset(seed=seed)
+            named = env.target
+            env.target = next(n for n in env.active if n != named)  # the expert plans for another flower
+            expert = ScriptedExpert(env, seed=0, reactive=False)
+            expert.reset()
+            expert.act()
+            env.target = named
+            done, info = False, {}
+            while not done:
+                _, done, info = env.step(expert.act())
+            if info["cut"]:
+                assert not info["success"] and info["wrong_object"] and named not in info["cut"]
+                return
+        pytest.fail("the expert cut none of the other stems")
+    finally:
+        env.close()
+
+
+def test_grasp_stem_keeps_whole_flowers():
+    env = _stem_env("grasp_stem")
+    try:
+        assert not env.stems and not env.top_body
+        welds = [env.model.equality(i).name for i in range(env.model.neq)]
+        assert not any(name.endswith("_weld") for name in welds), welds  # the arm's own finger coupling stays
+    finally:
+        env.close()
