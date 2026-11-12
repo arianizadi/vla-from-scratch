@@ -68,7 +68,7 @@ Closed-loop success on layouts the policy never saw.
 | Training loss and open-loop error do not predict success | A 74% policy and a 1% policy reproduce recorded expert actions equally well; the lowest loss here belongs to a 0% policy |
 | Measure how a policy fails | Three policies ran the full grasp motion about 10 cm from any object and reached the named object at chance (29-33% with three objects) |
 | One pooled vector is not enough for grasping | Pooled image embedding 4%, image patch tokens 30%, same data |
-| Without the instruction, an ambiguous scene makes the policy average | A language-blind policy scored 74% with one object and closed 11 cm from the nearest of three |
+| A failing policy ignores the scene; it does not average | Where the failing policies closed the gripper was unrelated to where the objects were (slope 0.03, R² under 0.02): a random point on the table, about 10 cm from the nearest of three objects |
 | Know the tolerance of the task | Cube and T block forgive 2 cm; can and hex nut fall to about 60% at 1 cm |
 | Train/inference mismatches hide in preprocessing | With a pixel-range bug a VLM scored 0% on a captioning check; with it fixed, 85%. Nothing raised an error |
 

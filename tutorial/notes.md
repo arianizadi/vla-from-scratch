@@ -95,12 +95,28 @@ from-scratch VLAs built that way reached the named object at chance (section 3).
 states of every image and text token. `vit_backbone` has `text_tokens`, which adds the instruction
 to a patch-token policy.
 
-## 6. Ambiguity without language makes the policy average  (confirmed)
+## 6. A failing policy ignores the scene; it does not average  (confirmed)
 
 The ViT policy has no language input. On `pick_cube` (one object) it reaches 74%. On `pick_target`
-(three objects) it does not pick one of the three at random; it closes 11 cm from the nearest one.
-With no way to know the target, the first action chunk points between the objects and later chunks
-continue that motion.
+(three objects) it closes 11 cm from the nearest one. The first reading was that it reaches for a
+point between the objects. The per-episode records of the 1500-demonstration runs say otherwise:
+
+- the closing positions fill the area where objects can spawn evenly; they do not gather between
+  the three objects of their own scene;
+- regressing the closing position on the position of the named object gives a slope of 0.03 and an
+  R² under 0.02 (a policy that goes to the named object has slope 1);
+- the miss does not change when each episode's closing position is compared with the objects of a
+  different episode.
+
+So the first action chunk is a draw from all the reaches in the training data, unrelated to the
+scene in front of the policy, and later chunks continue that motion. "About 10 cm from the nearest
+object" is what a random point in the spawn area gives when three objects are on the table. The
+same holds for the policies with a language input that failed in section 3: they had the
+instruction and still did not use the image.
+
+**What to do.** Record where the gripper closes and where every object was, per episode. The
+slope of one against the other separates "imprecise" (slope near 1, scattered) from "not looking"
+(slope near 0) in one number. `sim/pickup/eval.py` writes both and the summary reports the slope.
 
 ## 7. Train/inference mismatches hide in preprocessing  (confirmed)
 

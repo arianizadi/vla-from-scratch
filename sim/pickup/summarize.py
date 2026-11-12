@@ -1,10 +1,11 @@
 """Collect closed-loop results into one table.
 
 Walks results/pickup/<run>/<task>/**/results.json and prints one row per evaluation: success with
-its Wilson interval, how often the gripper closed at the named object, the median miss, and success
-per object. Evaluations of individual checkpoints (written by scripts/eval_checkpoints.sh) are
-matched to the number of training samples seen, read from the run's training log, so the rows give
-success as a function of training.
+its Wilson interval, how often the gripper closed at the named object, the slope of the closing
+position against the named object's position (1: goes where the object is; 0: ignores the scene),
+the median miss, and success per object. Evaluations of individual checkpoints (written by
+scripts/eval_checkpoints.sh) are matched to the number of training samples seen, read from the
+run's training log, so the rows give success as a function of training.
 
     python -m sim.pickup.summarize                                  # everything
     python -m sim.pickup.summarize --task pick_target --runs dp_vit dp_vit_lang
@@ -32,6 +33,31 @@ def served_checkpoint_matches(results, run, checkpoint, weights):
     parts = served.split("/")
     want = f"{'ema' if weights == 'ema' else 'checkpoint'}_{checkpoint}.pt"
     return len(parts) >= 3 and parts[-3] == run and parts[-1] == want
+
+
+def close_slope(results):
+    """Slope of where the gripper closed against where the named object was (both axes pooled).
+
+    1 means the gripper closes where the named object is, wherever that is. 0 means the closing
+    position does not depend on the scene: the policy is not imprecise, it is not looking. Computed
+    from the per-episode records, so it also covers results written before eval.py stored a slope.
+    """
+    cov = var = 0.0
+    used = 0
+    for axis in (0, 1):
+        pairs = [
+            (e["close_object_xy"][e["target"]][axis], e["close_tcp_xy"][axis])
+            for e in results.get("per_episode", [])
+            if e.get("close_tcp_xy") and e.get("target") in (e.get("close_object_xy") or {})
+        ]
+        if len(pairs) < 3:
+            return None
+        mx = sum(x for x, _ in pairs) / len(pairs)
+        my = sum(y for _, y in pairs) / len(pairs)
+        cov += sum((x - mx) * (y - my) for x, y in pairs)
+        var += sum((x - mx) ** 2 for x, _ in pairs)
+        used = len(pairs)
+    return cov / var if used and var > 1e-12 else None
 
 
 def checkpoint_samples(experiments: Path, run: str) -> dict[int, int]:
@@ -82,6 +108,7 @@ def load_rows(results: Path, experiments: Path, task: str | None, runs: list[str
                 median_miss_named_mm=grasp.get("median_xy_err_target_mm"),
                 median_miss_nearest_mm=grasp.get("median_xy_err_nearest_mm"),
                 within_20mm=grasp.get("within_20mm_of_target_rate"),
+                close_slope=close_slope(r),
                 wrong_object_rate=r.get("wrong_object_rate"),
                 per_target={k: f"{v['successes']}/{v['episodes']}" for k, v in r.get("per_target", {}).items()},
                 exec_horizon=r.get("exec_horizon"),
@@ -125,7 +152,7 @@ def main():
                 best[key] = row
         rows = list(best.values())
 
-    header = ["Run", "Task", "Checkpoint", "Samples", "Success", "95% CI", "At named object"]
+    header = ["Run", "Task", "Checkpoint", "Samples", "Success", "95% CI", "At named object", "Slope"]
     header += ["Miss, named (mm)", "Miss, nearest (mm)", "Per object"]
     print("| " + " | ".join(header) + " |")
     print("|" + "---|" * len(header))
@@ -133,10 +160,11 @@ def main():
         ckpt = f"{r['checkpoint']} {r['weights']}" if r["checkpoint"] else (r["variant"] or "latest")
         samples = "-" if r["samples"] is None else f"{r['samples'] / 1e6:.2f}M"
         per = " ".join(f"{k} {v}" for k, v in r["per_target"].items())
+        slope = "-" if r["close_slope"] is None else f"{r['close_slope']:.2f}"
         print(
             f"| {r['run']} | {r['task']} | {ckpt} | {samples} | {r['successes']}/{r['episodes']} = "
             f"{pct(r['success_rate'])} | {pct(r['ci95'][0])}-{pct(r['ci95'][1])} | {pct(r['at_named_object'])} | "
-            f"{mm(r['median_miss_named_mm'])} | {mm(r['median_miss_nearest_mm'])} | {per} |"
+            f"{slope} | {mm(r['median_miss_named_mm'])} | {mm(r['median_miss_nearest_mm'])} | {per} |"
         )
     if args.json:
         os.makedirs(os.path.dirname(args.json) or ".", exist_ok=True)
