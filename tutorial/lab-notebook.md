@@ -879,9 +879,9 @@ episodes, which is chance with three flowers, and another stem is cut in 31-50%.
 word is not used at all, the step-2 problem in a scene where it did not solve itself (red, orange and pink
 heads are look-alikes; purple is the only colour far from the others).
 
-A video of the one-flower policy, final checkpoint, averaged weights, 10 episodes recorded, 10 cut, 5
-shown: `flower-step5a-cut-one-stem.mp4` (after each cut a script opens the jaws so that the top can be
-seen to fall).
+A video of the one-flower policy, final checkpoint, averaged weights, 22 episodes recorded, 22 cut, 5
+shown: `flower-step5a-cut-one-stem.mp4` (after each cut a script opens the jaws and draws the arm back so
+that the top can be seen to fall).
 
 ## Throughput
 
