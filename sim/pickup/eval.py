@@ -135,6 +135,11 @@ def main():
         action="store_true",
         help="with --expert: the expert plans again when the object has moved or a grasp closed on nothing",
     )
+    ap.add_argument(
+        "--random_start",
+        action="store_true",
+        help="start every episode from a random gripper pose above the table instead of the home pose",
+    )
     args = ap.parse_args()
 
     out = Path(args.out)
@@ -156,6 +161,11 @@ def main():
         from .expert import ScriptedExpert
 
         pilot = ScriptedExpert(env, seed=0)
+    starter = None
+    if args.random_start:
+        from .expert import ScriptedExpert, random_start
+
+        starter = ScriptedExpert(env, seed=0)  # for its inverse kinematics only
     cams = env.camera_names
 
     episodes, latencies = [], []
@@ -163,20 +173,22 @@ def main():
     t_start = time.time()
     for ep in range(args.episodes):
         seed = args.seed_start + ep
-        obs = env.reset(seed=seed)
+        obs, start_yaw = env.reset(seed=seed), 0.0
+        if starter is not None:
+            obs, start_yaw = random_start(env, starter, seed)
         prev_obs, queue, frames = obs, [], []
         wrong_object = False  # a non-target object was lifted at any point in the episode
         probe = GraspProbe(env)
         disturbance = Disturbance(env, args.disturb, args.disturb_step, args.disturb_mm / 1000, seed=seed)
         if expert is not None:
-            expert.reset()
+            expert.reset(yaw=start_yaw)
         prefix_goal = None
         if pilot is not None:  # plan the prefix toward the chosen object; the instruction is unchanged
             named = env.target
             if args.prefix_target == "distractor":
                 env.target = next(n for n in env.active if n != named)
             prefix_goal = env.target
-            pilot.reset()
+            pilot.reset(yaw=start_yaw)
             env.target = named
         first_obs, first_query = obs, True
         done, info = False, {}
@@ -267,6 +279,7 @@ def main():
         exec_horizon=args.exec_horizon,
         flow_steps=args.flow_steps,
         noise=args.noise,
+        random_start=args.random_start,
         interventions=dict(
             expert_prefix=args.expert_prefix,
             prefix_target=args.prefix_target if args.expert_prefix else None,

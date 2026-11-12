@@ -60,10 +60,12 @@ class ScriptedExpert:
         return q
 
     # ------------------------------------------------------------------- plan
-    def reset(self):
+    def reset(self, yaw=0.0):
+        """Plan for the current scene. `yaw`: the gripper's yaw offset from the home orientation at the
+        start (0 at the home pose; random_start returns it for other starting poses)."""
         env = self.env
         self.des_pos = env.tcp_pos()
-        self.des_yaw = 0.0
+        self.des_yaw = yaw
         self.q_cmd = env.data.ctrl[:7].copy()
         self.replans = 0
         self._plan()
@@ -131,3 +133,22 @@ class ScriptedExpert:
                 self.dwell = 0
         self.q_cmd = self.solve_ik(self.q_cmd, self.des_pos, self.des_yaw)
         return np.concatenate([self.q_cmd, [grip]]).astype(np.float32)
+
+
+# Where an episode may start when it does not start at the home pose: gripper position (metres) and yaw.
+START_X, START_Y, START_Z, START_YAW = (0.35, 0.65), (-0.25, 0.25), (0.22, 0.45), (-0.6, 0.6)
+
+
+def random_start(env: PickupEnv, expert: ScriptedExpert, seed: int):
+    """Move the arm to a random pose above the table, gripper pointing down, before the episode begins.
+
+    From the home pose every reach is a straight line that starts at the same point, so a few steps in,
+    the arm's own position says where it is heading and the cameras are no longer needed to know the
+    goal. With a start that varies, the position of the arm alone says little. Returns (observation,
+    yaw offset) and expects env.reset(seed) to have been called; pass the yaw to ScriptedExpert.reset.
+    """
+    rng = np.random.default_rng([seed, 13])  # its own stream: the layout of `seed` is unchanged
+    pos = np.array([rng.uniform(*START_X), rng.uniform(*START_Y), rng.uniform(*START_Z)])
+    yaw = float(rng.uniform(*START_YAW))
+    q = expert.solve_ik(HOME_Q, pos, yaw, iters=200)
+    return env.set_arm(q), yaw

@@ -269,6 +269,16 @@ class PickupEnv:
         w, x, y, z = self.data.qpos[adr + 3 : adr + 7]
         return float(np.arctan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z)))
 
+    def set_arm(self, q):
+        """Put the arm in joint configuration `q` at rest, holding it (used to start an episode somewhere
+        other than the home pose). Returns the new observation."""
+        self.data.qpos[:7] = q
+        self.data.qvel[:9] = 0
+        self.data.ctrl[:7] = q
+        mujoco.mj_forward(self.model, self.data)
+        self.last_action = np.concatenate([self.data.ctrl[:7], [self.data.ctrl[7] / 255.0]]).astype(np.float32)
+        return self.get_obs()
+
     def move_object(self, name, xy, yaw=None):
         """Put an object down somewhere else on the table, upright and at rest: a disturbance, used to
         test how a policy copes and to record demonstrations of recovery. Yaw is kept unless given."""

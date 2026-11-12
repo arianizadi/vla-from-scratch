@@ -23,7 +23,7 @@ from PIL import Image
 
 from .disturb import Disturbance
 from .env import CONTROL_HZ, TASKS, PickupEnv
-from .expert import ScriptedExpert
+from .expert import ScriptedExpert, random_start
 
 CAMERAS = ("front", "wrist")
 
@@ -35,13 +35,15 @@ def _jpeg(img, quality=95):
 
 
 def _worker(args):
-    task, jobs, out_dir, worker_id, disturb_prob = args
+    task, jobs, out_dir, worker_id, disturb_prob, anywhere = args
     env = PickupEnv(task)
     expert = ScriptedExpert(env, seed=worker_id, reactive=disturb_prob > 0)
     results = []
     for seed, target_index in jobs:
-        obs = env.reset(seed=seed, target_index=target_index)
-        expert.reset()
+        obs, start_yaw = env.reset(seed=seed, target_index=target_index), 0.0
+        if anywhere:
+            obs, start_yaw = random_start(env, expert, seed)
+        expert.reset(yaw=start_yaw)
         # Per-episode draw (from the seed, so a dataset can be rebuilt): is this episode disturbed, when
         # and by how much. Half of the moves come during the reach, half as the gripper closes.
         rng = np.random.default_rng([seed, 7])
@@ -110,6 +112,12 @@ def main():
         "closes, and the expert recovers (plans again, retries the grasp). 0: every demonstration goes to plan, "
         "so the data holds no example of a correction.",
     )
+    ap.add_argument(
+        "--random_start",
+        action="store_true",
+        help="start every episode from a random gripper pose above the table instead of the home pose. From "
+        "one fixed start, the arm's own position gives the goal away after a few steps of any reach.",
+    )
     args = ap.parse_args()
     num_objects = TASKS[args.task]["num_objects"]
     assert 1 <= args.targets_per_layout <= num_objects, f"{args.task} has {num_objects} objects per layout"
@@ -129,7 +137,8 @@ def main():
             next_seed = seeds[-1] + 1
             # With one target per layout the seed's own choice is kept (target_index None).
             jobs = [(seed, i if per_layout > 1 else None) for seed in seeds for i in range(per_layout)]
-            chunks = [(args.task, jobs[i :: args.workers], str(out), i, args.disturb_prob) for i in range(args.workers)]
+            extra = (args.disturb_prob, args.random_start)
+            chunks = [(args.task, jobs[i :: args.workers], str(out), i, *extra) for i in range(args.workers)]
             for res in pool.map(_worker, chunks):
                 attempted += len(res)
                 successes += sum(r["success"] for r in res)
@@ -178,6 +187,7 @@ def main():
         expert_attempted=attempted,
         targets_per_layout=per_layout,
         disturb_prob=args.disturb_prob,
+        random_start=args.random_start,
         disturbed_episodes=sum(r["disturbed"] != "none" for r in kept),
         data_path="data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
         features={

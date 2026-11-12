@@ -1,4 +1,4 @@
-"""Disturbances and the re-planning expert (sim/pickup/disturb.py, expert.py).
+"""Disturbances, the re-planning expert and random start poses (sim/pickup/disturb.py, expert.py).
 
 Needs MuJoCo, a GL context for the cameras and the Franka model (sim/pickup/scripts/fetch_assets.sh);
 skipped where any of them is missing.
@@ -17,7 +17,7 @@ pytest.importorskip("mujoco")
 
 from sim.pickup.disturb import Disturbance  # noqa: E402
 from sim.pickup.env import PANDA_XML, PickupEnv  # noqa: E402
-from sim.pickup.expert import ScriptedExpert  # noqa: E402
+from sim.pickup.expert import ScriptedExpert, random_start  # noqa: E402
 
 SEEDS = (1_000_000, 1_000_001, 1_000_002)
 
@@ -83,3 +83,20 @@ def test_the_object_lands_on_free_table(env):
         if other != env.target:
             assert ((env.object_pos(other)[:2] - end) ** 2).sum() ** 0.5 >= 0.11
     assert not disturbance.update([0] * 7 + [1.0]), "one move per episode"
+
+
+def test_random_start_keeps_the_layout_and_the_expert_still_succeeds(env):
+    for seed in SEEDS:
+        env.reset(seed=seed)
+        layout = {name: env.object_pos(name).copy() for name in env.active}
+        home = env.tcp_pos().copy()
+        expert = ScriptedExpert(env, seed=0)
+        _, yaw = random_start(env, expert, seed)
+        assert all((env.object_pos(name) == layout[name]).all() for name in env.active)
+        assert ((env.tcp_pos() - home) ** 2).sum() ** 0.5 > 0.02, "the gripper did not leave the home pose"
+        assert env.tcp_pos()[2] > 0.2
+        expert.reset(yaw=yaw)
+        done, info = False, {}
+        while not done:
+            _, done, info = env.step(expert.act())
+        assert info["success"]
