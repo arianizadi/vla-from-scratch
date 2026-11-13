@@ -7,8 +7,8 @@ same licence, with credit.
 | What | Licence |
 |---|---|
 | Code written for this repository (`sim/`, the scripts, the tests, and every change made here to the framework) | [GNU AGPL-3.0](LICENSE) |
-| The tutorial: chapters, lab notebook, notes, roadmap and other documentation in `tutorial/` and the Markdown files at the root (except `FOUNDRY.md`), and the figures and videos | [CC BY-SA 4.0](LICENSES/CC-BY-SA-4.0.txt) |
-| Code from [VLA Foundry](https://github.com/TRI-ML/vla_foundry) by Toyota Research Institute, and its documentation (`FOUNDRY.md`) | [MIT](LICENSES/MIT-VLA-Foundry.txt), as published by Toyota Research Institute |
+| The tutorial: chapters, lab notebook, notes, roadmap and other documentation in `tutorial/` and the Markdown files at the root (except `FOUNDRY.md`), and the figures and videos made for it | [CC BY-SA 4.0](LICENSES/CC-BY-SA-4.0.txt) |
+| Code from [VLA Foundry](https://github.com/TRI-ML/vla_foundry) by Toyota Research Institute, and its documentation and media (`FOUNDRY.md`, `docs/`, `tutorials/`) | [MIT](LICENSES/MIT-VLA-Foundry.txt), as published by Toyota Research Institute |
 
 Copyright (c) 2026 the vla-from-scratch authors (https://github.com/arianizadi/vla-from-scratch).
 
