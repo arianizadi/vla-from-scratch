@@ -985,7 +985,10 @@ second checkpoint (about 3.6M samples), where the 10M runs were at 2-6: as in st
 decays over a longer budget learns faster per sample. Averaged weights per checkpoint (damage in
 brackets): 0 (60), 29 (10), 67 (4), 65 (9), 69 (8), 76 (5), 79 (1), 73 (4), 79 (5), 80 (4), 79 (4); final
 81/100 / 79/100 (trained / averaged), the flower touched in 3 and 4, the rest out of time; successful
-episodes take about 640 control steps. At checkpoint 3 (67/100) the other 29
+episodes take about 640 control steps. The same budget from 4000 demonstrations (`..._prune4k_rs_tail10_20m_seed43`)
+prunes 84/100 at checkpoint 6 (12 out of time, the flower damaged in 4; successful episodes take about 660
+control steps); the video `flower-step8-prune.mp4` shows that checkpoint (11 episodes recorded, 7 pruned, 4
+shown; quiet stretches at 2x; after the last cut a script opens the jaws and draws the arm back). At checkpoint 3 (67/100) the other 29
 ran out of time and 4 touched the flower; successful episodes took 723 control steps on average (the expert
 about 515). Other seeds, and 4000 demonstrations, are training.
 
