@@ -686,8 +686,7 @@ poses and recoveries (`--random_start --disturb_prob 0.5`), 5M samples, 100 unse
 evaluation, final checkpoint, trained / averaged weights where both are given. "Closed at the named
 object" is the share of first closes nearest the named object.
 
-**In progress:** the full pruning task (step 8) for 20M samples: from 2000 demonstrations, three seeds
-(`..._prune2k_rs_tail10_20m`, `..._seed43`, `..._seed44`), and from 4000 (`..._prune4k_rs_tail10_20m`, `..._seed43`).
+**In progress:** the full pruning task (step 8) for a 40M-sample budget (`..._prune2k_rs_tail10_40m`).
 
 **Physics change (after the runs of steps 1-5 above).** An audit of every contact found the arm sinking
 into solid things: with MuJoCo's default soft contacts (time constant 0.02 s) the position-controlled arm
@@ -965,7 +964,7 @@ shoot already faced the robot (within about 10°) it did not press. The first pr
 until the shoot came round. By the final checkpoint the short way is taken in 87-88%, and the policies take
 about 10% longer than the expert and turn 10-20% further.
 
-### Step 8: the full task (`prune`), in progress
+### Step 8: the full task (`prune`)
 
 Two or three shoots at random angles: turn, cut, turn, cut. The expert succeeds in 100/100 in about 515 control
 steps; an episode may last 1000. 2000 demonstrations, 10M samples, averaged weights per checkpoint (damage in
@@ -990,7 +989,28 @@ prunes 84/100 at checkpoint 6 (12 out of time, the flower damaged in 4; successf
 control steps); the video `flower-step8-prune.mp4` shows that checkpoint (11 episodes recorded, 7 pruned, 4
 shown; quiet stretches at 2x; after the last cut a script opens the jaws and draws the arm back). At checkpoint 3 (67/100) the other 29
 ran out of time and 4 touched the flower; successful episodes took 723 control steps on average (the expert
-about 515). Other seeds, and 4000 demonstrations, are training.
+about 515).
+
+All five 20M runs, 100 layouts per checkpoint, final checkpoint as trained / averaged weights, the best
+averaged checkpoint, and the flower damaged at the final averaged checkpoint:
+
+| Demonstrations | Seed | Final (trained / averaged) | Best averaged (checkpoint) | Flower damaged (final) |
+|---|---|---|---|---|
+| 2000 | 42 | 81/100 / 79/100 | 80/100 (10) | 4 |
+| 2000 | 43 | 44/100 / 56/100 | 59/100 (10) | 2 |
+| 2000 | 44 | 80/100 / 78/100 | 82/100 (9) | 7 |
+| 4000 | 42 | 78/100 / 65/100 | 78/100 (7) | 2 |
+| 4000 | 43 | 76/100 / 76/100 | 84/100 (6, 8) | 6 |
+
+Averaged weights per checkpoint: 2000 demonstrations, seed 43: 0, 2, 1, 22, 36, 50, 46, 52, 54, 59, 56; seed 44:
+0, 32, 63, 67, 76, 76, 74, 79, 82, 73, 78; 4000 demonstrations, seed 42: 0, 1, 25, 55, 63, 77, 78, 65, 69, 65, 65;
+seed 43: 0, 20, 53, 55, 75, 84, 82, 84, 79, 80, 76. Twice the demonstrations do not help at this budget: the
+final checkpoints of the 4000-demonstration runs (65-78) sit inside the range of the 2000-demonstration runs
+(56-81). The seed matters more: seed 43 of the 2000-demonstration runs learns late (1 at checkpoint 3, where the
+other two seeds are at 63-67) and never catches up. Between neighbouring checkpoints a run moves by up to 13, so a best
+checkpoint picked from eleven is an optimistic number; the final checkpoints are the fair comparison. Once in
+five runs the averaged weights end well below the trained ones (65 against 78). The failures are mostly running
+out of time, as at 10M; the flower is damaged in 2-7.
 
 ## Throughput
 
