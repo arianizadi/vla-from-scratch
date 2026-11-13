@@ -686,9 +686,6 @@ poses and recoveries (`--random_start --disturb_prob 0.5`), 5M samples, 100 unse
 evaluation, final checkpoint, trained / averaged weights where both are given. "Closed at the named
 object" is the share of first closes nearest the named object.
 
-**In progress:** the full pruning task (step 8) from 2000 demonstrations plus 2000 corrected takeover
-demonstrations, 20M samples, three seeds (`..._prune2k_takeover2kv2_20m`, `..._seed43`, `..._seed44`).
-
 **Physics change (after the runs of steps 1-5 above).** An audit of every contact found the arm sinking
 into solid things: with MuJoCo's default soft contacts (time constant 0.02 s) the position-controlled arm
 pressed the hand 11 mm into the table and a finger 24 mm into a flower, and after a cut the top part slid
@@ -1036,7 +1033,26 @@ fall as training goes on, timing out more and touching the flower more (seed 44 
 out of time, 26 flower touched). Two faults in the dataset: it had no tail (`--tail_steps 0`; the ordinary half
 has 10), and the expert's back-out and lane return after a takeover are moves the ordinary expert never
 makes (4% of the takeover frames, in 92% of its episodes), so near a shoot the two halves teach opposite
-actions. Both are fixed in a second takeover dataset, now training.
+actions. Both are fixed in a second takeover dataset.
+
+**Takeover demonstrations, corrected: no better on average.** The second dataset (`prune_2k_takeover2kv2`, same
+policy and handover range, other layouts) has the tail of 10 steps and leaves out the frames of the back-out and
+lane return: the recording starts once the expert is on its ordinary plan (1827 of the 2000 kept episodes began
+with such moves; 32,062 steps were left out, a median of 14 per episode). Of 2615 attempts, 389 ended before the
+handover (335 pruned, 54 flower touched) and the expert failed after 188 handovers (163 flower touched, 8 main
+stem pushed, 17 out of time); the kept episodes were handed over at a median K of 300. Trained for 20M samples on
+these plus the same 2000 ordinary demonstrations, averaged weights per checkpoint (damage in brackets):
+
+| Seed | Averaged weights per checkpoint | Final (trained / averaged) | Damaged (final) | Without takeover demonstrations |
+|---|---|---|---|---|
+| 42 (`..._prune2k_takeover2kv2_20m`) | 0, 27, 69, 72, 81, 84, 77, 82, 85, 78, 83 | 79/100 / 83/100 | 7 | 81/100 / 79/100 |
+| 43 (`..._seed43`) | 0, 1, 0, 1, 12, 16, 25, 24, 24, 19, 24 | 25/100 / 24/100 | 7 | 44/100 / 56/100 |
+| 44 (`..._seed44`) | 0, 48, 69, 65, 59, 65, 75, 70, 60, 69, 68 | 73/100 / 68/100 | 16 | 80/100 / 78/100 |
+
+No collapse this time, so the faults of the first dataset caused it (which of the two was not tested apart). But
+the takeover demonstrations do not help either: one seed gains a little (85/100 at checkpoint 9 is the best of
+any pruning checkpoint, 83/100 at the end), the other two lose more, and the seed that learns late learns later
+still. Step 8 stands at about 80/100 on two seeds of three, with most failures out of time.
 
 ## Throughput
 
