@@ -122,6 +122,13 @@ demonstrations, train a policy and evaluate it closed-loop.
 ## Built on VLA Foundry
 
 The training framework is [VLA Foundry](https://github.com/TRI-ML/vla_foundry) from Toyota Research
-Institute, used under the MIT licence (see [LICENSE](LICENSE)). This repository started as a fork of
+Institute, used under the MIT licence (its notice is in [LICENSES/MIT-VLA-Foundry.txt](LICENSES/MIT-VLA-Foundry.txt)). This repository started as a fork of
 it. The framework's own documentation is kept in [FOUNDRY.md](FOUNDRY.md), and the fixes made to it
 here are listed in the [roadmap](tutorial/roadmap.md#framework-fixes-ledger).
+
+## Licence
+
+Copyleft: the code is under the [GNU AGPL-3.0](LICENSE) and the tutorial (chapters, notebook, notes,
+figures, videos) under [CC BY-SA 4.0](LICENSES/CC-BY-SA-4.0.txt). Use it, change it and share it;
+what you share or run as a service built from it must stay open under the same licence, with credit.
+Code that came from VLA Foundry stays under its MIT licence. Details: [NOTICE.md](NOTICE.md).
