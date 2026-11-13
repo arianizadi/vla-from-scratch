@@ -979,9 +979,13 @@ expert needs about 515 for everything), and in the last 200 steps of the episode
 gripper was mostly near neither an uncut shoot nor a button, and some turned the plant 450-560° in all. The same
 checkpoint with twice the time (2000 steps) prunes 27 and 30 plants instead of 9 and 10, but 36 and 52 still run
 out of time and the flower is damaged in more (37 and 18): it is slow and it wanders, and more time also means
-more chances to touch the flower. The run planned for 20M samples (same demonstrations and seed) prunes 29/100
-at its second checkpoint (about 3.6M samples), where the 10M runs were at 2-6: as in step 5, a learning rate
-that decays over a longer budget learns faster per sample.
+more chances to touch the flower. The run planned for 20M samples (same demonstrations and seed,
+`dp_vit_lang_reactive_prune2k_rs_tail10_20m`; checkpoints about 1.8M samples apart) prunes 29/100 at its
+second checkpoint (about 3.6M samples), where the 10M runs were at 2-6: as in step 5, a learning rate that
+decays over a longer budget learns faster per sample. Averaged weights per checkpoint so far (damage in
+brackets): 0 (60), 29 (10), 67 (4), 65 (9), 69 (8), 76 (5), 79 (1). At checkpoint 3 (67/100) the other 29
+ran out of time and 4 touched the flower; successful episodes took 723 control steps on average (the expert
+about 515). Other seeds, and 4000 demonstrations, are training.
 
 ## Throughput
 
