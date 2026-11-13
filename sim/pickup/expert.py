@@ -64,6 +64,9 @@ SIDE_CLEAR = 0.02  # metres: an approach path this far from other shoots and the
 PRUNE_OPEN = 0.6  # gripper command while cutting: jaws 48 mm apart, enough for a rising shoot, clear of the pot
 PRESS_TILT = np.radians(15)  # the gripper leans this far from vertical, fingertips away from the robot, to press
 LANE_BACK = 0.20  # metres toward the robot from the stand's axis: the line the hand travels along between moves
+# Taking over (take_over): a gripper this close to the main stem's axis, below the top of the flower plus this margin,
+# is among the shoots; it backs out along its own axis, at most this far, before anything else
+AMONG_SHOOTS, ABOVE_FLOWER, BACK_OUT = 0.17, 0.06, 0.15  # metres
 # Points on the open fingers, the hand and the last link (tcp frame): the clearance of an approach path.
 HAND_POINTS = np.array(
     [[x, y, z] for x in (-0.01, 0.01) for y in (-0.045, 0.045) for z in (-0.045, 0.01)]
@@ -130,17 +133,59 @@ class ScriptedExpert:
         return q
 
     # ------------------------------------------------------------------- plan
-    def reset(self, yaw=0.0):
+    def reset(self, yaw=0.0, R=None):
         """Plan for the current scene. `yaw`: the gripper's yaw offset from the home orientation at the
-        start (0 at the home pose; random_start returns it for other starting poses)."""
+        start (0 at the home pose; random_start returns it for other starting poses). `R`: the gripper's
+        orientation, when it does not point down (see take_over)."""
         env = self.env
         self.des_pos = env.tcp_pos()
         self.des_yaw = yaw
-        self.des_R = None  # set when a grasp from the side turns the gripper away from pointing down
+        self.des_R = R  # also set when a grasp from the side turns the gripper away from pointing down
         self.q_cmd = env.data.ctrl[:7].copy()
         self.replans = 0
         self.tracks = 0
         self._plan()
+
+    def take_over(self):
+        """Plan from the arm as it is now, part way through an episode that another controller (a learned policy)
+        has been driving: the set-point starts at the gripper's actual position and orientation, and the plan
+        covers what is left of the task (pruning: the shoots not yet cut). Top-down grasps keep only the yaw of
+        the actual orientation, as their plans assume the gripper points down."""
+        env = self.env
+        R = env.data.site_xmat[env.tcp_id].reshape(3, 3).copy()
+        yaw = float(_wrap(env.tcp_yaw() - self.yaw_home, 2 * np.pi))
+        self.reset(yaw=yaw, R=R if env.plant_task else None)  # every pruning waypoint carries its orientation
+        self.q_cmd = env.data.qpos[:7].copy()  # the joints as they are, not the last command another controller sent
+        if env.plant_task and self._among_shoots():
+            # A plan may start by turning the hand where it is, which among the shoots swings the fingers into them or
+            # the flower. First open the jaws (they may hold a shoot) and back out the way the hand points (never
+            # downward) until it is clear of the plant, or for at most 3 s; the next plan starts from there.
+            out = -R[:, 2].copy()
+            out[2] = max(out[2], 0.0)
+            out = out / np.linalg.norm(out) if np.linalg.norm(out) > 0.3 else np.array([0.0, 0.0, 1.0])
+            self.waypoints = [
+                (self.des_pos.copy(), PRUNE_OPEN, 0.0, 3, R),
+                (self.des_pos + out * BACK_OUT, PRUNE_OPEN, 0.15, 60, R, lambda: not self._among_shoots()),
+            ]
+            self.wp, self.dwell = 0, 0
+        elif env.plant_task:
+            # Far out or high up (outside the box random starts are drawn from), a hand pointing down may be out of
+            # reach, and a plan that starts by turning it there never arrives: first move into the box, back on the
+            # lane in front of the plant (clear of the flower), and turn.
+            lane_x = env.data.xpos[env.stand_body][0] - LANE_BACK
+            lo, hi = np.array([START_X[0], START_Y[0], START_Z[0]]), np.array([lane_x, START_Y[1], START_Z[1]])
+            inside = np.clip(self.des_pos, lo, hi)
+            if not np.all((self.des_pos >= lo) & (self.des_pos <= [START_X[1], START_Y[1], START_Z[1]])):
+                self.waypoints = [
+                    (inside, PRUNE_OPEN, 0.3, 100, self.R_down, lambda: np.linalg.norm(env.tcp_pos() - inside) < 0.02)
+                ]
+                self.wp, self.dwell = 0, 0
+
+    def _among_shoots(self):
+        """Is the gripper among the shoots: near the main stem's axis, below the top of the flower (plus a margin)?"""
+        base, up = self.env.stem_axis()
+        rel = self.env.tcp_pos() - base
+        return bool(np.linalg.norm(rel - up * (rel @ up)) < AMONG_SHOOTS and rel @ up < STEM_H + ABOVE_FLOWER)
 
     def _plan(self, again=False):
         """Waypoints for the named object where it is now, starting from the current set-point."""

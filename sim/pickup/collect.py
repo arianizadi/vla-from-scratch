@@ -7,6 +7,10 @@ Per-frame columns: front, wrist (JPEG bytes), state [8], action [8], plus LeRobo
 action[t] is the command applied after observing frame t.
 
   python -m sim.pickup.collect --task pick_cube --episodes 200 --out data/lerobot/pick_cube
+
+With --policy_ports, a trained policy (served by policy_server.py, one server per worker) drives the first K steps
+of every episode and the scripted expert takes over from wherever the arm is and finishes the task; only the
+expert's part is recorded (scripts/make_takeover_dataset.sh starts the servers).
 """
 
 import argparse
@@ -14,6 +18,7 @@ import io
 import json
 import multiprocessing as mp
 import time
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -23,6 +28,7 @@ from PIL import Image
 
 from .disturb import Disturbance
 from .env import CONTROL_HZ, TASKS, PickupEnv
+from .eval import connect, infer_request
 from .expert import ScriptedExpert, random_start
 
 CAMERAS = ("front", "wrist")
@@ -34,16 +40,72 @@ def _jpeg(img, quality=95):
     return buf.getvalue()
 
 
+def hand_over(env, expert, obs, policy, steps, budget):
+    """Let `policy` drive the first `steps` control steps of an episode, then hand the arm to `expert` where it is
+    (ScriptedExpert.take_over), with `budget` more steps to finish in. `policy(prev_obs, obs)` returns the next
+    actions to execute. Returns (observation at the handover, None), or (None, info) if the episode ended first."""
+    prev_obs, queue = obs, []
+    for _ in range(steps):
+        if not queue:
+            queue = list(policy(prev_obs, obs))
+        prev_obs = obs
+        obs, done, info = env.step(queue.pop(0))
+        if done:
+            return None, info
+    env.max_steps = env.steps + budget
+    expert.take_over()
+    return obs, None
+
+
+def served_policy(conn, env, exec_horizon=8, flow_steps=10):
+    """The policy behind a policy_server.py connection, queried as eval.py does (fresh noise for every chunk)."""
+
+    def policy(prev_obs, obs):
+        conn.send(infer_request(prev_obs, obs, env.last_action, env.instruction, flow_steps))
+        return conn.recv()["actions"][:exec_horizon]
+
+    return policy
+
+
 def _worker(args):
-    task, jobs, out_dir, worker_id, disturb_prob, anywhere, hold_steps, drift_prob, drift_cm_s, side, tail_steps = args
+    (
+        task,
+        jobs,
+        out_dir,
+        worker_id,
+        disturb_prob,
+        anywhere,
+        hold_steps,
+        drift_prob,
+        drift_cm_s,
+        side,
+        tail_steps,
+        takeover,
+    ) = args  # takeover: None, or this worker's policy server and the range the handover step K is drawn from
     env = PickupEnv(task)
     expert = ScriptedExpert(env, seed=worker_id, reactive=disturb_prob > 0 or drift_prob > 0, side=side)
+    budget = env.max_steps
+    conn = policy = None
+    if takeover is not None:
+        conn = connect(takeover["port"])
+        policy = served_policy(conn, env, takeover["exec_horizon"], takeover["flow_steps"])
     results = []
     for seed, target_index in jobs:
+        env.max_steps = budget
         obs, start_yaw = env.reset(seed=seed, target_index=target_index), 0.0
         if anywhere:
             obs, start_yaw = random_start(env, expert, seed)
-        expert.reset(yaw=start_yaw)
+        handover = {}
+        if takeover is None:
+            expert.reset(yaw=start_yaw)
+        else:
+            lo, hi = takeover["steps"]
+            k = int(np.random.default_rng([seed, 17]).integers(lo, hi + 1))  # its own stream, as random_start's
+            obs, ended = hand_over(env, expert, obs, policy, k, budget)
+            if obs is None:  # the policy finished the episode itself (pruned everything, or damaged the plant)
+                results.append(dict(seed=seed, success=False, takeover_step=k, before_handover=_ending(ended)))
+                continue
+            handover = dict(takeover_step=k, cut_at_handover=len(env.cut))
         # Per-episode draw (from the seed, so a dataset can be rebuilt): is this episode disturbed, when
         # and by how much. Half of the moves come during the reach, half as the gripper closes.
         rng = np.random.default_rng([seed, 7])
@@ -68,7 +130,7 @@ def _worker(args):
             disturbance.update(action)
             obs, done, info = env.step(action)
         if not info["success"]:
-            results.append(dict(seed=seed, success=False))
+            results.append(dict(seed=seed, success=False, **handover, after_handover=_ending(info)))
             continue
         for _ in range(tail_steps):  # after the success: the robot holds its last command (for a cut, jaws shut)
             action = env.last_action.copy()
@@ -97,10 +159,37 @@ def _worker(args):
                 disturbed=kind if disturbance.record and disturbance.record["to_xy"] else "none",
                 replans=expert.replans,
                 tracks=expert.tracks,
+                **handover,
             )
         )
+    if conn is not None:
+        conn.close()
     env.close()
     return results
+
+
+def _ending(info):
+    """How an episode ended: 'success', what was damaged, or 'time' (or 'wrong object' for the pick tasks)."""
+    if info["success"]:
+        return "success"
+    return info.get("damaged") or ("wrong object" if info.get("wrong_object") else "time")
+
+
+def _included(path, task):
+    """The episodes of an earlier dataset written by this script, as entries to copy into the new one."""
+    src = Path(path)
+    info = json.loads((src / "meta" / "info.json").read_text())
+    assert info["sim_task"] == task, f"{src} holds {info['sim_task']} demonstrations, not {task}"
+    entries = [json.loads(line) for line in (src / "meta" / "episodes.jsonl").read_text().splitlines()]
+    return [
+        dict(
+            e,
+            instruction=e["tasks"][0],
+            path=str(src / "data" / "chunk-000" / f"episode_{e['episode_index']:06d}.parquet"),
+            source=src.name,
+        )
+        for e in entries
+    ]
 
 
 def main():
@@ -167,10 +256,42 @@ def main():
         "succeeds 3 steps after the jaws reach the stem, so without a tail the shut gripper appears in only the "
         "last few frames of each demonstration, and a policy trained on them opens again before the jaws arrive.",
     )
+    ap.add_argument(
+        "--policy_ports",
+        type=int,
+        nargs="+",
+        default=None,
+        help="takeover demonstrations: one policy_server.py port per worker. A trained policy drives the first K "
+        "steps of each episode, then the expert takes over from wherever the arm is and finishes the task. Only "
+        "the expert's part is recorded, and only when it succeeds: demonstrations that start from states the policy "
+        "reaches, which demonstrations from the expert's own starts rarely visit (DAgger-style data).",
+    )
+    ap.add_argument(
+        "--takeover_steps",
+        type=int,
+        nargs=2,
+        default=(0, 700),
+        metavar=("LO", "HI"),
+        help="with --policy_ports: K is drawn uniformly from LO..HI (inclusive) for each episode. The expert then "
+        "has the task's whole step limit from the handover on.",
+    )
+    ap.add_argument("--exec_horizon", type=int, default=8, help="with --policy_ports: actions executed per chunk")
+    ap.add_argument("--flow_steps", type=int, default=10, help="with --policy_ports: sampler steps per chunk")
+    ap.add_argument(
+        "--include",
+        nargs="+",
+        default=[],
+        help="datasets written by this script whose episodes come first in the new one, unchanged: new "
+        "demonstrations and earlier ones preprocessed together, so that one set of normalisation statistics "
+        "covers both",
+    )
     args = ap.parse_args()
     num_objects = TASKS[args.task]["num_objects"]
     assert 1 <= args.targets_per_layout <= num_objects, f"{args.task} has {num_objects} objects per layout"
     per_layout = args.targets_per_layout
+    if args.policy_ports is not None:
+        assert len(args.policy_ports) == args.workers, "--policy_ports needs one port per worker"
+    included = [e for path in args.include for e in _included(path, args.task)]
 
     out = Path(args.out)
     (out / "tmp").mkdir(parents=True, exist_ok=True)
@@ -178,7 +299,16 @@ def main():
     (out / "data" / "chunk-000").mkdir(parents=True, exist_ok=True)
 
     t0 = time.time()
-    kept, attempted, successes, next_seed = [], 0, 0, args.seed
+    servers = None
+    if args.policy_ports is not None:  # what is being served, for the record (each server takes one client at a time)
+        servers = set()
+        for port in args.policy_ports:
+            conn = connect(port)
+            conn.send({"cmd": "info"})
+            servers.add(conn.recv()["checkpoint"])
+            conn.close()
+        assert len(servers) == 1, f"the policy servers serve different checkpoints: {servers}"
+    kept, attempted, successes, next_seed, endings = [], 0, 0, args.seed, []
     with mp.get_context("spawn").Pool(args.workers) as pool:
         while len(kept) < args.episodes:
             need = args.episodes - len(kept)
@@ -195,17 +325,23 @@ def main():
                 args.expert_side,
                 args.tail_steps,
             )
-            chunks = [(args.task, jobs[i :: args.workers], str(out), i, *extra) for i in range(args.workers)]
+            chunks = [
+                (args.task, jobs[i :: args.workers], str(out), i, *extra, _takeover(args, i))
+                for i in range(args.workers)
+            ]
             for res in pool.map(_worker, chunks):
                 attempted += len(res)
                 successes += sum(r["success"] for r in res)
                 kept.extend(r for r in res if r["success"])
+                endings.extend(r for r in res if not r["success"])
     kept = sorted(kept, key=lambda r: (r["seed"], r["target_index"]))[: args.episodes]
+    new = len(kept)
+    kept = included + kept
 
     tasks, episodes, index = {}, [], 0
     for ep_idx, r in enumerate(kept):
         task_idx = tasks.setdefault(r["instruction"], len(tasks))
-        table = pq.read_table(r["path"])
+        table = pq.read_table(r["path"], columns=[*CAMERAS, "state", "action"])  # without an included one's bookkeeping
         n = table.num_rows
         table = table.append_column("timestamp", pa.array(np.arange(n, dtype=np.float32) / CONTROL_HZ))
         table = table.append_column("frame_index", pa.array(np.arange(n, dtype=np.int64)))
@@ -222,6 +358,8 @@ def main():
                 disturbed=r["disturbed"],
                 replans=r["replans"],
                 tracks=r["tracks"],
+                **{k: r[k] for k in ("takeover_step", "cut_at_handover") if k in r},
+                **({"source": r.get("source", out.name)} if args.include else {}),
             )
         )
         index += n
@@ -247,12 +385,18 @@ def main():
         disturb_prob=args.disturb_prob,
         random_start=args.random_start,
         hold_steps=args.hold_steps,
-        disturbed_episodes=sum(r["disturbed"] != "none" for r in kept),
+        disturbed_episodes=sum(r["disturbed"] != "none" for r in kept[len(included) :]),
         drift_prob=args.drift_prob,
         drift_cm_s=args.drift_cm_s if args.drift_prob > 0 else None,
-        drifting_episodes=sum(r["disturbed"] == "drift" for r in kept),
+        drifting_episodes=sum(r["disturbed"] == "drift" for r in kept[len(included) :]),
         expert_side=args.expert_side,
         tail_steps=args.tail_steps,
+        takeover=_takeover_summary(args, servers, attempted, kept[len(included) :], endings),
+        included=[
+            dict(dataset=Path(p).name, episodes=sum(e["source"] == Path(p).name for e in included))
+            for p in args.include
+        ],
+        new_episodes=new,
         data_path="data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
         features={
             "front": dict(dtype="image", shape=[224, 224, 3]),
@@ -267,7 +411,42 @@ def main():
         json.dump(info, f, indent=2)
     print(
         f"wrote {len(episodes)} episodes / {index} frames to {out} "
-        f"(expert attempted {attempted}, {time.time() - t0:.0f}s)"
+        f"({len(included)} included; expert attempted {attempted}, {time.time() - t0:.0f}s)"
+    )
+
+
+def _takeover(args, worker):
+    if args.policy_ports is None:
+        return None
+    return dict(
+        port=args.policy_ports[worker],
+        steps=tuple(args.takeover_steps),
+        exec_horizon=args.exec_horizon,
+        flow_steps=args.flow_steps,
+    )
+
+
+def _takeover_summary(args, servers, attempted, kept, failed):
+    """Takeover collection: what was served, how the attempts ended, and at which step the kept ones were handed
+    over (counts per 100 steps) with how many shoots or objects were already cut."""
+    if servers is None:
+        return None
+    lo, hi = args.takeover_steps
+    steps = np.array([r["takeover_step"] for r in kept])
+    return dict(
+        policy=sorted(servers)[0],
+        takeover_steps=[lo, hi],
+        exec_horizon=args.exec_horizon,
+        flow_steps=args.flow_steps,
+        attempts=attempted,
+        ended_before_handover=dict(
+            sorted(Counter(r["before_handover"] for r in failed if "before_handover" in r).items())
+        ),
+        expert_failed_after_handover=dict(
+            sorted(Counter(r["after_handover"] for r in failed if "after_handover" in r).items())
+        ),
+        kept_by_step={f"{a}-{a + 99}": int(((steps >= a) & (steps < a + 100)).sum()) for a in range(lo, hi + 1, 100)},
+        kept_cut_at_handover=dict(sorted(Counter(r["cut_at_handover"] for r in kept).items())),
     )
 
 

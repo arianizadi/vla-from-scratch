@@ -52,6 +52,26 @@ def connect(port, timeout_s=600):
             time.sleep(1.0)
 
 
+def infer_request(prev_obs, obs, prev_action, instruction, flow_steps, noise_seed=None, images_from=None):
+    """The message that asks the policy server for an action chunk: both cameras' images and the joint states at
+    t-1 and t, the command the robot is under and the instruction. `images_from`: a pair of observations to take
+    the images from instead (to show the policy stale images)."""
+    shown_prev, shown = images_from or (prev_obs, obs)
+    images = {}
+    for cam in PickupEnv.camera_names:
+        images[f"{cam}_t-1"] = _jpeg(shown_prev[cam])
+        images[f"{cam}_t0"] = _jpeg(shown[cam])
+    return dict(
+        cmd="infer",
+        images=images,
+        state=[prev_obs["state"].tolist(), obs["state"].tolist()],
+        prev_action=np.asarray(prev_action).tolist(),
+        instruction=instruction,
+        num_flow_steps=flow_steps,
+        noise_seed=noise_seed,
+    )
+
+
 def write_video(path, frames, fps=20):
     import av
 
@@ -232,7 +252,6 @@ def main():
         from .expert import ScriptedExpert, random_start
 
         starter = ScriptedExpert(env, seed=0)  # for its inverse kinematics only
-    cams = env.camera_names
 
     episodes, latencies = [], []
     per_target = defaultdict(lambda: [0, 0])
@@ -272,24 +291,19 @@ def main():
             elif pilot is not None and env.steps < args.expert_prefix:
                 queue = [pilot.act()]
             elif not queue:
-                shown_prev, shown = (first_obs, first_obs) if args.stale_images else (prev_obs, obs)
-                images = {}
-                for cam in cams:
-                    images[f"{cam}_t-1"] = _jpeg(shown_prev[cam])
-                    images[f"{cam}_t0"] = _jpeg(shown[cam])
                 prev_action = env.last_action
                 if first_query and args.first_prev_action == "expert":
                     prev_action = pilot.act()
                 first_query = False
                 conn.send(
-                    dict(
-                        cmd="infer",
-                        images=images,
-                        state=[prev_obs["state"].tolist(), obs["state"].tolist()],
-                        prev_action=np.asarray(prev_action).tolist(),
-                        instruction=env.instruction,
-                        num_flow_steps=args.flow_steps,
+                    infer_request(
+                        prev_obs,
+                        obs,
+                        prev_action,
+                        env.instruction,
+                        args.flow_steps,
                         noise_seed=seed if args.noise == "episode" else None,
+                        images_from=(first_obs, first_obs) if args.stale_images else None,
                     )
                 )
                 reply = conn.recv()

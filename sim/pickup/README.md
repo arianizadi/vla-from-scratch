@@ -51,7 +51,8 @@ sim/pickup/
   text_data.py       web text for the language-model stage of the from-scratch path
   smoke_test.py      expert-only sanity check
   configs/           preprocessing + training configs
-  scripts/           fetch_assets.sh, make_dataset.sh, train.sh, train_resilient.sh (auto-resume), eval.sh,
+  scripts/           fetch_assets.sh, make_dataset.sh, make_takeover_dataset.sh, train.sh, train_resilient.sh
+                     (auto-resume), eval.sh,
                      eval_checkpoints.sh (every checkpoint), custom_path.sh (LLM -> VLM -> VLA stages),
                      monitor_remote.sh (the graphical monitor from your own computer, over ssh)
   assets/            Blender source, exported meshes; third_party/ (Panda model, fetched, not committed)
@@ -204,6 +205,8 @@ field notes). The options change what the data can teach:
 | `--disturb_prob 0.5` | In that share of the episodes the named object is moved once, during the reach or as the gripper closes, and the expert plans again or retries: demonstrations of recovery |
 | `--random_start` | Every episode starts from a random gripper pose above the table, so the arm's own position no longer gives the goal away |
 | `--hold_steps 1` | Every episode begins with a frame of the robot at rest, for policies that are given their previous action (the first training window then holds what serving will provide) |
+| `--policy_ports ...` | Takeover demonstrations (DAgger-style): a trained policy drives the first K steps of each episode (K drawn from `--takeover_steps`), then the expert takes over from wherever the arm is and finishes; only the expert's part is kept, so the data starts from states the policy really reaches. `make_takeover_dataset.sh <run> <task> <episodes> <name>` starts the policy servers |
+| `--include <dataset>` | The episodes of an earlier dataset come first, unchanged, so that old and new demonstrations are preprocessed together under one set of normalisation statistics |
 
 What each gave here, on 4000 episodes and 5M samples (final checkpoint, lab notebook):
 
