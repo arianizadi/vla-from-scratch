@@ -686,8 +686,8 @@ poses and recoveries (`--random_start --disturb_prob 0.5`), 5M samples, 100 unse
 evaluation, final checkpoint, trained / averaged weights where both are given. "Closed at the named
 object" is the share of first closes nearest the named object.
 
-**In progress:** the full pruning task (step 8) from 2000 demonstrations plus 2000 takeover demonstrations, 20M
-samples, three seeds (`..._prune2k_takeover2k_20m`, `..._seed43`, `..._seed44`).
+**In progress:** the full pruning task (step 8) from 2000 demonstrations plus 2000 corrected takeover
+demonstrations, 20M samples, three seeds (`..._prune2k_takeover2kv2_20m`, `..._seed43`, `..._seed44`).
 
 **Physics change (after the runs of steps 1-5 above).** An audit of every contact found the arm sinking
 into solid things: with MuJoCo's default soft contacts (time constant 0.02 s) the position-controlled arm
@@ -1018,6 +1018,25 @@ checkpoints about 3.6M samples apart), averaged weights per checkpoint (damage i
 (11), 51 (7), 64 (6), 78 (6), 69 (8), 77 (5), 76 (11), 76 (8), 80 (2); final 75/100 / 80/100 (trained / averaged),
 successful episodes take about 650 control steps. The same as at 20M (81/100 / 79/100, about 640 steps): past
 20M samples a longer budget does not help, and the policy is no faster.
+
+**Takeover demonstrations (DAgger-style), first attempt: worse.** Most failures are the policy wandering into
+states the demonstrations never show, so a second dataset starts from such states: the final averaged
+checkpoint of `..._prune2k_rs_tail10_20m` drives the first K control steps (K uniform in 0-700), then the
+scripted expert takes over from wherever the arm is (`collect.py --policy_ports`; the expert first backs the
+hand out of the plant and returns to the lane in front of it) and only its part is recorded, only when it
+succeeds. Of 2581 attempts, 369 ended before the handover (the policy pruned the plant in 313 and damaged
+it in 56); of the 2212 handovers the expert succeeded in 2033 (92%) and touched the flower in 160; the
+2000 kept episodes were handed over at a median K of 296, with 0, 1 and 2 shoots already cut in 868, 841 and
+291. Trained for 20M samples on these plus the 2000 ordinary demonstrations (`..._prune2k_takeover2k_20m`),
+averaged weights per checkpoint (damage in brackets): seed 42: 0 (31), 0 (47), 1 (9), 0 (11), 0
+(9), 0 (15), 0 (24), 0 (27), 1 (28), 0 (26), 0 (25); seed 43: 0, 32, 45, 49, 54, 48, 38, 30, 16, 22, 23 (final
+damage 22); seed 44: 13, 40, 60, 73, 67, 53, 41, 32, 25, 25, 28 (final damage 22). Final 0/100 / 0/100, 27/100
+/ 23/100 and 19/100 / 28/100 (trained / averaged), against 79, 56 and 78 without them: the runs rise, then
+fall as training goes on, timing out more and touching the flower more (seed 44 at checkpoint 9: 25 pruned, 48
+out of time, 26 flower touched). Two faults in the dataset: it had no tail (`--tail_steps 0`; the ordinary half
+has 10), and the expert's back-out and lane return after a takeover are moves the ordinary expert never
+makes (4% of the takeover frames, in 92% of its episodes), so near a shoot the two halves teach opposite
+actions. Both are fixed in a second takeover dataset, now training.
 
 ## Throughput
 
