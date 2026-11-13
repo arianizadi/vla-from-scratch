@@ -686,9 +686,8 @@ poses and recoveries (`--random_start --disturb_prob 0.5`), 5M samples, 100 unse
 evaluation, final checkpoint, trained / averaged weights where both are given. "Closed at the named
 object" is the share of first closes nearest the named object.
 
-**In progress:** the full pruning task (step 8): 10M samples from 2000 demonstrations, two seeds
-(`..._prune2k_rs_tail10_10m`, `..._seed43`); 20M samples from 2000 (`..._prune2k_rs_tail10_20m`, `..._seed43`) and
-from 4000 demonstrations (`..._prune4k_rs_tail10_20m`, `..._seed43`).
+**In progress:** the full pruning task (step 8) for 20M samples: from 2000 demonstrations, three seeds
+(`..._prune2k_rs_tail10_20m`, `..._seed43`, `..._seed44`), and from 4000 (`..._prune4k_rs_tail10_20m`, `..._seed43`).
 
 **Physics change (after the runs of steps 1-5 above).** An audit of every contact found the arm sinking
 into solid things: with MuJoCo's default soft contacts (time constant 0.02 s) the position-controlled arm
@@ -970,8 +969,10 @@ about 10% longer than the expert and turn 10-20% further.
 
 Two or three shoots at random angles: turn, cut, turn, cut. The expert succeeds in 100/100 in about 515 control
 steps; an episode may last 1000. 2000 demonstrations, 10M samples, averaged weights per checkpoint (damage in
-brackets): seed 42: 0 (8), 0 (38), 0 (13), 2 (35), 9 (17), 22 (7), 35 (4), 37 (3); seed 43: 0 (24), 1 (19), 1 (20),
-6 (4), 10 (8), 17 (3), 20 (9), 25 (8), still training. At checkpoint 5 the failures are mostly timeouts (74 and 82
+brackets): seed 42 (`dp_vit_lang_reactive_prune2k_rs_tail10_10m`): 0 (8), 0 (38), 0 (13), 2 (35), 9 (17), 22 (7),
+35 (4), 37 (3), 41 (4), 39 (3), 34 (5); seed 43: 0 (24), 1 (19), 1 (20), 6 (4), 10 (8), 17 (3), 20 (9), 25 (8), 11 (7),
+16 (12), 22 (10). Executing 4 or 16 actions per predicted chunk instead of 8 (seed 42, checkpoint 8, 37/100): 16
+gives 39/100, 4 gives 18/100 with the flower damaged in 16. At checkpoint 5 the failures are mostly timeouts (74 and 82
 of 100), not damage (17, 8). Rolled out on 20 layouts with every cut and press recorded, the policy cut at least
 one shoot in 13 and two or more in 7; the first cut came 200-700 steps in and the next 300-450 steps later (the
 expert needs about 515 for everything), and in the last 200 steps of the episodes that ran out of time the
