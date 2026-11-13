@@ -686,7 +686,8 @@ poses and recoveries (`--random_start --disturb_prob 0.5`), 5M samples, 100 unse
 evaluation, final checkpoint, trained / averaged weights where both are given. "Closed at the named
 object" is the share of first closes nearest the named object.
 
-**In progress:** the full pruning task (step 8) for a 40M-sample budget (`..._prune2k_rs_tail10_40m`).
+**In progress:** the full pruning task (step 8) from 2000 demonstrations plus 2000 takeover demonstrations, 20M
+samples, three seeds (`..._prune2k_takeover2k_20m`, `..._seed43`, `..._seed44`).
 
 **Physics change (after the runs of steps 1-5 above).** An audit of every contact found the arm sinking
 into solid things: with MuJoCo's default soft contacts (time constant 0.02 s) the position-controlled arm
@@ -1011,6 +1012,12 @@ other two seeds are at 63-67) and never catches up. Between neighbouring checkpo
 checkpoint picked from eleven is an optimistic number; the final checkpoints are the fair comparison. Once in
 five runs the averaged weights end well below the trained ones (65 against 78). The failures are mostly running
 out of time, as at 10M; the flower is damaged in 2-7.
+
+Twice the budget again, 40M samples (2000 demonstrations, seed 42, `dp_vit_lang_reactive_prune2k_rs_tail10_40m`;
+checkpoints about 3.6M samples apart), averaged weights per checkpoint (damage in brackets): 0 (57), 28 (16), 46
+(11), 51 (7), 64 (6), 78 (6), 69 (8), 77 (5), 76 (11), 76 (8), 80 (2); final 75/100 / 80/100 (trained / averaged),
+successful episodes take about 650 control steps. The same as at 20M (81/100 / 79/100, about 640 steps): past
+20M samples a longer budget does not help, and the policy is no faster.
 
 ## Throughput
 
