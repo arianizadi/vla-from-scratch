@@ -144,13 +144,19 @@ class ScriptedExpert:
         self.q_cmd = env.data.ctrl[:7].copy()
         self.replans = 0
         self.tracks = 0
+        self.preamble = False  # take_over: still on the moves that only take_over makes (see there)
         self._plan()
 
     def take_over(self):
         """Plan from the arm as it is now, part way through an episode that another controller (a learned policy)
         has been driving: the set-point starts at the gripper's actual position and orientation, and the plan
         covers what is left of the task (pruning: the shoots not yet cut). Top-down grasps keep only the yaw of
-        the actual orientation, as their plans assume the gripper points down."""
+        the actual orientation, as their plans assume the gripper points down.
+
+        Pruning from some poses first needs moves that the expert makes nowhere else (backing out of the plant, a move
+        back onto the lane); `preamble` is True until they are done and the ordinary plan begins. Demonstrations start
+        after them (collect.hand_over): the same state must not be labelled one way here and another way in the
+        expert's own demonstrations."""
         env = self.env
         R = env.data.site_xmat[env.tcp_id].reshape(3, 3).copy()
         yaw = float(_wrap(env.tcp_yaw() - self.yaw_home, 2 * np.pi))
@@ -167,7 +173,7 @@ class ScriptedExpert:
                 (self.des_pos.copy(), PRUNE_OPEN, 0.0, 3, R),
                 (self.des_pos + out * BACK_OUT, PRUNE_OPEN, 0.15, 60, R, lambda: not self._among_shoots()),
             ]
-            self.wp, self.dwell = 0, 0
+            self.wp, self.dwell, self.preamble = 0, 0, True
         elif env.plant_task:
             # Far out or high up (outside the box random starts are drawn from), a hand pointing down may be out of
             # reach, and a plan that starts by turning it there never arrives: first move into the box, back on the
@@ -179,7 +185,7 @@ class ScriptedExpert:
                 self.waypoints = [
                     (inside, PRUNE_OPEN, 0.3, 100, self.R_down, lambda: np.linalg.norm(env.tcp_pos() - inside) < 0.02)
                 ]
-                self.wp, self.dwell = 0, 0
+                self.wp, self.dwell, self.preamble = 0, 0, True
 
     def _among_shoots(self):
         """Is the gripper among the shoots: near the main stem's axis, below the top of the flower (plus a margin)?"""
@@ -325,7 +331,7 @@ class ScriptedExpert:
         speed = self.rng.uniform(0.8, 1.2)
         R_now = self.des_R if self.des_R is not None else _rotz(self.des_yaw) @ self.R_home
         remaining = [n for n in env.active if n not in env.cut]
-        self.wp, self.dwell = 0, 0
+        self.wp, self.dwell, self.preamble = 0, 0, False
         if not remaining:
             self.waypoints = [(self.des_pos.copy(), 1.0, 0.0, 10**6, R_now)]
             return

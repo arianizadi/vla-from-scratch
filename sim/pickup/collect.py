@@ -42,8 +42,12 @@ def _jpeg(img, quality=95):
 
 def hand_over(env, expert, obs, policy, steps, budget):
     """Let `policy` drive the first `steps` control steps of an episode, then hand the arm to `expert` where it is
-    (ScriptedExpert.take_over), with `budget` more steps to finish in. `policy(prev_obs, obs)` returns the next
-    actions to execute. Returns (observation at the handover, None), or (None, info) if the episode ended first."""
+    (ScriptedExpert.take_over), with `budget` more steps to finish in, and let the expert make the moves that only a
+    takeover needs (its preamble: backing out of the plant, a move back onto the lane). `policy(prev_obs, obs)`
+    returns the next actions to execute. Returns (observation where the expert's ordinary plan begins, None,
+    preamble steps), or (None, info, None) if the episode ended before the handover, (None, info, preamble steps)
+    if it ended during the preamble. A demonstration starts at the observation returned: the preamble's frames are
+    not recorded, since the expert's own demonstrations act differently in such states."""
     prev_obs, queue = obs, []
     for _ in range(steps):
         if not queue:
@@ -51,10 +55,16 @@ def hand_over(env, expert, obs, policy, steps, budget):
         prev_obs = obs
         obs, done, info = env.step(queue.pop(0))
         if done:
-            return None, info
+            return None, info, None
     env.max_steps = env.steps + budget
     expert.take_over()
-    return obs, None
+    preamble = 0
+    while expert.preamble:
+        obs, done, info = env.step(expert.act())
+        preamble += 1
+        if done:
+            return None, info, preamble
+    return obs, None, preamble
 
 
 def served_policy(conn, env, exec_horizon=8, flow_steps=10):
@@ -101,11 +111,12 @@ def _worker(args):
         else:
             lo, hi = takeover["steps"]
             k = int(np.random.default_rng([seed, 17]).integers(lo, hi + 1))  # its own stream, as random_start's
-            obs, ended = hand_over(env, expert, obs, policy, k, budget)
-            if obs is None:  # the policy finished the episode itself (pruned everything, or damaged the plant)
-                results.append(dict(seed=seed, success=False, takeover_step=k, before_handover=_ending(ended)))
+            obs, ended, preamble = hand_over(env, expert, obs, policy, k, budget)
+            if obs is None:  # ended before the handover (pruned everything, damaged the plant) or in the preamble
+                key = "before_handover" if preamble is None else "in_preamble"
+                results.append(dict(seed=seed, success=False, takeover_step=k, **{key: _ending(ended)}))
                 continue
-            handover = dict(takeover_step=k, cut_at_handover=len(env.cut))
+            handover = dict(takeover_step=k, cut_at_handover=len(env.cut), preamble_steps=preamble)
         # Per-episode draw (from the seed, so a dataset can be rebuilt): is this episode disturbed, when
         # and by how much. Half of the moves come during the reach, half as the gripper closes.
         rng = np.random.default_rng([seed, 7])
@@ -358,7 +369,7 @@ def main():
                 disturbed=r["disturbed"],
                 replans=r["replans"],
                 tracks=r["tracks"],
-                **{k: r[k] for k in ("takeover_step", "cut_at_handover") if k in r},
+                **{k: r[k] for k in ("takeover_step", "cut_at_handover", "preamble_steps") if k in r},
                 **({"source": r.get("source", out.name)} if args.include else {}),
             )
         )
@@ -427,8 +438,8 @@ def _takeover(args, worker):
 
 
 def _takeover_summary(args, servers, attempted, kept, failed):
-    """Takeover collection: what was served, how the attempts ended, and at which step the kept ones were handed
-    over (counts per 100 steps) with how many shoots or objects were already cut."""
+    """Takeover collection: what was served, how the attempts ended, at which step the kept ones were handed over
+    (counts per 100 steps) with how many shoots or objects were already cut, and how many began with a preamble."""
     if servers is None:
         return None
     lo, hi = args.takeover_steps
@@ -442,11 +453,14 @@ def _takeover_summary(args, servers, attempted, kept, failed):
         ended_before_handover=dict(
             sorted(Counter(r["before_handover"] for r in failed if "before_handover" in r).items())
         ),
+        ended_in_preamble=dict(sorted(Counter(r["in_preamble"] for r in failed if "in_preamble" in r).items())),
         expert_failed_after_handover=dict(
             sorted(Counter(r["after_handover"] for r in failed if "after_handover" in r).items())
         ),
         kept_by_step={f"{a}-{a + 99}": int(((steps >= a) & (steps < a + 100)).sum()) for a in range(lo, hi + 1, 100)},
         kept_cut_at_handover=dict(sorted(Counter(r["cut_at_handover"] for r in kept).items())),
+        kept_after_a_preamble=sum(r["preamble_steps"] > 0 for r in kept),
+        preamble_steps_not_recorded=sum(r["preamble_steps"] for r in kept),
     )
 
 
