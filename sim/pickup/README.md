@@ -51,8 +51,8 @@ sim/pickup/
   text_data.py       web text for the language-model stage of the from-scratch path
   smoke_test.py      expert-only sanity check
   configs/           preprocessing + training configs
-  scripts/           fetch_assets.sh, make_dataset.sh, make_takeover_dataset.sh, train.sh, train_resilient.sh
-                     (auto-resume), eval.sh,
+  scripts/           fetch_assets.sh, make_dataset.sh, make_takeover_dataset.sh, preprocess.sh (a collection
+                     to shards again, e.g. with other past frames), train.sh, train_resilient.sh (auto-resume), eval.sh,
                      eval_checkpoints.sh (every checkpoint), custom_path.sh (LLM -> VLM -> VLA stages),
                      monitor_remote.sh (the graphical monitor from your own computer, over ssh)
   assets/            Blender source, exported meshes; third_party/ (Panda model, fetched, not committed)

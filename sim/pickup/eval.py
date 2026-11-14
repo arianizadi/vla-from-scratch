@@ -12,7 +12,7 @@ import json
 import re
 import sys
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from multiprocessing.connection import Client
 from pathlib import Path
 
@@ -52,15 +52,51 @@ def connect(port, timeout_s=600):
             time.sleep(1.0)
 
 
-def infer_request(prev_obs, obs, prev_action, instruction, flow_steps, noise_seed=None, images_from=None):
-    """The message that asks the policy server for an action chunk: both cameras' images and the joint states at
-    t-1 and t, the command the robot is under and the instruction. `images_from`: a pair of observations to take
-    the images from instead (to show the policy stale images)."""
-    shown_prev, shown = images_from or (prev_obs, obs)
+def image_offsets(image_names):
+    """The frame offsets in a policy's image names ("front_t-20" -> -20), as the policy server reports them."""
+    return sorted({int(name.rsplit("_t", 1)[1]) for name in image_names})
+
+
+class FrameHistory:
+    """The observations of an episode that a policy's images can reach back to, newest last.
+
+    at(k) is the observation k control steps before the newest (k <= 0). An offset that reaches back before the first
+    observation of the episode gives the first one: the training windows do the same (the preprocessing clips the
+    frame index at the start of the episode). Offsets -1 and 0 are always kept, so that every request carries the
+    images and joint states at t-1 and t whatever else the policy takes.
+    """
+
+    def __init__(self, first_obs, offsets=(-1, 0)):
+        self.offsets = sorted({int(k) for k in offsets} | {-1, 0})
+        if self.offsets[-1] > 0:
+            raise ValueError(f"image offsets must be <= 0 (frames from the future): {self.offsets}")
+        self.frames = deque([first_obs], maxlen=1 - self.offsets[0])
+
+    def push(self, obs):
+        self.frames.append(obs)
+
+    def at(self, k):
+        return self.frames[max(0, len(self.frames) - 1 + k)]
+
+
+def infer_request(prev_obs, obs, prev_action, instruction, flow_steps, noise_seed=None, images_from=None, history=None):
+    """The message that asks the policy server for an action chunk: both cameras' images, the joint states at t-1
+    and t, the command the robot is under and the instruction. The images are those of `prev_obs` and `obs` (t-1 and
+    t), or, with `history` (a FrameHistory whose newest observation is `obs`), one per offset it keeps, for policies
+    that look further back. `images_from`: a pair of observations to take the images from instead (to show the policy
+    stale images): the second for t, the first for every earlier offset."""
+    if history is None:
+        history = FrameHistory(prev_obs)
+        history.push(obs)
+    shown = history
+    if images_from is not None:
+        shown = FrameHistory(images_from[0], history.offsets)
+        shown.push(images_from[1])
     images = {}
-    for cam in PickupEnv.camera_names:
-        images[f"{cam}_t-1"] = _jpeg(shown_prev[cam])
-        images[f"{cam}_t0"] = _jpeg(shown[cam])
+    for k in history.offsets:
+        frame = shown.at(k)
+        for cam in PickupEnv.camera_names:
+            images[f"{cam}_t{k}"] = _jpeg(frame[cam])
     return dict(
         cmd="infer",
         images=images,
@@ -242,6 +278,8 @@ def main():
         conn.send({"cmd": "info"})
         server_info = conn.recv()
         check_server(server_info, args.port, args.expect_run, args.expect_number, args.expect_weights)
+    # How far back the policy's images reach (t-1 and t unless its config takes older frames).
+    offsets = image_offsets(server_info.get("image_names", [])) if conn is not None else [-1, 0]
     pilot = None
     if expert is None and (args.expert_prefix > 0 or args.first_prev_action == "expert"):
         from .expert import ScriptedExpert
@@ -261,7 +299,7 @@ def main():
         obs, start_yaw = env.reset(seed=seed), 0.0
         if starter is not None:
             obs, start_yaw = random_start(env, starter, seed)
-        prev_obs, queue, frames, trace = obs, [], [], []
+        history, queue, frames, trace = FrameHistory(obs, offsets), [], [], []
         wrong_object = False  # a non-target object was lifted at any point in the episode
         caught = False  # the named object was lifted (stems: held) at some step, if only briefly
         probe = GraspProbe(env)
@@ -297,13 +335,14 @@ def main():
                 first_query = False
                 conn.send(
                     infer_request(
-                        prev_obs,
+                        history.at(-1),
                         obs,
                         prev_action,
                         env.instruction,
                         args.flow_steps,
                         noise_seed=seed if args.noise == "episode" else None,
                         images_from=(first_obs, first_obs) if args.stale_images else None,
+                        history=history,
                     )
                 )
                 reply = conn.recv()
@@ -311,13 +350,13 @@ def main():
                 queue = list(reply["actions"][: args.exec_horizon])
             if ep < args.videos:
                 frames.append(np.concatenate([obs["front"], obs["wrist"]], axis=1))
-            prev_obs = obs
             action = queue.pop(0)
             if ep < args.traces:
                 trace.append(trace_step(env, obs, action))
             probe.update(action)  # before the disturbance: the first close is judged on the scene it was aimed at
             disturbance.update(action)
             obs, done, info = env.step(action)
+            history.push(obs)
             if turn is not None:
                 angle = env.plate_angle()
                 turn["turned"] += abs(angle - turn["plate"])

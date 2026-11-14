@@ -1,0 +1,20 @@
+# preprocess.yaml with the past frame 20 control steps (1 s at 20 Hz) back instead of one: two images per camera
+# (t-20, t), for configs/dp_vit_lang_frames_1s.yaml. Before the 20th step of an episode the past frame is the first.
+# Otherwise as preprocess.yaml: 1 past + current + 14 future low-dim steps (16 total) at 20 Hz, no resize.
+# Make it from an existing collection: sim/pickup/scripts/preprocess.sh <collection> <name> preprocess_1s
+past_lowdim_steps: 1
+future_lowdim_steps: 14
+image_indices:
+- -20
+- 0
+stride: 1
+max_padding_left: 1
+max_padding_right: 14
+padding_strategy: copy
+filter_still_samples: False
+jpeg_quality: 95
+max_episodes_to_process: -1
+fail_on_nan: True
+skip_git_tagging: True
+auto_tag: False
+resize_images_size: null
