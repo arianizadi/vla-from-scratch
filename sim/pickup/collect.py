@@ -171,6 +171,7 @@ def _worker(args):
                 replans=expert.replans,
                 tracks=expert.tracks,
                 **handover,
+                **({"named": env.target_label} if env.named else {}),  # named shoots: lowest / middle / highest
             )
         )
     if conn is not None:
@@ -297,6 +298,7 @@ def main():
         "covers both",
     )
     args = ap.parse_args()
+    assert TASKS[args.task].get("named") != "heldout", f"{args.task}: held-out phrasings are for evaluation only"
     num_objects = TASKS[args.task]["num_objects"]
     assert 1 <= args.targets_per_layout <= num_objects, f"{args.task} has {num_objects} objects per layout"
     per_layout = args.targets_per_layout
@@ -369,7 +371,7 @@ def main():
                 disturbed=r["disturbed"],
                 replans=r["replans"],
                 tracks=r["tracks"],
-                **{k: r[k] for k in ("takeover_step", "cut_at_handover", "preamble_steps") if k in r},
+                **{k: r[k] for k in ("takeover_step", "cut_at_handover", "preamble_steps", "named") if k in r},
                 **({"source": r.get("source", out.name)} if args.include else {}),
             )
         )

@@ -24,7 +24,30 @@ scripted expert in MuJoCo ──> LeRobot v2.0 dataset ──> Foundry shards �
 | `pick_target` | 3 of the 4 objects, random poses | "pick up the \<object\>" | the *named* object held 8 cm up for 0.5 s |
 
 Episodes time out after 200 steps (10 s). Demonstrations use seeds `0..`; evaluation uses seeds
-`1_000_000..`, so every evaluated layout is unseen.
+`1_000_000..`, so every evaluated layout is unseen. `env.TASKS` lists the other tasks (look-alikes, clutter,
+stems, cuts, and pruning a potted plant on a turntable); each one's comment there says what it adds.
+
+**Named shoots (`prune_named`, `prune_named_heldout`).** The pruning plant with 2-3 side shoots at any angles,
+and an instruction that names one of them by its height on the main stem: the lowest, the middle one (with
+three shoots) or the highest. Height can be seen from every side and stays the same as the plant turns; "the
+left one" would not. The robot turns the plant if the named shoot points away, cuts that shoot and leaves the
+others and the flower; the episode ends with that cut (450 steps at most). Cutting another shoot ends it as a
+failure (`wrong_object`, and `wrong_shoots` names it), as does touching the flower or pushing or cutting the
+main stem. The two tasks build the same plant and name the same shoot for the same seed (the plant is also the
+one `prune` builds); they differ only in how the instruction is phrased (`phrasings.py`):
+
+| Set | Phrasings | Example |
+|---|---|---|
+| training (`prune_named`, the only one `collect.py` accepts) | one word per position (lowest / middle / highest), two nouns, four sentence frames: 24 | "cut off the lowest side shoot and leave the rest" |
+| held-out, `synonym` | another way to say the position, in a training frame | "prune the bottom shoot", "remove the side shoot nearest the flower" |
+| held-out, `frame` | the training word in a sentence never trained on | "snip the highest shoot", "the middle side shoot has to go" |
+| held-out, `all` | new frame, new position words and a new noun | "please trim away the uppermost branch but spare the others" |
+
+`prune_named_heldout` draws one of the three held-out kinds per episode. Every held-out instruction contains a
+word that no training instruction contains. Evaluating a checkpoint on both tasks (`eval_checkpoints.sh <run>
+prune_named` and `... prune_named_heldout`) gives paired numbers: the same plants, the same named shoots, only
+the words differ. `results.json` then has a `named` block: successes, wrong shoot cut, damage and time-outs,
+overall and by phrasing kind, by named position and by the number of shoots; `per_target` is by named position.
 
 ## Layout
 

@@ -184,6 +184,35 @@ def _turning_summary(episodes):
     )
 
 
+def _named_summary(episodes):
+    """Named shoots: the named shoot cut cleanly (success), another shoot cut (wrong shoot), the plant damaged and out
+    of time, as counts, overall and by phrasing kind ('train', or a kind of held-out phrasing), by named position and
+    by the number of shoots on the plant."""
+
+    def counts(eps):
+        return dict(
+            episodes=len(eps),
+            successes=sum(e["success"] for e in eps),
+            wrong_shoot=sum(bool(e["wrong_shoots"]) for e in eps),
+            damaged=sum(e["damaged"] is not None for e in eps),
+            timeout=sum(not e["success"] and not e["wrong_shoots"] and e["damaged"] is None for e in eps),
+        )
+
+    def by(field):
+        return {str(v): counts([e for e in episodes if e[field] == v]) for v in sorted({e[field] for e in episodes})}
+
+    n = len(episodes)
+    total = counts(episodes)
+    return dict(
+        **total,
+        wrong_shoot_rate=total["wrong_shoot"] / n,
+        damaged_rate=total["damaged"] / n,
+        by_phrasing_kind=by("phrasing_kind"),
+        by_position=by("named"),
+        by_shoots=by("shoots"),
+    )
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--task", default="pick_cube")
@@ -321,7 +350,8 @@ def main():
         # pruning efficiency: how far the plate turned, against how far the first shoot had to turn into reach
         turn = None
         if env.plant_task:
-            off0 = float(_wrap_pi(REACH_AZIMUTH - env.shoot_azimuth(env.active[0])))
+            # the shoot to cut first: the lowest in prune_one / prune_turn / prune, the named one in prune_named
+            off0 = float(_wrap_pi(REACH_AZIMUTH - env.shoot_azimuth(env.target)))
             turn = dict(plate=env.plate_angle(), turned=0.0, offset0=off0, first_press=None)
         while not done:
             if expert is not None:
@@ -385,10 +415,23 @@ def main():
                 prefix_goal=prefix_goal,
                 disturbed=disturbance.record,
                 **probe.result(),
+                # named shoots: which shoot was named, how (training phrasing or a kind of held-out one), and among how
+                # many shoots; the shoots cut that were not named
+                **(
+                    dict(
+                        named=env.target_label,
+                        phrasing_kind=env.phrasing_kind,
+                        shoots=len(env.active),
+                        wrong_shoots=info.get("wrong_shoots", []),
+                    )
+                    if env.named
+                    else {}
+                ),
             )
         )
-        per_target[env.target][0] += int(info["success"])
-        per_target[env.target][1] += 1
+        key = env.target_label or env.target  # named shoots: by position (shoot names follow height, not position)
+        per_target[key][0] += int(info["success"])
+        per_target[key][1] += 1
         if ep < args.videos:
             write_video(out / f"rollout_{ep:03d}_{env.target}_{'ok' if info['success'] else 'fail'}.mp4", frames)
         if ep < args.traces:
@@ -456,6 +499,7 @@ def main():
         seed_start=args.seed_start,
         wall_time_s=time.time() - t_start,
         server=server_info,
+        **(dict(named=_named_summary(episodes)) if env.named else {}),
         per_episode=episodes,
     )
     write_json(out / "results.json", results, indent=2)

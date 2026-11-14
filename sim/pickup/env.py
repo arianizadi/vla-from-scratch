@@ -9,6 +9,8 @@ Tasks
   pick_target  three of four objects on the table; "pick up the <object>" names the target
   prune_one / prune_turn / prune  a potted plant on a turntable with two push buttons; cut the side shoots off
                the main stem without damaging the flower or the stem (see TASKS)
+  prune_named / prune_named_heldout  the same plant; cut only the shoot the instruction names (lowest / middle /
+               highest), in training phrasings or in phrasings never used for training (phrasings.py)
 """
 
 import os
@@ -18,6 +20,8 @@ os.environ.setdefault("MUJOCO_GL", "egl")
 
 import mujoco  # noqa: E402
 import numpy as np  # noqa: E402
+
+from . import phrasings  # noqa: E402
 
 ASSETS = Path(__file__).resolve().parent / "assets"
 PANDA_XML = ASSETS / "third_party" / "mujoco_menagerie" / "franka_emika_panda" / "panda.xml"
@@ -158,6 +162,14 @@ TASKS = {
         max_steps=1000,
         instruction="cut the side shoots off the stem, keep the flower",
     ),
+    # Step 9, named shoots: the plant of `prune` (2-3 shoots at any angles, the same plant for the same seed), and the
+    # instruction names one shoot by its height on the main stem: the lowest, the middle one or the highest
+    # (phrasings.py). Cut that shoot only, turning the plant first if it points away; the episode ends with that cut.
+    # Cutting another shoot ends it as a failure (wrong_object), as does damage. prune_named draws the instruction from
+    # the training phrasings; prune_named_heldout gives the same layouts and the same named shoots with phrasings that
+    # no demonstration uses.
+    "prune_named": dict(plant=True, shoots=(2, 3), num_objects=3, max_steps=450, named="train"),
+    "prune_named_heldout": dict(plant=True, shoots=(2, 3), num_objects=3, max_steps=450, named="heldout"),
 }
 MAX_LEAVES = 4
 LEAF_HALF = (0.035, 0.0015, 0.065)  # metres: a plate 7 cm wide and 13 cm tall
@@ -580,6 +592,9 @@ class PickupEnv:
         self.max_steps = max_steps if max_steps is not None else TASKS[task].get("max_steps", 200)
         self.cut_task = bool(TASKS[task].get("cut"))
         self.plant_task = bool(TASKS[task].get("plant"))
+        self.named = TASKS[task].get("named")  # named shoots: the phrasing set ("train" or "heldout"), else None
+        self.target_label = ""  # named shoots: "lowest", "middle" or "highest"
+        self.phrasing_kind = ""  # named shoots: "train", or the kind of held-out phrasing (phrasings.KINDS)
         self.model = build_model(cut_stems=self.cut_task, plant=self.plant_task)
         self.data = mujoco.MjData(self.model)
         self.renderer = mujoco.Renderer(self.model, image_size, image_size)
@@ -643,6 +658,8 @@ class PickupEnv:
         if self.plant_task:
             self.active = []
             self._reset_plant(rng)
+            if self.named:
+                self._name_shoot(seed, target_index)
         else:
             self.active = list(rng.choice(cfg["pool"], size=cfg["num_objects"], replace=False))
             self.target = str(rng.choice(self.active))  # always drawn, so the layout does not depend on target_index
@@ -689,7 +706,8 @@ class PickupEnv:
         action = np.asarray(action, dtype=np.float64)
         self.data.ctrl[:7] = np.clip(action[:7], self.ctrl_lo, self.ctrl_hi)
         self.data.ctrl[7] = 255.0 * float(np.clip(action[7], 0.0, 1.0))
-        if self.plant_task and self.target in self.cut:  # the next shoot is named once the step after a cut begins
+        # pruning: the next shoot is named once the step after a cut begins (named shoots: the named one stays named)
+        if self.plant_task and not self.named and self.target in self.cut:
             self.target = next((n for n in self.active if n not in self.cut), self.target)
         for _ in range(SUBSTEPS):
             if self.plant_task:
@@ -947,11 +965,24 @@ class PickupEnv:
             data[:3], data[3:6], data[6:10] = shoot["origin"] + direction * CUT_MID, 0, _quat(shoot["frame"].T)
         self.active = [n for n in self.shoot_names if n in self.shoots]  # from the lowest shoot up
         self.target = self.active[0]
-        self.instruction = cfg["instruction"]
+        self.instruction = cfg.get("instruction", "")  # named shoots: set by _name_shoot
         self.cut, self.hold_counts = set(), {}
         self.damaged, self.stem_hold, self.max_stem_push, self.step_stem_push = None, 0, 0.0, 0.0
         d.ctrl[self.turntable] = 0.0
         self._set_exclusions()
+
+    def _name_shoot(self, seed, target_index=None):
+        """Named shoots: choose the shoot to cut and phrase the instruction, from a stream of their own, so that the
+        plant is the one `prune` draws for `seed`, and prune_named and prune_named_heldout name the same shoot.
+        `target_index` (0 = the lowest shoot, taken modulo the number of shoots) names a given shoot instead."""
+        rng = np.random.default_rng([seed, 29])
+        count = len(self.active)  # from the lowest shoot up
+        index = int(rng.integers(count))  # always drawn, so the phrasing does not depend on target_index
+        if target_index is not None:
+            index = target_index % count
+        self.target = self.active[index]
+        self.target_label = phrasings.position_name(index, count)
+        self.instruction, self.phrasing_kind = phrasings.sample(self.target_label, self.named, rng)
 
     def _place_shoots(self):
         """Outer parts on their stubs (welded, at rest), at the plant's pose for this episode."""
@@ -1120,6 +1151,19 @@ class PickupEnv:
         self.stem_hold = self.stem_hold + 1 if stem_held else 0
         if self.stem_hold >= CUT_STEPS and self.damaged is None:
             self.damaged = "main stem cut"
+        if self.named:  # only the named shoot may be cut; any other cut ends the episode (wrong_object)
+            wrong = sorted(n for n in self.cut if n != self.target)
+            success = self.damaged is None and self.target in self.cut and not wrong
+            done = success or bool(wrong) or self.damaged is not None or self.steps >= self.max_steps
+            info = dict(
+                success=success,
+                lifted=held + (["stem"] if stem_held else []),
+                wrong_object=bool(wrong),
+                cut=sorted(self.cut),
+                damaged=self.damaged,
+                wrong_shoots=wrong,
+            )
+            return self.get_obs(), done, info
         success = self.damaged is None and len(self.cut) == len(self.active)
         done = success or self.damaged is not None or self.steps >= self.max_steps
         info = dict(

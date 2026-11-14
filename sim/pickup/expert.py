@@ -331,6 +331,8 @@ class ScriptedExpert:
         speed = self.rng.uniform(0.8, 1.2)
         R_now = self.des_R if self.des_R is not None else _rotz(self.des_yaw) @ self.R_home
         remaining = [n for n in env.active if n not in env.cut]
+        if env.named:  # named shoots: only the named one is cut, the others are left on the plant
+            remaining = [n for n in remaining if n == env.target]
         self.wp, self.dwell, self.preamble = 0, 0, False
         if not remaining:
             self.waypoints = [(self.des_pos.copy(), 1.0, 0.0, 10**6, R_now)]
