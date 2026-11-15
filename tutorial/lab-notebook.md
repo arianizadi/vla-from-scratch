@@ -1054,6 +1054,27 @@ the takeover demonstrations do not help either: one seed gains a little (85/100 
 any pruning checkpoint, 83/100 at the end), the other two lose more, and the seed that learns late learns later
 still. Step 8 stands at about 80/100 on two seeds of three, with most failures out of time.
 
+**Memory: a frame from one second ago.** The policies so far see one frame per camera, and rolled out they wander
+between shoots. Three ways of giving the policy a memory, each trained like `..._prune2k_rs_tail10_20m` (2000
+demonstrations, 20M samples), final checkpoint, trained / averaged weights, successful episodes' mean length:
+
+| Memory | Run | Final (trained / averaged) | Flower damaged | Steps per success | Without memory, same seed |
+|---|---|---|---|---|---|
+| Frames t-1 and t, states t-1 and t, the previous action (`dp_vit_lang`) | `dp_vit_lang_prune2k_rs_tail10_20m` | 0 at checkpoints 1-3, stopped | 40, 6, 2 | - | 81/100 / 79/100 |
+| Frames t-1 and t, no previous action (`dp_vit_lang_frames`) | `dp_vit_lang_frames_prune2k_rs_tail10_20m` | 53/100 / 35/100 | 1 | about 810 | 81/100 / 79/100 |
+| Frames t-20 and t (1 s back), no previous action (`dp_vit_lang_frames_1s`), seed 42 | `dp_vit_lang_frames_1s_prune2k_rs_tail10_20m` | 77/100 / 70/100 | 2 | about 700 | 81/100 / 79/100 |
+| The same, seed 43 | `..._seed43` | 86/100 / 89/100 | 4 | about 680 | 44/100 / 56/100 |
+
+Averaged weights per checkpoint, 1 s memory: seed 42: 8, 32, 36, 56, 63, 65, 73, 73, 69, 76, 70; seed 43: 13, 50, 78,
+77, 77, 84, 87, 79, 90, 80, 89. The previous action breaks the policy again (it repeats its last action, as with
+`pick_target`), and the previous frame alone does worse than no memory. A frame from a second ago does not hurt the
+seed that learned well without memory (70-77 against 79-81) and lifts the seed that learned late from 56 to 89, the
+best final score of any pruning run so far, holding 79-90 over its last six checkpoints. It does not make the policy
+faster (about 680-700 steps per success, as without memory, against the expert's 515): it fails less often, not
+quicker. Two seeds are not enough to call it; a third seed (44) is queued. Successful runs of the earlier policies
+needed the start of the instruction only; this one also sees where the arm was a second ago, which is what tells a
+turn in progress from a stalled one.
+
 ## Throughput
 
 | Model | Machine A (RTX 4090) | Machine B (L40S) |
