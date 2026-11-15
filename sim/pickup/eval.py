@@ -318,6 +318,14 @@ def _scenario_summary(env, episodes):
             damaged=sum(e["damaged"] is not None for e in eps),
             wrong=sum(e["wrong_object"] and e["damaged"] is None for e in eps),
             timeout=sum(not e["success"] and not e["wrong_object"] and e["damaged"] is None for e in eps),
+            **(
+                dict(
+                    distractors_touched=sum(bool(e["distractors_touched"]) for e in eps),
+                    distractors_moved=sum(bool(e["distractors_moved"]) for e in eps),
+                )
+                if eps and "distractors_touched" in eps[0]
+                else {}
+            ),
         )
 
     by_mode = {}
@@ -662,7 +670,17 @@ def main():
                     dict(
                         scenario=env.scenario_info,
                         cut_order=cut_order,
-                        **{k: info[k] for k in ("out_of_order", "home_m") if k in info},
+                        **{
+                            k: info[k]
+                            for k in (
+                                "out_of_order",
+                                "home_m",
+                                "wrong_shoots",
+                                "distractors_touched",
+                                "distractors_moved",
+                            )
+                            if k in info and not (k == "wrong_shoots" and (env.named or env.reason))  # (above)
+                        },
                     )
                     if env.scenarios
                     else {}

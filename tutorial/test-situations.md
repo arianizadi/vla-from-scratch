@@ -69,24 +69,28 @@ Expert: the scripted expert on 100 evaluation layouts (seeds from 1,000,000), `e
 |---|---|---|---|---|---|
 | B1 | `lighting` | `dusk` (low warm sun from a random side), `noon` (hard overhead light, hard shadows, little fill), `grow` (purple LED light), `flicker` (the lights dip for 1-3 steps now and then) | the task's | 100/100 | |
 | B2 | `camera` | `moved` (front camera shifted 1-4 cm and turned 1-5 degrees), `moved_blur` (and blurred), `moved_noise` (and sensor noise) | the task's | 100/100 | |
-| B3 | `bench` | `wood`, `stained` (bench tops, tinted per episode), `greenhouse` (glass walls behind the scene), `wood_greenhouse`, `stained_greenhouse` | the task's | | |
-| B4 | `distractors` | `table` (2-4 of a watering can, gloves, a trowel, a seed packet, a small pot, solid and free, beside and behind the plant), `table_bee` (and a bee on a leaf) | the task's; touched and moved distractors are recorded | | |
+| B3 | `bench` | `wood`, `stained` (bench tops, tinted per episode), `greenhouse` (glass walls behind the scene), `wood_greenhouse`, `stained_greenhouse` | the task's | 100/100 | 99/100 |
+| B4 | `distractors` | `table` (2-4 of a watering can, gloves, a trowel, a seed packet, a small pot, solid and free, beside and behind the plant), `table_bee` (and a bee on a leaf) | the task's; touched and moved distractors are recorded | 100/100 (touched one in 6) | 99/100 (touched one in 2) |
 | B5 | `wind` | `sway` (every shoot sways 4-10 degrees at 0.4-1 Hz), `gust` (a 2-degree sway and one gust of 15-25 degrees that dies down) | the task's | 97/100 (3 out of time) | 94/100 (6 out of time) |
 | B6 | `bump` | the plate is turned 30-120 degrees either way at 8-45% of the step limit, once the gripper is clear of the plant | the task's | 99/100 | 100/100 |
 | B7 | `sticky` | `dead` (the first 1-2 presses of one or both buttons do nothing), `slow` (its motor runs at 35-60%) | the task's | 99/100 | 99/100 |
-| A1 | `ties` | `colour` (every shoot has a tie of another colour; "cut the shoot with the red tie"), `one` (one shoot has a tie; "cut the tied shoot") | the tied shoot cut, nothing else | | |
-| A3 | `sick` | 0 to all shoots sick, each with brown spots, brown edges or wilted leaves; "cut the sick shoots, keep the healthy ones" | exactly the sick shoots cut; none sick: as A5 | | |
-| A4 | `buds` | 0 to all shoots carry a bud; "cut every shoot without a bud" | exactly the shoots without a bud cut; all with buds: as A5 | | |
+| A1 | `ties` | `colour` (every shoot has a tie of another colour; "cut the shoot with the red tie"), `one` (one shoot has a tie; "cut the tied shoot") | the tied shoot cut, nothing else | 100/100 | |
+| A3 | `sick` | 0 to all shoots sick, each with brown spots, brown edges or wilted leaves; "cut the sick shoots, keep the healthy ones" | exactly the sick shoots cut; none sick: as A5 | 100/100 | |
+| A4 | `buds` | 0 to all shoots carry a bud; "cut every shoot without a bud" | exactly the shoots without a bud cut; all with buds: as A5 | 100/100 | |
 | A5 | `nothing_to_do` | an already pruned plant (stubs of 2-5 cm, the cut parts gone), the task's own instruction | no damage, the gripper back within 5 cm of the home pose for 1 s, within 300 steps | 100/100 (random starts) | |
 | A8 | `order` | `top_down`, `bottom_up` (every shoot), `pair` ("cut the lowest shoot, then the highest one") | the shoots meant, cut in that order; a cut out of order or of another shoot ends the episode | 100/100 | |
 
 Held-out instructions (sentence frames no demonstration uses; `collect.py` refuses `order_heldout`): `order_heldout`
-(expert 99/100), `ties_heldout`, `sick_heldout`, `buds_heldout`. B1, B2, B5, B6 and B7 also work on the other plant
+(expert 99/100), `ties_heldout` (100/100), `sick_heldout`, `buds_heldout`. B1, B2, B5, B6 and B7 also work on the other plant
 tasks (B1 and B2 on every task); A-situations apply to `prune_one`, `prune_turn` and `prune` (A8: `prune` only).
 
 What the expert does differently in them (only when the scenario is on): after a bump it plans again from where the
 arm is; with a sticky button it lets go when the plate has not moved for 10 steps of pressing and presses again; when
 nothing is (left) to cut in A1/A3/A4/A5 it goes back to the home pose; in A8 it cuts in the order given.
+
+How the new assets look to a policy: at the 224-pixel front view a tie (drawn 1.8 times its modelled size) is about 6
+pixels, clearly coloured; a bud and the brown spots or edges of a sick leaf are 2-4 pixels, the wilted (yellow,
+drooping) leaves a little more. A1 is a fair test of looking; A3 and A4 ask for detail near the limit of that view.
 
 Not yet built: A2 (the tie facing away; the ties are there, the drawing of a hidden one is not), A6, A7 and every tier 2
 and 3 situation. The reasoning tasks (`reason_*`, roadmap Phase 7) have their own hidden-card kind; the A-situations
