@@ -451,3 +451,93 @@ def test_the_expert_solves_the_situation(task, scenario):
         assert wins >= 2, f"the expert solved {wins} of {len(SEEDS)} ({scenario})"
     finally:
         env.close()
+
+
+# ------------------------------------------------------------------------------------------------- held-out splits
+@pytest.mark.parametrize("scenario", ["lighting", "camera", "bench", "distractors"])
+def test_the_train_and_test_splits_do_not_overlap(scenario):
+    train, test = _env("prune", f"{scenario}/train"), _env("prune", f"{scenario}/test")
+    try:
+        seen = {"train": [], "test": []}
+        for seed in range(30):
+            for split, env in (("train", train), ("test", test)):
+                env.reset(seed=seed)
+                v = env.scenario_info[scenario]
+                assert v["split"] == split and v["mode"] in S.SCENARIOS[scenario].splits[split]
+                seen[split].append(v)
+        if scenario == "camera":
+            for split, (lo, hi) in (("train", (0.0099, 0.0301)), ("test", (0.0299, 0.0401))):
+                assert all(lo < np.linalg.norm(v["shift_m"]) < hi for v in seen[split])
+            assert max(v["angle_deg"] for v in seen["train"]) <= 3.5 <= min(v["angle_deg"] for v in seen["test"])
+        if scenario == "distractors":
+            used = {s: {n for v in seen[s] for n in v["objects"]} for s in seen}
+            assert not used["train"] & used["test"] and all("bee_on" in v for v in seen["test"])
+            assert not any("bee_on" in v for v in seen["train"])
+        if scenario in ("lighting", "bench"):
+            assert not {v["mode"] for v in seen["train"]} & {v["mode"] for v in seen["test"]}
+    finally:
+        train.close()
+        test.close()
+
+
+# ------------------------------------------------------------------------------------------------- the leaf fix
+def _drawn_leaf(env, vis):
+    """World positions of a leaf geom's vertices as drawn."""
+    m, d = env.model, env.data
+    mid = m.geom_dataid[vis]
+    v = m.mesh_vert[m.mesh_vertadr[mid] : m.mesh_vertadr[mid] + m.mesh_vertnum[mid]].astype(float)
+    return d.geom_xpos[vis] + v @ d.geom_xmat[vis].reshape(3, 3).T
+
+
+def _pair(task):
+    """The same task with and without the leaf fix."""
+    _env(task).close()  # (skips where the simulator cannot run)
+    return PickupEnv(task, leaf_fix=True), PickupEnv(task)
+
+
+def test_with_the_leaf_fix_each_leaf_is_drawn_on_its_collision_box():
+    env, old = _pair("prune")
+    try:
+        for seed in SEEDS:
+            env.reset(seed=seed)
+            old.reset(seed=seed)
+            for n in env.active:
+                for (vis, col), (ovis, ocol) in zip(env.leaf_geoms[n], old.leaf_geoms[n], strict=True):
+                    if env.model.geom_group[vis] != 2:
+                        continue
+                    pts = _drawn_leaf(env, vis)
+                    box, axes = env.data.geom_xpos[col], env.data.geom_xmat[col].reshape(3, 3)
+                    local = (pts - box) @ axes  # in the box's frame
+                    assert np.linalg.norm(pts.mean(0) - box) < 0.005  # the blade is centred on its box
+                    # along it: the box (38 x 16 x 3 mm) covers the blade but for the last 9 mm of the petiole
+                    assert local[:, 0].min() > -0.029 and local[:, 0].max() < 0.021
+                    assert np.all(np.abs(local[:, 1]) < 0.011) and np.all(np.abs(local[:, 2]) < 0.007)
+                    before = _drawn_leaf(old, ovis)
+                    assert np.linalg.norm(before.mean(0) - old.data.geom_xpos[ocol]) > 0.02  # as it was drawn
+                    assert np.array_equal(env.data.geom_xpos[col], old.data.geom_xpos[ocol])  # same collision box
+    finally:
+        env.close()
+        old.close()
+
+
+def test_the_leaf_fix_changes_what_is_seen_and_nothing_else():
+    env, old = _pair("prune_turn")
+    try:
+        differ = False
+        for e in (env, old):
+            e.reset(seed=SEEDS[0])
+        a, b = ScriptedExpert(env, seed=0), ScriptedExpert(old, seed=0)
+        a.reset()
+        b.reset()
+        done = False
+        while not done:
+            act = a.act()
+            assert np.array_equal(act, b.act())
+            obs, done, info = env.step(act)
+            obs_old, done_old, info_old = old.step(act)
+            assert np.array_equal(env.data.qpos, old.data.qpos) and done == done_old and info == info_old
+            differ = differ or not np.array_equal(obs["front"], obs_old["front"])
+        assert differ and info["success"]
+    finally:
+        env.close()
+        old.close()

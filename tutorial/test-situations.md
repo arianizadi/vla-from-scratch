@@ -80,6 +80,16 @@ Expert: the scripted expert on 100 evaluation layouts (seeds from 1,000,000), `e
 | A5 | `nothing_to_do` | an already pruned plant (stubs of 2-5 cm, the cut parts gone), the task's own instruction | no damage, the gripper back within 5 cm of the home pose for 1 s, within 300 steps | 100/100 (random starts) | |
 | A8 | `order` | `top_down`, `bottom_up` (every shoot), `pair` ("cut the lowest shoot, then the highest one") | the shoots meant, cut in that order; a cut out of order or of another shoot ends the episode | 100/100 | |
 
+Held-out parts of the world (`name/split`, e.g. `lighting/train@0.3`), for training on some variations and testing on
+the rest:
+
+| Scenario | `/train` | `/test` |
+|---|---|---|
+| `lighting` | dusk, noon, flicker | grow lights (a colour of light never seen) |
+| `camera` | shift 1-3 cm, turn 1-3.5 degrees, blur up to 1 px, noise up to 7 | shift 3-4 cm, turn 3.5-5 degrees, blur 1-1.5 px, noise 7-10 |
+| `bench` | wood, stained | the greenhouse, with the old table or either bench |
+| `distractors` | watering can, gloves, seed packet; no bee | trowel, small pot, and a bee on a leaf |
+
 Held-out instructions (sentence frames no demonstration uses; `collect.py` refuses `order_heldout`): `order_heldout`
 (expert 99/100), `ties_heldout` (100/100), `sick_heldout`, `buds_heldout`. B1, B2, B5, B6 and B7 also work on the other plant
 tasks (B1 and B2 on every task); A-situations apply to `prune_one`, `prune_turn` and `prune` (A8: `prune` only).
@@ -91,6 +101,12 @@ nothing is (left) to cut in A1/A3/A4/A5 it goes back to the home pose; in A8 it 
 How the new assets look to a policy: at the 224-pixel front view a tie (drawn 1.8 times its modelled size) is about 6
 pixels, clearly coloured; a bud and the brown spots or edges of a sick leaf are 2-4 pixels, the wilted (yellow,
 drooping) leaves a little more. A1 is a fair test of looking; A3 and A4 ask for detail near the limit of that view.
+
+The leaves: `PickupEnv(leaf_fix=True)` (`collect.py --leaf_fix`, `eval.py --leaf_fix`) draws each leaf blade where its
+collision box is. Without it a leaf is drawn as before: centred on the shoot's tip and turned on its side, up to 6 cm
+from its box (the pose was written without the offset MuJoCo's compiler gives a mesh). Only what is seen changes: the
+collision boxes, and so the expert's actions and every outcome, are the same with and without it. Off by default, so
+that the existing policies are evaluated as they were trained.
 
 Not yet built: A2 (the tie facing away; the ties are there, the drawing of a hidden one is not), A6, A7 and every tier 2
 and 3 situation. The reasoning tasks (`reason_*`, roadmap Phase 7) have their own hidden-card kind; the A-situations

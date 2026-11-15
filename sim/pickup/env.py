@@ -640,11 +640,21 @@ class PickupEnv:
             cls = AimEnv
         return super().__new__(cls)
 
-    def __init__(self, task: str = "pick_cube", image_size: int = 224, max_steps: int | None = None, scenario=None):
+    def __init__(
+        self,
+        task: str = "pick_cube",
+        image_size: int = 224,
+        max_steps: int | None = None,
+        scenario=None,
+        leaf_fix: bool = False,
+    ):
         """`max_steps`: episode length limit; by default the task's own (200 unless TASKS says otherwise).
-        `scenario`: test situations applied on top of the task (scenarios.py), e.g. "wind" or "lighting:dusk,bump"."""
+        `scenario`: test situations applied on top of the task (scenarios.py), e.g. "wind" or "lighting:dusk,bump".
+        `leaf_fix`: draw each leaf of the plant where its collision box is (see _pose_leaf). Off by default, so that
+        evaluations stay comparable with the policies trained on the leaves as they were drawn before."""
         assert task in TASKS, f"unknown task {task}; choose from {list(TASKS)}"
         self.task = task
+        self.leaf_fix = leaf_fix
         self.image_size = image_size
         self.max_steps = max_steps if max_steps is not None else TASKS[task].get("max_steps", 200)
         self._max_steps_given = max_steps  # reasoning tasks: else the episode limit is set per episode, by kind
@@ -1077,9 +1087,7 @@ class PickupEnv:
                 if not used:
                     continue
                 R = base @ _rot("z", yaws[j]) @ _rot("y", rng.uniform(0.25, 0.5)) @ _rot("x", rng.uniform(-0.25, 0.25))
-                pos = np.array([0.0, 0.0, tip - 0.001])
-                m.geom_pos[vis], m.geom_quat[vis] = pos, _quat(R)
-                m.geom_pos[col], m.geom_quat[col] = pos + R @ [0.028, 0, 0.002], _quat(R)
+                self._pose_leaf(vis, col, np.array([0.0, 0.0, tip - 0.001]), R)
             # The weld: anchored at the outer part's origin (CUT_MID out along the shoot, given in the plant's frame),
             # where the outer part's own origin must stay; its orientation relative to the plant is the shoot's frame.
             # (Anchored at the plant's origin, 25 cm away, a small angular give of the weld moved the shoot by mm.)
@@ -1092,6 +1100,24 @@ class PickupEnv:
         self.damaged, self.stem_hold, self.max_stem_push, self.step_stem_push = None, 0, 0.0, 0.0
         d.ctrl[self.turntable] = 0.0
         self._set_exclusions()
+
+    def _pose_leaf(self, vis, col, pos, R):
+        """A leaf at the shoot's tip: the blade's mesh frame (petiole at its origin, blade along +x, upper side +z) at
+        (pos, R) in the outer part's frame, and its collision box along the blade.
+
+        MuJoCo's compiler moves a mesh's frame to its centre of mass and principal axes (mesh_pos, mesh_quat), so a
+        geom whose mesh frame should be at (pos, R) needs geom_pos = pos + R @ mesh_pos, geom_quat = R * mesh_quat.
+        Without `leaf_fix` the pose is written as it was before that was noticed: the blade is then drawn centred on
+        the tip and turned on its side, up to 6 cm from its collision box."""
+        m = self.model
+        if self.leaf_fix:
+            mid = m.geom_dataid[vis]
+            Rm = np.zeros(9)
+            mujoco.mju_quat2Mat(Rm, m.mesh_quat[mid])
+            m.geom_pos[vis], m.geom_quat[vis] = pos + R @ m.mesh_pos[mid], _quat(R @ Rm.reshape(3, 3))
+        else:
+            m.geom_pos[vis], m.geom_quat[vis] = pos, _quat(R)
+        m.geom_pos[col], m.geom_quat[col] = pos + R @ [0.028, 0, 0.002], _quat(R)
 
     def _name_shoot(self, seed, target_index=None):
         """Named shoots: choose the shoot to cut and phrase the instruction, from a stream of their own, so that the

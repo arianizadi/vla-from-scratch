@@ -97,9 +97,10 @@ def _worker(args):
         side,
         tail_steps,
         scenario,
+        leaf_fix,
         takeover,
     ) = args  # takeover: None, or this worker's policy server and the range the handover step K is drawn from
-    env = PickupEnv(task, scenario=scenario)
+    env = PickupEnv(task, scenario=scenario, leaf_fix=leaf_fix)
     expert = ScriptedExpert(env, seed=worker_id, reactive=disturb_prob > 0 or drift_prob > 0, side=side)
     writer = NoteWriter(env) if env.reason else None
     budget = env.max_steps
@@ -328,6 +329,12 @@ def main():
         "records what they drew (meta/episodes.jsonl)",
     )
     ap.add_argument(
+        "--leaf_fix",
+        action="store_true",
+        help="draw the plant's leaves where their collision boxes are (PickupEnv(leaf_fix=True)); policies trained on "
+        "such data should be evaluated with eval.py --leaf_fix",
+    )
+    ap.add_argument(
         "--include",
         nargs="+",
         default=[],
@@ -380,6 +387,7 @@ def main():
                 args.expert_side,
                 args.tail_steps,
                 args.scenario,
+                args.leaf_fix,
             )
             chunks = [
                 (args.task, jobs[i :: args.workers], str(out), i, *extra, _takeover(args, i))
@@ -460,6 +468,7 @@ def main():
         expert_side=args.expert_side,
         tail_steps=args.tail_steps,
         **({"scenario": args.scenario} if args.scenario else {}),
+        **({"leaf_fix": True} if args.leaf_fix else {}),
         takeover=_takeover_summary(args, servers, attempted, kept[len(included) :], endings),
         included=[
             dict(dataset=Path(p).name, episodes=sum(e["source"] == Path(p).name for e in included))

@@ -11,8 +11,10 @@ draws its own variation for every episode from a stream of its own, seeded by th
 What was drawn is in `env.scenario_info` after every reset ({name: variation}); eval.py and collect.py record it per
 episode. Without a scenario the environment is exactly what it was before scenarios existed.
 
-The spec of one scenario is `name[:mode][@p]`: `mode` pins one of its variations (`lighting:dusk`), `p` applies it to
-that share of the episodes only (`nothing_to_do@0.2`, for training data that mixes it in). The catalogue numbers
+The spec of one scenario is `name[:mode][/split][@p]`: `mode` pins one of its variations (`lighting:dusk`), `split`
+draws from the part kept for training (`train`) or the part held out for testing (`test`; lighting, camera, bench and
+distractors have one), `p` applies it to that share of the episodes only (`nothing_to_do@0.2`, for training data that
+mixes it in). The catalogue numbers
 (B1, A5, ...) are accepted as names. See tutorial/test-situations.md for the catalogue.
 
 Robustness situations (the task is unchanged; held out by default):
@@ -80,14 +82,25 @@ class Scenario:
     changes_task = False  # gives its own instruction and success rule (at most one such scenario at a time)
     priority = 0  # order of the hooks within a step (lower first)
 
-    def __init__(self, mode=None, prob=1.0):
+    # Held-out split: {"train": modes, "test": modes} (or other ranges, see the subclass) for training on part of a
+    # situation and testing on the rest. Empty: the scenario has no split.
+    splits: dict = {}
+
+    def __init__(self, mode=None, prob=1.0, split=None):
         assert mode is None or mode in self.modes, f"{self.name}: unknown mode {mode!r}; choose from {self.modes}"
         assert 0.0 < prob <= 1.0, f"{self.name}: probability {prob} not in (0, 1]"
-        self.mode, self.prob = mode, prob
+        assert split is None or split in self.splits, f"{self.name}: no split {split!r}; it has {sorted(self.splits)}"
+        assert mode is None or split is None or mode in self.splits[split], f"{self.name}: {mode} is not in {split}"
+        self.mode, self.prob, self.split = mode, prob, split
         self.applied, self.variation = False, {}
 
     def spec(self):
-        return self.name + (f":{self.mode}" if self.mode else "") + (f"@{self.prob:g}" if self.prob < 1 else "")
+        return (
+            self.name
+            + (f":{self.mode}" if self.mode else "")
+            + (f"/{self.split}" if self.split else "")
+            + (f"@{self.prob:g}" if self.prob < 1 else "")
+        )
 
     # --------------------------------------------------------------------------------------------------- hooks
     def check(self, env):
@@ -129,9 +142,10 @@ class Scenario:
         self.restore(env)
         rng = np.random.default_rng([int(seed), 53, zlib.crc32(self.name.encode()) & 0xFFFFFFF])
         self.applied = bool(rng.random() < self.prob)  # always drawn, so a pinned probability keeps the stream
-        mode = self.mode or self.modes[int(rng.integers(len(self.modes)))]
+        modes = self.splits[self.split] if self.split else self.modes
+        mode = self.mode or modes[int(rng.integers(len(modes)))]
         self.rng = rng
-        self.variation = {"applied": self.applied}
+        self.variation = {"applied": self.applied, **({"split": self.split} if self.split else {})}
         if self.applied:
             self.variation.update(mode=mode, **{k: _r(v) for k, v in self.draw(env, rng, mode).items()})
         return self.variation
@@ -145,6 +159,7 @@ LIGHT_TARGET = np.array([0.55, 0.0, 0.15])  # about the middle of the plant
 class Lighting(Scenario):
     name, catalogue = "lighting", "B1"
     modes = ("dusk", "noon", "grow", "flicker")
+    splits = {"train": ("dusk", "noon", "flicker"), "test": ("grow",)}  # a colour of light never seen in training
     needs_plant = False
 
     def init(self, env):
@@ -227,6 +242,14 @@ class Lighting(Scenario):
 class Camera(Scenario):
     name, catalogue = "camera", "B2"
     modes = ("moved", "moved_blur", "moved_noise")
+    # train: the smaller knocks (shift 1-3 cm, turn 1-3.5 degrees, blur up to 1 px, noise up to 7); test: the larger
+    # ones (3-4 cm, 3.5-5 degrees, blur 1-1.5 px, noise 7-10). Without a split: the whole range.
+    splits = {"train": modes, "test": modes}
+    RANGES = {
+        None: dict(shift=(0.01, 0.04), angle=(1.0, 5.0), blur=(0.6, 1.5), noise=(3.0, 10.0)),
+        "train": dict(shift=(0.01, 0.03), angle=(1.0, 3.5), blur=(0.6, 1.0), noise=(3.0, 7.0)),
+        "test": dict(shift=(0.03, 0.04), angle=(3.5, 5.0), blur=(1.0, 1.5), noise=(7.0, 10.0)),
+    }
     needs_plant = False
 
     def init(self, env):
@@ -238,20 +261,21 @@ class Camera(Scenario):
         self.blur = self.noise = 0.0
 
     def draw(self, env, rng, mode):
+        r = self.RANGES[self.split]
         direction = rng.normal(size=3)
-        shift = direction / np.linalg.norm(direction) * rng.uniform(0.01, 0.04)  # metres
+        shift = direction / np.linalg.norm(direction) * rng.uniform(*r["shift"])  # metres
         axis = rng.normal(size=3)
         axis /= np.linalg.norm(axis)
-        angle = np.radians(rng.uniform(1.0, 5.0))
+        angle = np.radians(rng.uniform(*r["angle"]))
         turn, quat = np.zeros(4), np.zeros(4)
         mujoco.mju_axisAngle2Quat(turn, axis, angle)
         mujoco.mju_mulQuat(quat, self.quat, turn)  # turned about an axis in the camera's own frame
         env.model.cam_pos[self.cam] = self.pos + shift
         env.model.cam_quat[self.cam] = quat
         if mode == "moved_blur":
-            self.blur = rng.uniform(0.6, 1.5)  # pixels (Gaussian radius)
+            self.blur = rng.uniform(*r["blur"])  # pixels (Gaussian radius)
         if mode == "moved_noise":
-            self.noise = rng.uniform(3.0, 10.0)  # standard deviation, in 0-255 units
+            self.noise = rng.uniform(*r["noise"])  # standard deviation, in 0-255 units
         return dict(shift_m=shift, axis=axis, angle_deg=np.degrees(angle), blur_px=self.blur, noise=self.noise)
 
     def image(self, env, camera, img):
@@ -537,7 +561,7 @@ class Order(Scenario):
     modes = ("top_down", "bottom_up", "pair")
     changes_task = True
     frames = ORDER_FRAMES
-    split = "train"
+    phrasing = "train"  # the instruction set: training phrasings or held-out ones
 
     def check(self, env):
         super().check(env)
@@ -566,7 +590,7 @@ class Order(Scenario):
         env.target = order[0]
         env.instruction = instruction
         env.target_label = ",".join(names[shoots.index(n)] for n in order)
-        env.phrasing_kind = self.split
+        env.phrasing_kind = self.phrasing
         env.flags.add("ordered")
         return dict(instruction=instruction, order=env.target_label, shoots=len(shoots))
 
@@ -592,7 +616,7 @@ class Order(Scenario):
 class OrderHeldout(Order):
     name = "order_heldout"
     frames = ORDER_HELDOUT_FRAMES
-    split = "heldout"
+    phrasing = "heldout"
 
 
 # ======================================================================================== situations with new assets
@@ -662,9 +686,7 @@ def _leaf_pose(env, name, j, yaw, pitch, roll):
     vis, col = env.leaf_geoms[name][j]
     base = np.array([[0, 0, 1], [0, -1, 0], [1, 0, 0]], dtype=float)
     R = base @ E._rot("z", yaw) @ E._rot("y", pitch) @ E._rot("x", roll)
-    pos = np.array([0.0, 0.0, env.shoots[name]["length"] - E.CUT_MID - 0.001])
-    m.geom_pos[vis], m.geom_quat[vis] = pos, E._quat(R)
-    m.geom_pos[col], m.geom_quat[col] = pos + R @ [0.028, 0, 0.002], E._quat(R)
+    env._pose_leaf(vis, col, np.array([0.0, 0.0, env.shoots[name]["length"] - E.CUT_MID - 0.001]), R)
     m.geom_group[vis] = 2
     m.geom_contype[col], m.geom_conaffinity[col] = 2, 1
 
@@ -681,7 +703,7 @@ class ChooseShoots(Scenario):
 
     changes_task = True
     frames: dict = {}
-    split = "train"
+    phrasing = "train"  # the instruction set: training phrasings or held-out ones
 
     def check(self, env):
         super().check(env)
@@ -702,7 +724,7 @@ class ChooseShoots(Scenario):
         targets, instruction, out = self.choose(env, rng, mode)
         env.targets = list(targets)
         env.target = targets[0] if targets else env.active[0]
-        env.instruction, env.phrasing_kind = instruction, self.split
+        env.instruction, env.phrasing_kind = instruction, self.phrasing
         env.target_label = ",".join(E.phrasings.position_name(env.active.index(n), len(env.active)) for n in targets)
         env.flags |= {"targets", "home"}
         return dict(out, instruction=instruction, targets=env.target_label, shoots=len(env.active))
@@ -782,7 +804,7 @@ class Ties(ChooseShoots):
 class TiesHeldout(Ties):
     name, catalogue = "ties_heldout", "A1"
     frames = TIE_HELDOUT_FRAMES
-    split = "heldout"
+    phrasing = "heldout"
 
 
 # --------------------------------------------------------------------------------------------------- A3 sick shoots
@@ -860,7 +882,7 @@ class Sick(ChooseShoots):
 class SickHeldout(Sick):
     name, catalogue = "sick_heldout", "A3"
     frames = {"sick": SICK_HELDOUT_FRAMES}
-    split = "heldout"
+    phrasing = "heldout"
 
 
 # --------------------------------------------------------------------------------------------------------- A4 buds
@@ -927,7 +949,7 @@ class Buds(ChooseShoots):
 class BudsHeldout(Buds):
     name, catalogue = "buds_heldout", "A4"
     frames = {"buds": BUD_HELDOUT_FRAMES}
-    split = "heldout"
+    phrasing = "heldout"
 
 
 # --------------------------------------------------------------------------------------------- B3 bench and backdrop
@@ -945,6 +967,7 @@ class Bench(Scenario):
 
     name, catalogue = "bench", "B3"
     modes = ("wood", "stained", "greenhouse", "wood_greenhouse", "stained_greenhouse")
+    splits = {"train": ("wood", "stained"), "test": ("greenhouse", "wood_greenhouse", "stained_greenhouse")}
     needs_plant = False
 
     def build(self, spec):
@@ -1016,6 +1039,13 @@ class Distractors(Scenario):
 
     name, catalogue = "distractors", "B4"
     modes = ("table", "table_bee")
+    # train: the watering can, the gloves and the seed packet, no bee; test: the trowel and the small pot, and the bee
+    splits = {"train": ("table",), "test": ("table_bee",)}
+    POOLS = {
+        None: DISTRACTORS,
+        "train": ("watering_can", "gloves", "seed_packet"),
+        "test": ("trowel", "pot_small"),
+    }
 
     def build(self, spec):
         a = manifest()
@@ -1068,8 +1098,9 @@ class Distractors(Scenario):
     def draw(self, env, rng, mode):
         d = env.data
         stand = env.model.body_pos[env.stand_body][:2]
-        count = int(rng.integers(2, 5))
-        chosen = [DISTRACTORS[i] for i in rng.choice(len(DISTRACTORS), size=count, replace=False)]
+        pool = self.POOLS[self.split]
+        count = int(rng.integers(2, min(4, len(pool)) + 1))
+        chosen = [pool[i] for i in rng.choice(len(pool), size=count, replace=False)]
         placed = {}
         for n in chosen:
             r_obj = self.radius[n]
@@ -1152,11 +1183,12 @@ def parse(spec) -> list[Scenario]:
         if not part:
             continue
         part, _, prob = part.partition("@")
+        part, _, split = part.partition("/")
         name, _, mode = part.partition(":")
         name = CATALOGUE.get(name.upper(), name)
         if name not in SCENARIOS:
             raise ValueError(f"unknown scenario {name!r}; choose from {sorted(SCENARIOS)} (or {sorted(CATALOGUE)})")
-        out.append(SCENARIOS[name](mode or None, float(prob) if prob else 1.0))
+        out.append(SCENARIOS[name](mode or None, float(prob) if prob else 1.0, split or None))
     names = [s.name for s in out]
     if len(set(names)) != len(names):
         raise ValueError(f"a scenario is given twice: {spec}")

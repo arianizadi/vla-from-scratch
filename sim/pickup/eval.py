@@ -456,11 +456,16 @@ def main():
         help="test situations on top of the task (scenarios.py), comma-separated name[:mode][@p], e.g. 'wind' or "
         "'lighting:dusk,bump'",
     )
+    ap.add_argument(
+        "--leaf_fix",
+        action="store_true",
+        help="draw the plant's leaves where their collision boxes are (as in data from collect.py --leaf_fix)",
+    )
     args = ap.parse_args()
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    env = PickupEnv(args.task, max_steps=args.max_steps, scenario=args.scenario)
+    env = PickupEnv(args.task, max_steps=args.max_steps, scenario=args.scenario, leaf_fix=args.leaf_fix)
     writer = None
     if env.reason:
         from .notes import NoteWriter
@@ -771,6 +776,7 @@ def main():
         server=server_info,
         **(dict(named=_named_summary(episodes)) if env.named else {}),
         **(dict(scenario=_scenario_summary(env, episodes)) if env.scenarios else {}),
+        **(dict(leaf_fix=True) if args.leaf_fix else {}),
         **(dict(aim=_aim_summary(episodes)) if getattr(env, "aim", None) else {}),
         **(
             dict(
