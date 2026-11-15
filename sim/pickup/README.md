@@ -49,6 +49,14 @@ prune_named` and `... prune_named_heldout`) gives paired numbers: the same plant
 the words differ. `results.json` then has a `named` block: successes, wrong shoot cut, damage and time-outs,
 overall and by phrasing kind, by named position and by the number of shoots; `per_target` is by named position.
 
+**Reasoning tasks (`reason_ordinal`, `reason_conditional`, `reason_exclusion`, `reason_hidden`, `reason_mix`, each
+with a `_heldout` version).** The same plant; the shoots to cut follow from the instruction and what is seen
+("the second shoot from the top", "if the flower is red, cut the lowest shoot, otherwise the highest one", "cut every
+side shoot except the highest one") or was seen (a card in the pot, which may face away, names the shoot). Their
+demonstrations carry the expert's notes, one line of reasoning written at each decision, and `eval.py` can run a
+policy that writes such notes itself, or a two-level one whose fast policy reads the notes' sub-goals. See
+[tutorial/reasoning-vla.md](../../tutorial/reasoning-vla.md).
+
 ## Layout
 
 ```

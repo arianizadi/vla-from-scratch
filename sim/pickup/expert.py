@@ -145,6 +145,7 @@ class ScriptedExpert:
         self.replans = 0
         self.tracks = 0
         self.preamble = False  # take_over: still on the moves that only take_over makes (see there)
+        self.label_read = False  # reasoning tasks, hidden kind: the card in the pot has been read
         self._plan()
 
     def take_over(self):
@@ -333,38 +334,36 @@ class ScriptedExpert:
         remaining = [n for n in env.active if n not in env.cut]
         if env.named:  # named shoots: only the named one is cut, the others are left on the plant
             remaining = [n for n in remaining if n == env.target]
+        elif env.reason:  # reasoning tasks: the shoots meant, the others are left on the plant
+            remaining = [n for n in remaining if n in env.targets]
         self.wp, self.dwell, self.preamble = 0, 0, False
         if not remaining:
             self.waypoints = [(self.des_pos.copy(), 1.0, 0.0, 10**6, R_now)]
             return
-        name = min(remaining, key=lambda n: abs(self._turn_needed(n)))
-        self.prune_target = name
-        turn = self._turn_needed(name)
         lane_x = env.data.xpos[env.stand_body][0] - LANE_BACK
-        if abs(turn) > PRUNE_SECTOR:
-            button = next(b for b, (_, sign) in BUTTONS.items() if sign == np.sign(turn))
-            top = env.button_top(button)
-            R = self.R_press
-            # the lowest point of the closed fingertips (a corner, with the hand leaning) goes PRESS_DEPTH below the
-            # cap's top; the centre of the fingertips over the cap's centre, coming straight down
-            tip = R[:, 2] * FINGERTIP
-            lowest = min((tip + R[:, 0] * x)[2] for x in (-0.0105, 0.0105))
-            press = top - tip + [0, 0, -PRESS_DEPTH - lowest + tip[2]]
-            press[:2] = top[:2] - tip[:2]
-            above = press + [0, 0, 0.09]
+        card = env.reason and env.label_colour is not None
+        if card and not self.label_read and env.label_visible():
+            self.label_read = True  # hidden kind: the card faces the front camera, read it
+        look = card and not self.label_read
+        name = min(remaining, key=lambda n: abs(self._turn_needed(n)))
+        self.prune_target = None if look else name
+        turn = self._turn_needed(name)
+        if look:
+            # Hidden kind, card not read yet: turn the plant until the card faces the front camera. Which shoot to cut
+            # is not known before that.
+            sign = np.sign(env.label_turn_needed())
 
+            def label_faced(sign=sign):
+                return env.label_turn_needed() * sign < TURN_STOP
+
+            plan = self._press_plan(sign, label_faced, lane_x, speed)
+        elif abs(turn) > PRUNE_SECTOR:
             sign = np.sign(turn)
 
             def faced(name=name, sign=sign):
                 return self._turn_needed(name) * sign < TURN_STOP
 
-            plan = [
-                (above, 0.0, 0.40 * speed, 0, self.R_press),
-                (press, 0.0, 0.08 * speed, 300, self.R_press, faced),
-                (above, 0.0, 0.30 * speed, 0, self.R_press),
-                # back toward the robot before anything else: the shoot now faces the arm, leaves and all
-                (np.array([lane_x - 0.03, above[1], 0.20]), 0.0, 0.30 * speed, 0, self.R_down),
-            ]
+            plan = self._press_plan(sign, faced, lane_x, speed)
         else:
             a, d = env.shoot_axis(name)
             cut = a + d * self.rng.uniform(0.031, 0.039)
@@ -408,6 +407,28 @@ class ScriptedExpert:
         if _angle(R_now, plan[0][4]) > 0.6:  # turn the hand where it is first (it swings up, away from the plant)
             plan.insert(0, (self.des_pos.copy(), plan[0][1], 0.1, 0, self.R_down))
         self.waypoints = plan
+
+    def _press_plan(self, sign, faced, lane_x, speed):
+        """Press the button that turns the plate in direction `sign` (+1 counter-clockwise) and hold it until `faced()`,
+        then lift and move back toward the robot."""
+        env = self.env
+        button = next(b for b, (_, s) in BUTTONS.items() if s == sign)
+        top = env.button_top(button)
+        R = self.R_press
+        # the lowest point of the closed fingertips (a corner, with the hand leaning) goes PRESS_DEPTH below the
+        # cap's top; the centre of the fingertips over the cap's centre, coming straight down
+        tip = R[:, 2] * FINGERTIP
+        lowest = min((tip + R[:, 0] * x)[2] for x in (-0.0105, 0.0105))
+        press = top - tip + [0, 0, -PRESS_DEPTH - lowest + tip[2]]
+        press[:2] = top[:2] - tip[:2]
+        above = press + [0, 0, 0.09]
+        return [
+            (above, 0.0, 0.40 * speed, 0, self.R_press),
+            (press, 0.0, 0.08 * speed, 300, self.R_press, faced),
+            (above, 0.0, 0.30 * speed, 0, self.R_press),
+            # back toward the robot before anything else: the shoot now faces the arm, leaves and all
+            (np.array([lane_x - 0.03, above[1], 0.20]), 0.0, 0.30 * speed, 0, self.R_down),
+        ]
 
     def _needs_new_plan(self):
         env = self.env

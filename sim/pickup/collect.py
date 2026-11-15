@@ -8,6 +8,10 @@ action[t] is the command applied after observing frame t.
 
   python -m sim.pickup.collect --task pick_cube --episodes 200 --out data/lerobot/pick_cube
 
+Reasoning tasks (reason_*) also get the expert's notes (notes.py) as per-frame columns: note (the note in force),
+note_prev (the one before it), note_age (frames since it was written) and instruction_subgoal (its "next" field, which
+preprocessing offers as the language instruction type "subgoal").
+
 With --policy_ports, a trained policy (served by policy_server.py, one server per worker) drives the first K steps
 of every episode and the scripted expert takes over from wherever the arm is and finishes the task; only the
 expert's part is recorded (scripts/make_takeover_dataset.sh starts the servers).
@@ -30,8 +34,10 @@ from .disturb import Disturbance
 from .env import CONTROL_HZ, TASKS, PickupEnv
 from .eval import connect, infer_request
 from .expert import ScriptedExpert, random_start
+from .notes import NoteWriter, note_columns
 
 CAMERAS = ("front", "wrist")
+NOTE_COLUMNS = ("note", "note_prev", "note_age", "instruction_subgoal")
 
 
 def _jpeg(img, quality=95):
@@ -94,6 +100,7 @@ def _worker(args):
     ) = args  # takeover: None, or this worker's policy server and the range the handover step K is drawn from
     env = PickupEnv(task)
     expert = ScriptedExpert(env, seed=worker_id, reactive=disturb_prob > 0 or drift_prob > 0, side=side)
+    writer = NoteWriter(env) if env.reason else None
     budget = env.max_steps
     conn = policy = None
     if takeover is not None:
@@ -129,9 +136,14 @@ def _worker(args):
                 kind = "drift"
         disturbance = Disturbance(env, kind, step=step, distance=distance, seed=seed, speed=speed)
         frames = {c: [] for c in CAMERAS}
-        states, actions = [], []
+        states, actions, step_notes = [], [], []
+        if writer is not None:
+            writer.reset()
         done, info = False, {}
         while not done:
+            if writer is not None:  # the note in force at this frame, written before the expert acts on it
+                writer.update()
+                step_notes.append(writer.note)
             # The first hold_steps frames record the robot at rest under its hold command.
             action = env.last_action.copy() if len(actions) < hold_steps else expert.act()
             for c in CAMERAS:
@@ -144,6 +156,9 @@ def _worker(args):
             results.append(dict(seed=seed, success=False, **handover, after_handover=_ending(info)))
             continue
         for _ in range(tail_steps):  # after the success: the robot holds its last command (for a cut, jaws shut)
+            if writer is not None:
+                writer.update()
+                step_notes.append(writer.note)
             action = env.last_action.copy()
             for c in CAMERAS:
                 frames[c].append(_jpeg(obs[c]))
@@ -156,6 +171,7 @@ def _worker(args):
                 **{c: pa.array([{"bytes": b, "path": None} for b in frames[c]]) for c in CAMERAS},
                 "state": pa.array([s.tolist() for s in states], type=pa.list_(pa.float32())),
                 "action": pa.array([a.tolist() for a in actions], type=pa.list_(pa.float32())),
+                **({k: pa.array(v) for k, v in note_columns(step_notes).items()} if writer is not None else {}),
             }
         )
         pq.write_table(table, tmp)
@@ -172,12 +188,26 @@ def _worker(args):
                 tracks=expert.tracks,
                 **handover,
                 **({"named": env.target_label} if env.named else {}),  # named shoots: lowest / middle / highest
+                **(_reason_record(env, writer) if writer is not None else {}),
             )
         )
     if conn is not None:
         conn.close()
     env.close()
     return results
+
+
+def _reason_record(env, writer):
+    """Reasoning tasks: what an episode asked for and the notes the expert wrote (control step, text)."""
+    return dict(
+        kind=env.reason_kind,
+        phrasing=env.phrasing_kind,
+        shoots=len(env.active),
+        targets=list(env.reason_task.target_positions),
+        label=env.label_colour,
+        label_hidden_at_reach=bool(env.label_hidden_at_reach()) if env.label_colour else None,
+        notes=[[int(t), text] for t, text in writer.written],
+    )
 
 
 def _ending(info):
@@ -299,6 +329,9 @@ def main():
     )
     args = ap.parse_args()
     assert TASKS[args.task].get("named") != "heldout", f"{args.task}: held-out phrasings are for evaluation only"
+    assert TASKS[args.task].get("reason", ("", ""))[1] != "heldout", (
+        f"{args.task}: held-out tasks are for evaluation only"
+    )
     num_objects = TASKS[args.task]["num_objects"]
     assert 1 <= args.targets_per_layout <= num_objects, f"{args.task} has {num_objects} objects per layout"
     per_layout = args.targets_per_layout
@@ -354,7 +387,10 @@ def main():
     tasks, episodes, index = {}, [], 0
     for ep_idx, r in enumerate(kept):
         task_idx = tasks.setdefault(r["instruction"], len(tasks))
-        table = pq.read_table(r["path"], columns=[*CAMERAS, "state", "action"])  # without an included one's bookkeeping
+        columns = [*CAMERAS, "state", "action"]  # without an included one's bookkeeping
+        if "note" in pq.read_schema(r["path"]).names:
+            columns += NOTE_COLUMNS
+        table = pq.read_table(r["path"], columns=columns)
         n = table.num_rows
         table = table.append_column("timestamp", pa.array(np.arange(n, dtype=np.float32) / CONTROL_HZ))
         table = table.append_column("frame_index", pa.array(np.arange(n, dtype=np.int64)))
@@ -372,6 +408,11 @@ def main():
                 replans=r["replans"],
                 tracks=r["tracks"],
                 **{k: r[k] for k in ("takeover_step", "cut_at_handover", "preamble_steps", "named") if k in r},
+                **{
+                    k: r[k]
+                    for k in ("kind", "phrasing", "shoots", "targets", "label", "label_hidden_at_reach", "notes")
+                    if k in r
+                },
                 **({"source": r.get("source", out.name)} if args.include else {}),
             )
         )

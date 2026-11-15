@@ -11,6 +11,9 @@ Tasks
                the main stem without damaging the flower or the stem (see TASKS)
   prune_named / prune_named_heldout  the same plant; cut only the shoot the instruction names (lowest / middle /
                highest), in training phrasings or in phrasings never used for training (phrasings.py)
+  reason_<kind> / reason_<kind>_heldout / reason_mix / reason_mix_heldout  the same plant; the shoots to cut follow
+               from the instruction and what is seen (ordinal, conditional, exclusion) or was seen (hidden: a card in
+               the pot names the shoot); see reasoning.py
 """
 
 import os
@@ -21,7 +24,7 @@ os.environ.setdefault("MUJOCO_GL", "egl")
 import mujoco  # noqa: E402
 import numpy as np  # noqa: E402
 
-from . import phrasings  # noqa: E402
+from . import phrasings, reasoning  # noqa: E402
 
 ASSETS = Path(__file__).resolve().parent / "assets"
 PANDA_XML = ASSETS / "third_party" / "mujoco_menagerie" / "franka_emika_panda" / "panda.xml"
@@ -171,6 +174,17 @@ TASKS = {
     "prune_named": dict(plant=True, shoots=(2, 3), num_objects=3, max_steps=450, named="train"),
     "prune_named_heldout": dict(plant=True, shoots=(2, 3), num_objects=3, max_steps=450, named="heldout"),
 }
+# Reasoning tasks (reasoning.py): the plant of `prune` for the same seed (2-3 shoots at any angles), and an instruction
+# whose shoots follow from what is seen (ordinal, conditional, exclusion) or was seen (hidden: a card in the pot, which
+# may face away, names the shoot). Cut exactly the shoots meant, in any order; cutting another ends the episode as a
+# failure (wrong_object), as does damage. The episode limit is the kind's (reasoning.MAX_STEPS). reason_mix draws the
+# kind per episode (the training data); the _heldout tasks draw held-out instructions. Every reasoning task builds the
+# card into the model and parks it out of sight unless the kind is hidden, so all of them render alike.
+for _kind in (*reasoning.KINDS, "mix"):
+    for _split in ("train", "heldout"):
+        TASKS[f"reason_{_kind}" + ("_heldout" if _split == "heldout" else "")] = dict(
+            plant=True, shoots=(2, 3), num_objects=3, reason=(_kind, _split), label=True
+        )
 MAX_LEAVES = 4
 LEAF_HALF = (0.035, 0.0015, 0.065)  # metres: a plate 7 cm wide and 13 cm tall
 LEAF_RGBA = (0.22, 0.52, 0.16, 1)
@@ -218,6 +232,13 @@ BUTTON_TRAVEL = 0.006  # metres a button can be pushed down
 PRESS_TRAVEL = 0.003  # metres of travel that switch the motor on
 TURN_SPEED = 0.7  # rad/s of the plate while a button is held down
 MAX_SHOOTS = 3
+# The card of the hidden kind: stuck upright in the soil near the pot's rim, facing out, coloured on its face and
+# brown on its back (reasoning.LABEL_MEANS). Plant frame: the pot's bottom centre.
+LABEL_RADIUS, LABEL_Z = 0.0365, 0.088  # its centre: distance from the stem's axis, height (the soil is at 0.0685)
+LABEL_HALF = (0.0015, 0.019, 0.016)  # thickness, width, height (half sizes): 38 x 32 mm
+LABEL_RGBA = {"white": (0.95, 0.95, 0.93, 1), "yellow": (0.96, 0.84, 0.10, 1), "cyan": (0.15, 0.78, 0.90, 1)}
+LABEL_BACK = (0.40, 0.30, 0.20, 1)
+LABEL_VIEW = np.radians(50)  # the card can be read while it faces within this of the front camera, seen from above
 SHOOT_R = 0.003
 SHOOT_SPLIT = 0.015  # where a shoot's stub (on the plant) meets its outer part until a cut, from the stem's axis
 CUT_ZONE = (0.02, 0.05)  # a shoot is cut where the jaws hold it, this far out along it from the stem's axis
@@ -337,10 +358,12 @@ def _look(body, name, rgba, mesh=None, gtype="mesh", size=(0, 0, 0), pos=(0, 0, 
     )
 
 
-def _add_plant(spec):
+def _add_plant(spec, label=False):
     """The plant stand (fixed housing with two spring-loaded push buttons, a plate on a motorised hinge), the potted
     plant on the plate, and MAX_SHOOTS side shoots. Each shoot is a stub on the plant and an outer part (a free body
-    welded to the plant, not colliding with it while attached). Shoot geometry is set per episode (env.reset)."""
+    welded to the plant, not colliding with it while attached). Shoot geometry is set per episode (env.reset).
+    `label`: also the card of the reasoning tasks, on the plant (placed per episode, parked inside the pot when
+    unused)."""
     wb = spec.worldbody
     stand = wb.add_body(name="stand", pos=[STAND_XY[0], STAND_XY[1], 0])  # static: welded to the table
     _look(stand, "stand_vis", HOUSING, "plant_stand_base")
@@ -397,6 +420,12 @@ def _add_plant(spec):
         _look(plant, f"flower_{part}", rgba, f"plant_flower_{part}", pos=(0, 0, top))
     tilt = _rot("y", np.radians(15))  # the head leans 15 degrees toward the plant's +x
     _solid(plant, "flower_col", "cylinder", (0.034, 0.011), [0, 0, top] + tilt @ [0, 0, 0.011], _quat(tilt))
+    if label:
+        _solid(plant, "label_col", "box", LABEL_HALF, density=800)
+        _look(plant, "label_face", LABEL_RGBA["white"], gtype="box", size=(0.0006, LABEL_HALF[1], LABEL_HALF[2]))
+        _look(
+            plant, "label_back", LABEL_BACK, gtype="box", size=(0.0006, LABEL_HALF[1] + 0.0004, LABEL_HALF[2] + 0.0004)
+        )
     for k in range(MAX_SHOOTS):
         _solid(plant, f"stub{k}_col", "capsule", (SHOOT_R, 0.005))
         _look(plant, f"stub{k}_vis", STEM_GREEN, gtype="capsule", size=(SHOOT_R, 0.005))
@@ -422,9 +451,10 @@ def _add_plant(spec):
         exclude.bodyname1, exclude.bodyname2 = "stand", other
 
 
-def build_model(cut_stems: bool = False, plant: bool = False) -> mujoco.MjModel:
+def build_model(cut_stems: bool = False, plant: bool = False, label: bool = False) -> mujoco.MjModel:
     """`cut_stems`: build each flower as a base and a top part held together by a weld that a cut releases.
-    `plant`: add the plant stand and the potted plant of the pruning tasks."""
+    `plant`: add the plant stand and the potted plant of the pruning tasks. `label`: with `plant`, also the card of
+    the reasoning tasks."""
     spec = mujoco.MjSpec.from_file(str(PANDA_XML))
     spec.option.timestep = TIMESTEP
     spec.option.impratio = 10
@@ -575,7 +605,7 @@ def build_model(cut_stems: bool = False, plant: bool = False) -> mujoco.MjModel:
                 density=0,
             )
     if plant:
-        _add_plant(spec)
+        _add_plant(spec, label=label)
     return spec.compile()
 
 
@@ -590,12 +620,20 @@ class PickupEnv:
         self.task = task
         self.image_size = image_size
         self.max_steps = max_steps if max_steps is not None else TASKS[task].get("max_steps", 200)
+        self._max_steps_given = max_steps  # reasoning tasks: else the episode limit is set per episode, by kind
         self.cut_task = bool(TASKS[task].get("cut"))
         self.plant_task = bool(TASKS[task].get("plant"))
         self.named = TASKS[task].get("named")  # named shoots: the phrasing set ("train" or "heldout"), else None
         self.target_label = ""  # named shoots: "lowest", "middle" or "highest"
         self.phrasing_kind = ""  # named shoots: "train", or the kind of held-out phrasing (phrasings.KINDS)
-        self.model = build_model(cut_stems=self.cut_task, plant=self.plant_task)
+        # reasoning tasks: (kind, split) from TASKS; this episode's reasoning.Task, kind, and shoots to cut
+        self.reason = TASKS[task].get("reason")
+        self.reason_task: reasoning.Task | None = None
+        self.reason_kind = ""
+        self.targets: list[str] = []
+        self.label_colour: str | None = None  # hidden kind: the card's colour; None when there is no card
+        self.label_azimuth = 0.0  # the direction the card faces, in the plant's frame (radians)
+        self.model = build_model(cut_stems=self.cut_task, plant=self.plant_task, label=bool(TASKS[task].get("label")))
         self.data = mujoco.MjData(self.model)
         self.renderer = mujoco.Renderer(self.model, image_size, image_size)
         self.tcp_id = self.model.site("tcp").id
@@ -660,6 +698,8 @@ class PickupEnv:
             self._reset_plant(rng)
             if self.named:
                 self._name_shoot(seed, target_index)
+            elif self.reason:
+                self._set_reason(seed)
         else:
             self.active = list(rng.choice(cfg["pool"], size=cfg["num_objects"], replace=False))
             self.target = str(rng.choice(self.active))  # always drawn, so the layout does not depend on target_index
@@ -706,9 +746,11 @@ class PickupEnv:
         action = np.asarray(action, dtype=np.float64)
         self.data.ctrl[:7] = np.clip(action[:7], self.ctrl_lo, self.ctrl_hi)
         self.data.ctrl[7] = 255.0 * float(np.clip(action[7], 0.0, 1.0))
-        # pruning: the next shoot is named once the step after a cut begins (named shoots: the named one stays named)
+        # pruning: the next shoot is named once the step after a cut begins (named shoots: the named one stays named;
+        # reasoning tasks: the next shoot of those to cut)
         if self.plant_task and not self.named and self.target in self.cut:
-            self.target = next((n for n in self.active if n not in self.cut), self.target)
+            pool = self.targets if self.reason else self.active
+            self.target = next((n for n in pool if n not in self.cut), self.target)
         for _ in range(SUBSTEPS):
             if self.plant_task:
                 self._drive_turntable()
@@ -889,6 +931,10 @@ class PickupEnv:
             n: [(m.geom(f"{n}_leaf{j}").id, m.geom(f"{n}_leaf{j}_col").id) for j in range(2)] for n in self.shoot_names
         }
         self.shoot_weld = {n: m.equality(f"{n}_weld").id for n in self.shoot_names}
+        # the card of the reasoning tasks (only in models built with it): collision box, coloured face, brown back
+        self.label_geoms = [m.geom(f"label_{p}").id for p in ("col", "face", "back")] if self.reason else []
+        if self.label_geoms:
+            m.geom_sameframe[self.label_geoms] = 0
         # Geoms moved per episode: the compiler marks a geom placed at its body's frame as "same frame" and the
         # kinematics then ignores its geom_pos; likewise a body's inertial frame. Clear those marks.
         for n in self.shoot_names:
@@ -983,6 +1029,70 @@ class PickupEnv:
         self.target = self.active[index]
         self.target_label = phrasings.position_name(index, count)
         self.instruction, self.phrasing_kind = phrasings.sample(self.target_label, self.named, rng)
+
+    def _set_reason(self, seed):
+        """Reasoning tasks: the kind (reason_mix: drawn), the instruction, the shoots to cut and, for the hidden kind,
+        the card's colour and the way it faces. Drawn from a stream of their own, so that the plant is the one `prune`
+        draws for `seed`."""
+        rng = np.random.default_rng([seed, 31])
+        kind, split = self.reason
+        if kind == "mix":
+            kind = reasoning.KINDS[int(rng.integers(len(reasoning.KINDS)))]
+        task = reasoning.draw(kind, split, len(self.active), self.flower_colour, rng)  # self.active: lowest first
+        self.reason_task, self.reason_kind = task, kind
+        self.targets = [self.active[i] for i in task.targets]
+        self.target = self.targets[0]
+        self.target_label = ",".join(task.target_positions)
+        self.instruction, self.phrasing_kind = task.instruction, task.phrasing
+        self.label_colour = task.params.get("label")
+        self.label_azimuth = float(rng.uniform(-np.pi, np.pi)) if self.label_colour else 0.0
+        self._place_label()
+        if self._max_steps_given is None:
+            self.max_steps = reasoning.MAX_STEPS[kind]
+
+    def _place_label(self):
+        """The card, facing `label_azimuth` (plant frame), or parked inside the pot (hidden, not colliding)."""
+        m = self.model
+        col, face, back = self.label_geoms
+        if self.label_colour is None:
+            for g in self.label_geoms:
+                m.geom_pos[g], m.geom_quat[g] = [0.0, 0.0, 0.02], [1, 0, 0, 0]
+            m.geom_group[[face, back]] = 3
+            m.geom_contype[col] = m.geom_conaffinity[col] = 0
+            return
+        a = self.label_azimuth
+        out, q = np.array([np.cos(a), np.sin(a), 0.0]), _quat(_rot("z", a))
+        for g, r in ((col, LABEL_RADIUS), (face, LABEL_RADIUS + 0.0009), (back, LABEL_RADIUS - 0.0009)):
+            m.geom_pos[g], m.geom_quat[g] = out * r + [0, 0, LABEL_Z], q
+        m.geom_rgba[face] = LABEL_RGBA[self.label_colour]
+        m.geom_group[[face, back]] = 2
+        m.geom_contype[col], m.geom_conaffinity[col] = 1, 3
+
+    def camera_azimuth(self):
+        """Direction from the plant's axis to the front camera, seen from above (radians)."""
+        base = self.data.xpos[self.stand_body]
+        return float(np.arctan2(FRONT_CAMERA_XY[1] - base[1], FRONT_CAMERA_XY[0] - base[0]))
+
+    def label_turn_needed(self):
+        """Hidden kind: the turn of the plate (radians, + counter-clockwise) that turns the card to the front camera."""
+        return float(_wrap_angle(self.camera_azimuth() - (self.label_azimuth + self.plate_angle())))
+
+    def label_visible(self):
+        """Hidden kind: the card faces within LABEL_VIEW of the front camera (False when there is no card)."""
+        return self.label_colour is not None and abs(self.label_turn_needed()) < LABEL_VIEW
+
+    def label_hidden_at_reach(self, name=None):
+        """Hidden kind: would the card be out of view once shoot `name` (default: the first to cut) points at the
+        robot? Turning the plant to read the card and then to bring the shoot round leaves the card where this says;
+        when it is out of view a policy that does not remember what it read has nothing to go on."""
+        if self.label_colour is None:
+            return False
+        name = name or self.targets[0]
+        turn = _wrap_angle(REACH_AZIMUTH - self.shoot_azimuth(name))
+        return abs(_wrap_angle(self.label_turn_needed() - turn)) >= LABEL_VIEW
+
+    def plate_speed(self):
+        return float(self.data.qvel[self.plate_vadr])
 
     def _place_shoots(self):
         """Outer parts on their stubs (welded, at rest), at the plant's pose for this episode."""
@@ -1151,6 +1261,19 @@ class PickupEnv:
         self.stem_hold = self.stem_hold + 1 if stem_held else 0
         if self.stem_hold >= CUT_STEPS and self.damaged is None:
             self.damaged = "main stem cut"
+        if self.reason:  # cut exactly the shoots meant, in any order; any other cut ends the episode (wrong_object)
+            wrong = sorted(n for n in self.cut if n not in self.targets)
+            success = self.damaged is None and all(n in self.cut for n in self.targets) and not wrong
+            done = success or bool(wrong) or self.damaged is not None or self.steps >= self.max_steps
+            info = dict(
+                success=success,
+                lifted=held + (["stem"] if stem_held else []),
+                wrong_object=bool(wrong),
+                cut=sorted(self.cut),
+                damaged=self.damaged,
+                wrong_shoots=wrong,
+            )
+            return self.get_obs(), done, info
         if self.named:  # only the named shoot may be cut; any other cut ends the episode (wrong_object)
             wrong = sorted(n for n in self.cut if n != self.target)
             success = self.damaged is None and self.target in self.cut and not wrong

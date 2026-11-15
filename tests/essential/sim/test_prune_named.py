@@ -131,9 +131,9 @@ def _run(env, expert, steer=None):
 
 
 def test_the_expert_cuts_only_the_named_shoot():
+    env = _env("prune_named")
     from sim.pickup.expert import ScriptedExpert
 
-    env = _env("prune_named")
     try:
         three = next(s for s in range(1_000_000, 1_000_100) if env.reset(seed=s) is not None and len(env.active) == 3)
         cases = [(seed, None) for seed in SEEDS] + [(three, k) for k in range(3)]
@@ -160,9 +160,9 @@ def test_the_expert_cuts_only_the_named_shoot():
 
 
 def test_cutting_another_shoot_ends_the_episode_as_a_failure():
+    env = _env("prune_named")
     from sim.pickup.expert import ScriptedExpert
 
-    env = _env("prune_named")
     try:
         env.reset(seed=SEEDS[0])
         named, wrong = env.target, next(n for n in env.active if n != env.target)
