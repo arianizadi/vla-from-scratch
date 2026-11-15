@@ -14,6 +14,8 @@ Tasks
   reason_<kind> / reason_<kind>_heldout / reason_mix / reason_mix_heldout  the same plant; the shoots to cut follow
                from the instruction and what is seen (ordinal, conditional, exclusion) or was seen (hidden: a card in
                the pot names the shoot); see reasoning.py
+
+Scenarios (scenarios.py) change the world or the task on top of any of these: PickupEnv("prune", scenario="wind").
 """
 
 import os
@@ -451,10 +453,10 @@ def _add_plant(spec, label=False):
         exclude.bodyname1, exclude.bodyname2 = "stand", other
 
 
-def build_model(cut_stems: bool = False, plant: bool = False, label: bool = False) -> mujoco.MjModel:
+def build_model(cut_stems: bool = False, plant: bool = False, label: bool = False, scenarios=()) -> mujoco.MjModel:
     """`cut_stems`: build each flower as a base and a top part held together by a weld that a cut releases.
     `plant`: add the plant stand and the potted plant of the pruning tasks. `label`: with `plant`, also the card of
-    the reasoning tasks."""
+    the reasoning tasks. `scenarios`: scenarios.Scenario instances whose build() changes the model."""
     spec = mujoco.MjSpec.from_file(str(PANDA_XML))
     spec.option.timestep = TIMESTEP
     spec.option.impratio = 10
@@ -606,6 +608,8 @@ def build_model(cut_stems: bool = False, plant: bool = False, label: bool = Fals
             )
     if plant:
         _add_plant(spec, label=label)
+    for scenario in scenarios:
+        scenario.build(spec)
     return spec.compile()
 
 
@@ -614,8 +618,9 @@ class PickupEnv:
     state_dim = 8
     action_dim = 8
 
-    def __init__(self, task: str = "pick_cube", image_size: int = 224, max_steps: int | None = None):
-        """`max_steps`: episode length limit; by default the task's own (200 unless TASKS says otherwise)."""
+    def __init__(self, task: str = "pick_cube", image_size: int = 224, max_steps: int | None = None, scenario=None):
+        """`max_steps`: episode length limit; by default the task's own (200 unless TASKS says otherwise).
+        `scenario`: test situations applied on top of the task (scenarios.py), e.g. "wind" or "lighting:dusk,bump"."""
         assert task in TASKS, f"unknown task {task}; choose from {list(TASKS)}"
         self.task = task
         self.image_size = image_size
@@ -633,7 +638,22 @@ class PickupEnv:
         self.targets: list[str] = []
         self.label_colour: str | None = None  # hidden kind: the card's colour; None when there is no card
         self.label_azimuth = 0.0  # the direction the card faces, in the plant's frame (radians)
-        self.model = build_model(cut_stems=self.cut_task, plant=self.plant_task, label=bool(TASKS[task].get("label")))
+        # scenarios: the instances in use; what each drew this episode; markers for the expert ("sticky", "home",
+        # "ordered"), set per episode; things that happened during the last step ("bumped")
+        self.scenarios = []
+        if scenario:
+            from . import scenarios as scenario_lib  # imported here: it imports this module
+
+            self.scenarios = scenario_lib.parse(scenario)
+        self.scenario_info: dict[str, dict] = {}
+        self.flags: set[str] = set()
+        self.events: set[str] = set()
+        self.model = build_model(
+            cut_stems=self.cut_task,
+            plant=self.plant_task,
+            label=bool(TASKS[task].get("label")),
+            scenarios=self.scenarios,
+        )
         self.data = mujoco.MjData(self.model)
         self.renderer = mujoco.Renderer(self.model, image_size, image_size)
         self.tcp_id = self.model.site("tcp").id
@@ -678,6 +698,11 @@ class PickupEnv:
         self.target: str = ""
         self.instruction: str = ""
         self.rest_z: dict[str, float] = {}
+        self._max_steps_base = self.max_steps
+        for s in self.scenarios:
+            s.check(self)
+            s.init(self)
+            s.restore(self)
 
     # ------------------------------------------------------------------ reset
     def reset(self, seed: int, target_index: int | None = None):
@@ -732,6 +757,8 @@ class PickupEnv:
             self.cut, self.hold_counts = set(), {}
         if self.plant_task:
             self._place_shoots()
+        if self.scenarios:
+            self._reset_scenarios(seed)
         mujoco.mj_forward(m, d)
         for _ in range(100):  # let objects settle
             mujoco.mj_step(m, d)
@@ -748,19 +775,31 @@ class PickupEnv:
         self.data.ctrl[7] = 255.0 * float(np.clip(action[7], 0.0, 1.0))
         # pruning: the next shoot is named once the step after a cut begins (named shoots: the named one stays named;
         # reasoning tasks: the next shoot of those to cut)
+        # (a scenario that gives an order sets self.targets on a pruning task as well)
         if self.plant_task and not self.named and self.target in self.cut:
-            pool = self.targets if self.reason else self.active
+            pool = self.targets if self.targets else self.active
             self.target = next((n for n in pool if n not in self.cut), self.target)
+        if self.scenarios:
+            self.events = set()
+            self._scenario_call("before_step", action)
         for _ in range(SUBSTEPS):
             if self.plant_task:
                 self._drive_turntable()
+            if self.scenarios:
+                self._scenario_call("substep")
             mujoco.mj_step(self.model, self.data)
             if self.plant_task:
                 self._check_damage()
         self.last_action = np.concatenate([self.data.ctrl[:7], [self.data.ctrl[7] / 255.0]]).astype(np.float32)
         self.steps += 1
+        if self.scenarios:
+            self._scenario_call("after_step")
         if self.plant_task:
-            return self._plant_result()
+            obs, done, info = self._plant_result()
+            for s in self.scenarios:
+                if s.applied:
+                    done, info = s.result(self, done, info)
+            return obs, done, info
 
         if OBJECTS[self.target].get("grasp") == "side":
             # A stem counts as taken while env.holds_stem holds; success needs HOLD_STEPS steps in a row.
@@ -788,6 +827,20 @@ class PickupEnv:
         done = success or self.steps >= self.max_steps
         info = dict(success=success, lifted=lifted, wrong_object=bool(lifted) and not target_up)
         return self.get_obs(), done, info
+
+    # -------------------------------------------------------------- scenarios
+    def _reset_scenarios(self, seed):
+        """Undo the last episode's scenario changes, then let each scenario draw this episode's variation."""
+        self.flags, self.events = set(), set()
+        if not self.reason:  # reasoning tasks set both per episode themselves
+            self.targets = []
+            self.max_steps = self._max_steps_base
+        self.scenario_info = {s.name: s.reset(self, seed) for s in self.scenarios}
+
+    def _scenario_call(self, hook, *args):
+        for s in self.scenarios:
+            if s.applied:
+                getattr(s, hook)(self, *args)
 
     # ---------------------------------------------------------------- queries
     def holds_stem(self, name):
@@ -1324,6 +1377,9 @@ class PickupEnv:
 
     def get_obs(self):
         obs = {cam: self.render(cam) for cam in self.camera_names}
+        for s in self.scenarios:
+            if s.applied:
+                obs = {cam: s.image(self, cam, img) for cam, img in obs.items()}
         obs["state"] = self.state()
         return obs
 

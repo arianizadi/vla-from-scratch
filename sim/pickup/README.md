@@ -68,6 +68,7 @@ sim/pickup/
   eval.py            closed-loop evaluation client; also runs the scripted expert (--expert)
   diagnostics.py     where the gripper was, relative to the objects, when it first closed
   disturb.py         move the named object during an episode (robustness tests, recovery demonstrations)
+  scenarios.py       test situations on top of a task (--scenario): lighting, a knocked camera, wind, bumps, ...
   grasp_tolerance.py grasp success against a controlled placement error, per object
   open_loop_check.py compare predicted chunks with expert actions on recorded samples
   caption_data.py    captioned scene renders for vision-language pretraining
@@ -210,6 +211,7 @@ arguments through) can change one thing about the episode and measure again:
 | `--noise episode` | Start every chunk of an episode from the same noise |
 | `--exec_horizon`, `--flow_steps` | Actions executed per predicted chunk; sampling steps |
 | `--traces N` | Save the first N rollouts as JSON (joint angles, gripper and object poses per control step) for replays and plots |
+| `--scenario S` | Test situations on top of the task (`scenarios.py`, catalogue in `tutorial/test-situations.md`): `lighting`, `camera`, `wind`, `bump`, `sticky`, `bench`, `distractors` change the world; `nothing_to_do`, `order`, `ties`, `sick`, `buds` change the task. Comma-separated `name[:mode][@p]`; same seeds, same layouts as without it; results count the outcomes by variation |
 
 `--expert --expert_reactive` runs the scripted expert that plans again when the object has moved or
 its fingers closed on nothing: the reference for the two disturbances. The results file records the
@@ -237,6 +239,7 @@ field notes). The options change what the data can teach:
 | `--random_start` | Every episode starts from a random gripper pose above the table, so the arm's own position no longer gives the goal away |
 | `--hold_steps 1` | Every episode begins with a frame of the robot at rest, for policies that are given their previous action (the first training window then holds what serving will provide) |
 | `--policy_ports ...` | Takeover demonstrations (DAgger-style): a trained policy drives the first K steps of each episode (K drawn from `--takeover_steps`), then the expert takes over from wherever the arm is and finishes; only the expert's part is kept, so the data starts from states the policy really reaches. `make_takeover_dataset.sh <run> <task> <episodes> <name>` starts the policy servers |
+| `--scenario S` | Demonstrations in a test situation (as for `eval.py`; `@p` mixes it into that share of the episodes, e.g. `nothing_to_do@0.2`); each episode records what was drawn |
 | `--include <dataset>` | The episodes of an earlier dataset come first, unchanged, so that old and new demonstrations are preprocessed together under one set of normalisation statistics |
 
 What each gave here, on 4000 episodes and 5M samples (final checkpoint, lab notebook):

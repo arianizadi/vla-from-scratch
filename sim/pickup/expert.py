@@ -8,7 +8,7 @@ same 8-D joint-target space the policy is trained on.
 import mujoco
 import numpy as np
 
-from .env import BUTTONS, HOME_Q, OBJECTS, REACH_AZIMUTH, STEM_H, PickupEnv
+from .env import BUTTONS, HOME_Q, OBJECTS, PRESS_TRAVEL, REACH_AZIMUTH, STEM_H, PickupEnv
 
 
 def _wrap(a, period):
@@ -67,6 +67,9 @@ LANE_BACK = 0.20  # metres toward the robot from the stand's axis: the line the 
 # Taking over (take_over): a gripper this close to the main stem's axis, below the top of the flower plus this margin,
 # is among the shoots; it backs out along its own axis, at most this far, before anything else
 AMONG_SHOOTS, ABOVE_FLOWER, BACK_OUT = 0.17, 0.06, 0.15  # metres
+# Scenarios (scenarios.py) the expert reacts to. A sticky button: pressed down this many control steps with the plate
+# turning slower than this (rad/s) means the press did nothing; let go and press again.
+STALL_STEPS, STALL_SPEED = 10, 0.05
 # Points on the open fingers, the hand and the last link (tcp frame): the clearance of an approach path.
 HAND_POINTS = np.array(
     [[x, y, z] for x in (-0.01, 0.01) for y in (-0.045, 0.045) for z in (-0.045, 0.01)]
@@ -105,6 +108,7 @@ class ScriptedExpert:
         # leaves of a shoot that the plate is turning toward the robot.
         c, s = np.cos(PRESS_TILT), np.sin(PRESS_TILT)
         self.R_press = np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]]).T @ self.R_down  # about y, by -PRESS_TILT
+        self.home_pos = self.ik_data.site_xpos[env.tcp_id].copy()  # the gripper's centre at the home pose
 
     # --------------------------------------------------------------------- IK
     def solve_ik(self, q_init, pos, yaw_offset, iters=30, damping=0.05, R_des=None):
@@ -187,6 +191,13 @@ class ScriptedExpert:
                     (inside, PRUNE_OPEN, 0.3, 100, self.R_down, lambda: np.linalg.norm(env.tcp_pos() - inside) < 0.02)
                 ]
                 self.wp, self.dwell, self.preamble = 0, 0, True
+
+    def replan(self):
+        """Plan again from the arm as it is now (after the scene changed under the plan, e.g. the plate was turned by
+        hand: scenario 'bump'), keeping what has been learned (the card read)."""
+        read = self.label_read
+        self.take_over()
+        self.label_read = read
 
     def _among_shoots(self):
         """Is the gripper among the shoots: near the main stem's axis, below the top of the flower (plus a margin)?"""
@@ -332,15 +343,24 @@ class ScriptedExpert:
         speed = self.rng.uniform(0.8, 1.2)
         R_now = self.des_R if self.des_R is not None else _rotz(self.des_yaw) @ self.R_home
         remaining = [n for n in env.active if n not in env.cut]
-        if env.named:  # named shoots: only the named one is cut, the others are left on the plant
+        if "ordered" in env.flags:  # scenario 'order': the first shoot of the order not yet cut
+            remaining = [n for n in env.targets if n not in env.cut][:1]
+        elif env.named:  # named shoots: only the named one is cut, the others are left on the plant
             remaining = [n for n in remaining if n == env.target]
-        elif env.reason:  # reasoning tasks: the shoots meant, the others are left on the plant
+        elif env.reason or "targets" in env.flags:  # reasoning tasks, scenarios that pick shoots: the shoots meant
             remaining = [n for n in remaining if n in env.targets]
         self.wp, self.dwell, self.preamble = 0, 0, False
+        lane_x = env.data.xpos[env.stand_body][0] - LANE_BACK
+        if not remaining and "home" in env.flags:  # scenario 'nothing_to_do': back to the home pose
+            self.waypoints = [(self.home_pos.copy(), 1.0, 0.30 * speed, 10**6, self.R_home)]
+            stem = env.stem_axis()[0]
+            if np.linalg.norm(self.des_pos[:2] - stem[:2]) < 0.15:  # over the plant: back toward the robot first
+                lane = np.array([min(lane_x, self.des_pos[0]), self.des_pos[1], max(self.des_pos[2], 0.25)])
+                self.waypoints.insert(0, (lane, 1.0, 0.30 * speed, 0, R_now))
+            return
         if not remaining:
             self.waypoints = [(self.des_pos.copy(), 1.0, 0.0, 10**6, R_now)]
             return
-        lane_x = env.data.xpos[env.stand_body][0] - LANE_BACK
         card = env.reason and env.label_colour is not None
         if card and not self.label_read and env.label_visible():
             self.label_read = True  # hidden kind: the card faces the front camera, read it
@@ -422,9 +442,28 @@ class ScriptedExpert:
         press = top - tip + [0, 0, -PRESS_DEPTH - lowest + tip[2]]
         press[:2] = top[:2] - tip[:2]
         above = press + [0, 0, 0.09]
+        until = faced
+        if "sticky" in env.flags:  # scenario 'sticky': a press that does not turn the plate is let go and repeated
+            stall = [0]
+
+            def until(faced=faced, button=button, stall=stall):
+                if faced():
+                    return True
+                stuck = env.button_travel(button) > PRESS_TRAVEL and abs(env.plate_speed()) < STALL_SPEED
+                stall[0] = stall[0] + 1 if stuck else 0
+                if stall[0] < STALL_STEPS:
+                    return False
+                stall[0] = 0
+                again = [
+                    (above, 0.0, 0.20 * speed, 0, self.R_press),
+                    (press, 0.0, 0.08 * speed, 300, self.R_press, until),
+                ]
+                self.waypoints[self.wp + 1 : self.wp + 1] = again  # lift, then press again
+                return True
+
         return [
             (above, 0.0, 0.40 * speed, 0, self.R_press),
-            (press, 0.0, 0.08 * speed, 300, self.R_press, faced),
+            (press, 0.0, 0.08 * speed, 300, self.R_press, until),
             (above, 0.0, 0.30 * speed, 0, self.R_press),
             # back toward the robot before anything else: the shoot now faces the arm, leaves and all
             (np.array([lane_x - 0.03, above[1], 0.20]), 0.0, 0.30 * speed, 0, self.R_down),
@@ -451,6 +490,8 @@ class ScriptedExpert:
 
     def act(self):
         env = self.env
+        if env.plant_task and "bumped" in env.events:  # scenario 'bump': the plate was turned under the plan
+            self.replan()
         if self.reactive and not env.plant_task and self._needs_new_plan():
             if self._track():
                 self.tracks += 1

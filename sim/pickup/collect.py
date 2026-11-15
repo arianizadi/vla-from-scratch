@@ -96,9 +96,10 @@ def _worker(args):
         drift_cm_s,
         side,
         tail_steps,
+        scenario,
         takeover,
     ) = args  # takeover: None, or this worker's policy server and the range the handover step K is drawn from
-    env = PickupEnv(task)
+    env = PickupEnv(task, scenario=scenario)
     expert = ScriptedExpert(env, seed=worker_id, reactive=disturb_prob > 0 or drift_prob > 0, side=side)
     writer = NoteWriter(env) if env.reason else None
     budget = env.max_steps
@@ -188,6 +189,7 @@ def _worker(args):
                 tracks=expert.tracks,
                 **handover,
                 **({"named": env.target_label} if env.named else {}),  # named shoots: lowest / middle / highest
+                **({"scenario": env.scenario_info} if env.scenarios else {}),  # what each scenario drew
                 **(_reason_record(env, writer) if writer is not None else {}),
             )
         )
@@ -320,6 +322,12 @@ def main():
     ap.add_argument("--exec_horizon", type=int, default=8, help="with --policy_ports: actions executed per chunk")
     ap.add_argument("--flow_steps", type=int, default=10, help="with --policy_ports: sampler steps per chunk")
     ap.add_argument(
+        "--scenario",
+        default=None,
+        help="test situations on top of the task (scenarios.py), comma-separated name[:mode][@p]; each episode "
+        "records what they drew (meta/episodes.jsonl)",
+    )
+    ap.add_argument(
         "--include",
         nargs="+",
         default=[],
@@ -332,6 +340,7 @@ def main():
     assert TASKS[args.task].get("reason", ("", ""))[1] != "heldout", (
         f"{args.task}: held-out tasks are for evaluation only"
     )
+    assert "order_heldout" not in (args.scenario or ""), "order_heldout is for evaluation only"
     num_objects = TASKS[args.task]["num_objects"]
     assert 1 <= args.targets_per_layout <= num_objects, f"{args.task} has {num_objects} objects per layout"
     per_layout = args.targets_per_layout
@@ -370,6 +379,7 @@ def main():
                 args.drift_cm_s,
                 args.expert_side,
                 args.tail_steps,
+                args.scenario,
             )
             chunks = [
                 (args.task, jobs[i :: args.workers], str(out), i, *extra, _takeover(args, i))
@@ -407,7 +417,11 @@ def main():
                 disturbed=r["disturbed"],
                 replans=r["replans"],
                 tracks=r["tracks"],
-                **{k: r[k] for k in ("takeover_step", "cut_at_handover", "preamble_steps", "named") if k in r},
+                **{
+                    k: r[k]
+                    for k in ("takeover_step", "cut_at_handover", "preamble_steps", "named", "scenario")
+                    if k in r
+                },
                 **{
                     k: r[k]
                     for k in ("kind", "phrasing", "shoots", "targets", "label", "label_hidden_at_reach", "notes")
@@ -445,6 +459,7 @@ def main():
         drifting_episodes=sum(r["disturbed"] == "drift" for r in kept[len(included) :]),
         expert_side=args.expert_side,
         tail_steps=args.tail_steps,
+        **({"scenario": args.scenario} if args.scenario else {}),
         takeover=_takeover_summary(args, servers, attempted, kept[len(included) :], endings),
         included=[
             dict(dataset=Path(p).name, episodes=sum(e["source"] == Path(p).name for e in included))

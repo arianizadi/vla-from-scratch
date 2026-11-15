@@ -19,6 +19,10 @@ The swap modes are the test that the text matters: if the policy cuts the shoot 
 instruction means, it acts on the text. With --expert and --reasoner_port, the expert drives and the reasoner's notes
 are compared with the correct ones at every chunk; --reason_check does the same with the served policy as the
 reasoner (to evaluate a reasoner's checkpoints with eval.sh / eval_checkpoints.sh).
+
+--scenario applies test situations (scenarios.py: lighting, camera, wind, bump, sticky, nothing_to_do, order, ...) on
+top of the task; each episode records what its scenarios drew, and results.json counts the outcomes by variation.
+Episodes of the same seeds with and without a scenario have the same layouts.
 """
 
 import argparse
@@ -303,6 +307,28 @@ def _reason_summary(episodes):
     )
 
 
+def _scenario_summary(env, episodes):
+    """Scenarios: success, damage, a wrong shoot (or a wrong order) and running out of time, overall and by the mode
+    each scenario drew (or 'not applied')."""
+
+    def counts(eps):
+        return dict(
+            episodes=len(eps),
+            successes=sum(e["success"] for e in eps),
+            damaged=sum(e["damaged"] is not None for e in eps),
+            wrong=sum(e["wrong_object"] and e["damaged"] is None for e in eps),
+            timeout=sum(not e["success"] and not e["wrong_object"] and e["damaged"] is None for e in eps),
+        )
+
+    by_mode = {}
+    for s in env.scenarios:
+        modes = [e["scenario"][s.name].get("mode", "not applied") for e in episodes]
+        by_mode[s.name] = {
+            m: counts([e for e, x in zip(episodes, modes, strict=True) if x == m]) for m in sorted(set(modes))
+        }
+    return dict(spec=",".join(s.spec() for s in env.scenarios), **counts(episodes), by_mode=by_mode)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--task", default="pick_cube")
@@ -406,11 +432,17 @@ def main():
         help="the served policy is a reasoner: the expert drives and the server writes notes every chunk, compared "
         "with the correct ones",
     )
+    ap.add_argument(
+        "--scenario",
+        default=None,
+        help="test situations on top of the task (scenarios.py), comma-separated name[:mode][@p], e.g. 'wind' or "
+        "'lighting:dusk,bump'",
+    )
     args = ap.parse_args()
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    env = PickupEnv(args.task, max_steps=args.max_steps)
+    env = PickupEnv(args.task, max_steps=args.max_steps, scenario=args.scenario)
     writer = None
     if env.reason:
         from .notes import NoteWriter
@@ -625,6 +657,16 @@ def main():
                     if env.reason
                     else {}
                 ),
+                # scenarios: what each drew this episode, the cuts in order, and the outcome details they add
+                **(
+                    dict(
+                        scenario=env.scenario_info,
+                        cut_order=cut_order,
+                        **{k: info[k] for k in ("out_of_order", "home_m") if k in info},
+                    )
+                    if env.scenarios
+                    else {}
+                ),
             )
         )
         key = env.target_label or env.target  # named shoots: by position (shoot names follow height, not position)
@@ -698,6 +740,7 @@ def main():
         wall_time_s=time.time() - t_start,
         server=server_info,
         **(dict(named=_named_summary(episodes)) if env.named else {}),
+        **(dict(scenario=_scenario_summary(env, episodes)) if env.scenarios else {}),
         **(
             dict(
                 reasoning=_reason_summary(episodes),
