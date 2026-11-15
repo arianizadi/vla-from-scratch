@@ -1,0 +1,1641 @@
+{
+ "about": "Assets of the test situations, written by build_situations_blender.py. Metres, Z up. Collision primitives as MuJoCo takes them (box: half sizes; cylinder, capsule: radius, half length), with pos and quat (w, x, y, z) in the asset's frame. rgba: suggested colours. Files are relative to this folder. Poses are those of the OBJ frame: MuJoCo's compiler moves a mesh to its centre of mass and principal axes, so at run time geom_pos = p + R @ mesh_pos and geom_quat = R * mesh_quat. Textures: set colorspace to linear in MuJoCo (the PNGs' sRGB tag otherwise darkens them).",
+ "meshes": {
+  "sit_tie": {
+   "file": "sit_tie.obj",
+   "triangles": 524,
+   "min": [
+    -0.0056,
+    -0.0056,
+    -0.0244
+   ],
+   "max": [
+    0.0335,
+    0.0056,
+    0.0244
+   ],
+   "rgba": [
+    0.85,
+    0.1,
+    0.1,
+    1
+   ],
+   "uv": false
+  },
+  "sit_leaf_spots": {
+   "file": "sit_leaf_spots.obj",
+   "triangles": 576,
+   "min": [
+    0.016,
+    -0.0091,
+    -0.0004
+   ],
+   "max": [
+    0.0521,
+    0.0109,
+    0.0077
+   ],
+   "rgba": [
+    0.34,
+    0.2,
+    0.07,
+    1
+   ],
+   "uv": false
+  },
+  "sit_leaf_edges": {
+   "file": "sit_leaf_edges.obj",
+   "triangles": 400,
+   "min": [
+    0.0128,
+    -0.0126,
+    -0.0051
+   ],
+   "max": [
+    0.0602,
+    0.0126,
+    0.0076
+   ],
+   "rgba": [
+    0.45,
+    0.28,
+    0.1,
+    1
+   ],
+   "uv": false
+  },
+  "sit_leaf_wilted": {
+   "file": "sit_leaf_wilted.obj",
+   "triangles": 364,
+   "min": [
+    -0.0,
+    -0.0089,
+    -0.0354
+   ],
+   "max": [
+    0.036,
+    0.0107,
+    0.0009
+   ],
+   "rgba": [
+    0.55,
+    0.47,
+    0.16,
+    1
+   ],
+   "uv": false
+  },
+  "sit_bud_body": {
+   "file": "sit_bud_body.obj",
+   "triangles": 240,
+   "min": [
+    -0.0073,
+    -0.0073,
+    0.006
+   ],
+   "max": [
+    0.0073,
+    0.0073,
+    0.029
+   ],
+   "rgba": [
+    0.45,
+    0.66,
+    0.22,
+    1
+   ],
+   "uv": false
+  },
+  "sit_bud_sepals": {
+   "file": "sit_bud_sepals.obj",
+   "triangles": 440,
+   "min": [
+    -0.008,
+    -0.0079,
+    -0.004
+   ],
+   "max": [
+    0.0079,
+    0.0079,
+    0.0255
+   ],
+   "rgba": [
+    0.2,
+    0.5,
+    0.15,
+    1
+   ],
+   "uv": false
+  },
+  "sit_watering_can": {
+   "file": "sit_watering_can.obj",
+   "triangles": 1048,
+   "min": [
+    -0.0961,
+    -0.044,
+    0.0
+   ],
+   "max": [
+    0.1377,
+    0.044,
+    0.1125
+   ],
+   "rgba": [
+    0.22,
+    0.48,
+    0.46,
+    1
+   ],
+   "uv": false
+  },
+  "sit_watering_can_trim": {
+   "file": "sit_watering_can_trim.obj",
+   "triangles": 364,
+   "min": [
+    -0.0418,
+    -0.0418,
+    0.078
+   ],
+   "max": [
+    0.1567,
+    0.0418,
+    0.1305
+   ],
+   "rgba": [
+    0.8,
+    0.8,
+    0.82,
+    1
+   ],
+   "uv": false
+  },
+  "sit_gloves": {
+   "file": "sit_gloves.obj",
+   "triangles": 1752,
+   "min": [
+    -0.0532,
+    -0.0824,
+    0.0
+   ],
+   "max": [
+    0.1407,
+    0.0768,
+    0.0265
+   ],
+   "rgba": [
+    0.8,
+    0.73,
+    0.6,
+    1
+   ],
+   "uv": false
+  },
+  "sit_gloves_cuffs": {
+   "file": "sit_gloves_cuffs.obj",
+   "triangles": 392,
+   "min": [
+    -0.1135,
+    -0.0649,
+    0.0
+   ],
+   "max": [
+    -0.0259,
+    0.0556,
+    0.0257
+   ],
+   "rgba": [
+    0.28,
+    0.42,
+    0.3,
+    1
+   ],
+   "uv": false
+  },
+  "sit_trowel_blade": {
+   "file": "sit_trowel_blade.obj",
+   "triangles": 392,
+   "min": [
+    -0.044,
+    -0.0368,
+    0.0017
+   ],
+   "max": [
+    0.1551,
+    0.0368,
+    0.0233
+   ],
+   "rgba": [
+    0.62,
+    0.64,
+    0.67,
+    1
+   ],
+   "uv": false
+  },
+  "sit_trowel_handle": {
+   "file": "sit_trowel_handle.obj",
+   "triangles": 224,
+   "min": [
+    -0.148,
+    -0.0145,
+    0.0002
+   ],
+   "max": [
+    -0.04,
+    0.0145,
+    0.0292
+   ],
+   "rgba": [
+    0.55,
+    0.33,
+    0.15,
+    1
+   ],
+   "uv": false
+  },
+  "sit_seed_packet": {
+   "file": "sit_seed_packet.obj",
+   "triangles": 124,
+   "min": [
+    -0.041,
+    -0.06,
+    0.0
+   ],
+   "max": [
+    0.041,
+    0.06,
+    0.004
+   ],
+   "rgba": [
+    0.93,
+    0.9,
+    0.8,
+    1
+   ],
+   "uv": false
+  },
+  "sit_seed_packet_art": {
+   "file": "sit_seed_packet_art.obj",
+   "triangles": 492,
+   "min": [
+    -0.035,
+    -0.052,
+    0.0036
+   ],
+   "max": [
+    0.035,
+    0.0535,
+    0.0046
+   ],
+   "rgba": [
+    0.85,
+    0.35,
+    0.12,
+    1
+   ],
+   "uv": false
+  },
+  "sit_pot_small": {
+   "file": "sit_pot_small.obj",
+   "triangles": 880,
+   "min": [
+    -0.037,
+    -0.037,
+    0.0
+   ],
+   "max": [
+    0.037,
+    0.037,
+    0.058
+   ],
+   "rgba": [
+    0.72,
+    0.36,
+    0.2,
+    1
+   ],
+   "uv": false
+  },
+  "sit_bee_body": {
+   "file": "sit_bee_body.obj",
+   "triangles": 268,
+   "min": [
+    -0.0078,
+    -0.0031,
+    0.0006
+   ],
+   "max": [
+    0.0054,
+    0.0031,
+    0.0066
+   ],
+   "rgba": [
+    0.95,
+    0.72,
+    0.1,
+    1
+   ],
+   "uv": false
+  },
+  "sit_bee_dark": {
+   "file": "sit_bee_dark.obj",
+   "triangles": 392,
+   "min": [
+    -0.0079,
+    -0.0034,
+    0.0002
+   ],
+   "max": [
+    0.0077,
+    0.0034,
+    0.007
+   ],
+   "rgba": [
+    0.1,
+    0.08,
+    0.06,
+    1
+   ],
+   "uv": false
+  },
+  "sit_bee_wings": {
+   "file": "sit_bee_wings.obj",
+   "triangles": 112,
+   "min": [
+    -0.0041,
+    -0.0078,
+    0.0058
+   ],
+   "max": [
+    0.0035,
+    0.0077,
+    0.0081
+   ],
+   "rgba": [
+    0.9,
+    0.93,
+    0.97,
+    0.6
+   ],
+   "uv": false
+  },
+  "sit_bench_top": {
+   "file": "sit_bench_top.obj",
+   "triangles": 160,
+   "min": [
+    -0.3995,
+    -0.6,
+    -0.02
+   ],
+   "max": [
+    0.3995,
+    0.6,
+    0.02
+   ],
+   "rgba": [
+    0.62,
+    0.45,
+    0.28,
+    1
+   ],
+   "uv": true
+  },
+  "sit_backdrop_frame": {
+   "file": "sit_backdrop_frame.obj",
+   "triangles": 96,
+   "min": [
+    -1.2,
+    -0.03,
+    0.0
+   ],
+   "max": [
+    1.2,
+    0.01,
+    1.6
+   ],
+   "rgba": [
+    0.9,
+    0.91,
+    0.9,
+    1
+   ],
+   "uv": false
+  },
+  "sit_backdrop_glass": {
+   "file": "sit_backdrop_glass.obj",
+   "triangles": 12,
+   "min": [
+    -1.195,
+    0.0,
+    0.005
+   ],
+   "max": [
+    1.195,
+    0.006,
+    1.595
+   ],
+   "rgba": [
+    0.72,
+    0.84,
+    0.86,
+    1
+   ],
+   "uv": true
+  },
+  "sit_symbol_leaf": {
+   "file": "sit_symbol_leaf.obj",
+   "triangles": 104,
+   "min": [
+    -0.0088,
+    -0.0088,
+    0.0
+   ],
+   "max": [
+    0.0075,
+    0.0075,
+    0.0015
+   ],
+   "rgba": [
+    0.15,
+    0.5,
+    0.15,
+    1
+   ],
+   "uv": false
+  },
+  "sit_symbol_sun": {
+   "file": "sit_symbol_sun.obj",
+   "triangles": 132,
+   "min": [
+    -0.0095,
+    -0.0095,
+    0.0
+   ],
+   "max": [
+    0.0095,
+    0.0095,
+    0.0015
+   ],
+   "rgba": [
+    0.96,
+    0.72,
+    0.06,
+    1
+   ],
+   "uv": false
+  },
+  "sit_legend_card": {
+   "file": "sit_legend_card.obj",
+   "triangles": 24,
+   "min": [
+    -0.0265,
+    -0.055,
+    -0.0
+   ],
+   "max": [
+    0.0265,
+    0.055,
+    0.0697
+   ],
+   "rgba": [
+    0.93,
+    0.91,
+    0.85,
+    1
+   ],
+   "uv": false
+  },
+  "sit_legend_card_marks": {
+   "file": "sit_legend_card_marks.obj",
+   "triangles": 48,
+   "min": [
+    0.0017,
+    -0.006,
+    0.0166
+   ],
+   "max": [
+    0.0207,
+    0.006,
+    0.0553
+   ],
+   "rgba": [
+    0.15,
+    0.15,
+    0.16,
+    1
+   ],
+   "uv": false
+  },
+  "sit_rose_petals": {
+   "file": "sit_rose_petals.obj",
+   "triangles": 3128,
+   "min": [
+    -0.0266,
+    -0.0324,
+    0.0031
+   ],
+   "max": [
+    0.0361,
+    0.0325,
+    0.0321
+   ],
+   "rgba": [
+    0.8,
+    0.08,
+    0.12,
+    1
+   ],
+   "uv": false
+  },
+  "sit_rose_sepals": {
+   "file": "sit_rose_sepals.obj",
+   "triangles": 380,
+   "min": [
+    -0.0267,
+    -0.0258,
+    -0.0084
+   ],
+   "max": [
+    0.0206,
+    0.0258,
+    0.0118
+   ],
+   "rgba": [
+    0.2,
+    0.5,
+    0.15,
+    1
+   ],
+   "uv": false
+  },
+  "sit_daisy_petals": {
+   "file": "sit_daisy_petals.obj",
+   "triangles": 1428,
+   "min": [
+    -0.0268,
+    -0.0307,
+    0.0013
+   ],
+   "max": [
+    0.0313,
+    0.0304,
+    0.019
+   ],
+   "rgba": [
+    0.96,
+    0.96,
+    0.94,
+    1
+   ],
+   "uv": false
+  },
+  "sit_daisy_centre": {
+   "file": "sit_daisy_centre.obj",
+   "triangles": 200,
+   "min": [
+    -0.0073,
+    -0.0104,
+    0.0061
+   ],
+   "max": [
+    0.0129,
+    0.0104,
+    0.0164
+   ],
+   "rgba": [
+    0.95,
+    0.75,
+    0.1,
+    1
+   ],
+   "uv": false
+  },
+  "sit_daisy_sepals": {
+   "file": "sit_daisy_sepals.obj",
+   "triangles": 480,
+   "min": [
+    -0.0143,
+    -0.018,
+    -0.004
+   ],
+   "max": [
+    0.019,
+    0.018,
+    0.0137
+   ],
+   "rgba": [
+    0.2,
+    0.5,
+    0.15,
+    1
+   ],
+   "uv": false
+  },
+  "sit_tulip_petals": {
+   "file": "sit_tulip_petals.obj",
+   "triangles": 1056,
+   "min": [
+    -0.011,
+    -0.0175,
+    0.0025
+   ],
+   "max": [
+    0.0252,
+    0.0174,
+    0.0482
+   ],
+   "rgba": [
+    0.93,
+    0.5,
+    0.72,
+    1
+   ],
+   "uv": false
+  },
+  "sit_tulip_sepals": {
+   "file": "sit_tulip_sepals.obj",
+   "triangles": 128,
+   "min": [
+    -0.0055,
+    -0.0074,
+    -0.004
+   ],
+   "max": [
+    0.0088,
+    0.0074,
+    0.0079
+   ],
+   "rgba": [
+    0.2,
+    0.5,
+    0.15,
+    1
+   ],
+   "uv": false
+  },
+  "sit_pot_square": {
+   "file": "sit_pot_square.obj",
+   "triangles": 1536,
+   "min": [
+    -0.048,
+    -0.048,
+    0.0
+   ],
+   "max": [
+    0.048,
+    0.048,
+    0.075
+   ],
+   "rgba": [
+    0.72,
+    0.36,
+    0.2,
+    1
+   ],
+   "uv": false
+  },
+  "sit_soil_square": {
+   "file": "sit_soil_square.obj",
+   "triangles": 862,
+   "min": [
+    -0.0444,
+    -0.0444,
+    0.063
+   ],
+   "max": [
+    0.0444,
+    0.0444,
+    0.0694
+   ],
+   "rgba": [
+    0.22,
+    0.15,
+    0.09,
+    1
+   ],
+   "uv": false
+  },
+  "sit_pot_glazed": {
+   "file": "sit_pot_glazed.obj",
+   "triangles": 1152,
+   "min": [
+    -0.051,
+    -0.051,
+    0.0
+   ],
+   "max": [
+    0.051,
+    0.051,
+    0.075
+   ],
+   "rgba": [
+    0.12,
+    0.3,
+    0.62,
+    1
+   ],
+   "uv": false
+  },
+  "sit_leaf_large": {
+   "file": "sit_leaf_large.obj",
+   "triangles": 580,
+   "min": [
+    -0.0001,
+    -0.0359,
+    -0.0187
+   ],
+   "max": [
+    0.16,
+    0.036,
+    0.0165
+   ],
+   "rgba": [
+    0.14,
+    0.42,
+    0.12,
+    1
+   ],
+   "uv": false
+  },
+  "sit_bin": {
+   "file": "sit_bin.obj",
+   "triangles": 1152,
+   "min": [
+    -0.062,
+    -0.062,
+    0.0
+   ],
+   "max": [
+    0.062,
+    0.062,
+    0.11
+   ],
+   "rgba": [
+    0.4,
+    0.27,
+    0.14,
+    1
+   ],
+   "uv": false
+  }
+ },
+ "textures": {
+  "sit_bench_wood.png": {
+   "size": [
+    1024,
+    512
+   ],
+   "mesh": "sit_bench_top"
+  },
+  "sit_bench_stained.png": {
+   "size": [
+    1024,
+    512
+   ],
+   "mesh": "sit_bench_top"
+  },
+  "sit_backdrop_greenhouse.png": {
+   "size": [
+    768,
+    512
+   ],
+   "mesh": "sit_backdrop_glass"
+  }
+ },
+ "assets": {
+  "tie": {
+   "meshes": [
+    "sit_tie"
+   ],
+   "origin": "on the shoot's axis, middle of the band; shoot along +Z, knot and tails toward +X",
+   "attach": "in a shoot's frame (z along the shoot, x upward) at (0, 0, d), identity rotation, d = distance from the main stem's axis: 0.012 puts the band on the stub, which stays on the plant after the cut; 0.058 or more puts it beyond the cut zone, on the part that falls. Visual only.",
+   "colours": {
+    "red": [
+     0.85,
+     0.1,
+     0.1,
+     1
+    ],
+    "blue": [
+     0.1,
+     0.3,
+     0.9,
+     1
+    ],
+    "yellow": [
+     0.98,
+     0.82,
+     0.08,
+     1
+    ],
+    "white": [
+     0.95,
+     0.95,
+     0.93,
+     1
+    ]
+   },
+   "collision": []
+  },
+  "sick_leaves": {
+   "meshes": [
+    "sit_leaf_wilted",
+    "sit_leaf_spots",
+    "sit_leaf_edges"
+   ],
+   "origin": "as plant_leaf: petiole base, blade toward +X, upper side +Z",
+   "attach": "sit_leaf_wilted replaces plant_leaf in a leaf geom (same pose, same mesh scale 0.8). sit_leaf_spots and sit_leaf_edges are extra geoms whose OBJ frame has exactly the pose and scale of a plant_leaf geom's (see 'about': not the same geom_pos), coloured brown; give the leaf under them the colour 'sick_leaf'. The leaf's collision box (env.py) suits all of them except that the wilted blade hangs up to 30 mm below it.",
+   "colours": {
+    "sick_leaf": [
+     0.56,
+     0.6,
+     0.18,
+     1
+    ]
+   },
+   "collision": []
+  },
+  "bud": {
+   "meshes": [
+    "sit_bud_body",
+    "sit_bud_sepals"
+   ],
+   "origin": "on the shoot's axis at the shoot's tip; the bud points along +Z; the collar reaches back to z = -0.004",
+   "attach": "in a shoot's frame at (0, 0, shoot length), identity rotation (both meshes). The leaves sit at the same tip: with a bud use two leaves, yawed at least 0.5 rad to either side, so that none runs through it. For a collision shape: a capsule of radius 0.006 from z = 0.006 to 0.022.",
+   "collision": [
+    {
+     "type": "capsule",
+     "size": [
+      0.006,
+      0.008
+     ],
+     "pos": [
+      0,
+      0,
+      0.014
+     ],
+     "quat": [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+     ]
+    }
+   ]
+  },
+  "watering_can": {
+   "meshes": [
+    "sit_watering_can",
+    "sit_watering_can_trim"
+   ],
+   "origin": "centre of the body's bottom; spout toward +X, handle toward -X",
+   "attach": "stands on the table at z = 0; any yaw",
+   "mass": 0.25,
+   "collision": [
+    {
+     "type": "cylinder",
+     "size": [
+      0.044,
+      0.045
+     ],
+     "pos": [
+      0,
+      0,
+      0.045
+     ],
+     "quat": [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+     ]
+    },
+    {
+     "type": "capsule",
+     "size": [
+      0.009,
+      0.066
+     ],
+     "pos": [
+      0.089,
+      0,
+      0.07
+     ],
+     "quat": [
+      0.89875,
+      0.0,
+      0.43846,
+      0.0
+     ]
+    },
+    {
+     "type": "box",
+     "size": [
+      0.028,
+      0.009,
+      0.04
+     ],
+     "pos": [
+      -0.066,
+      0,
+      0.057
+     ],
+     "quat": [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+     ]
+    }
+   ]
+  },
+  "gloves": {
+   "meshes": [
+    "sit_gloves",
+    "sit_gloves_cuffs"
+   ],
+   "origin": "on the table, under the lower glove's palm; fingers toward +X",
+   "attach": "lies on the table at z = 0; any yaw",
+   "mass": 0.12,
+   "collision": [
+    {
+     "type": "box",
+     "size": [
+      0.127,
+      0.08,
+      0.01325
+     ],
+     "pos": [
+      0.0136,
+      -0.003,
+      0.01325
+     ],
+     "quat": [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+     ]
+    }
+   ]
+  },
+  "trowel": {
+   "meshes": [
+    "sit_trowel_blade",
+    "sit_trowel_handle"
+   ],
+   "origin": "on the table, under the neck; handle toward -X, blade toward +X",
+   "attach": "lies on the table at z = 0; any yaw",
+   "mass": 0.2,
+   "collision": [
+    {
+     "type": "capsule",
+     "size": [
+      0.0135,
+      0.041
+     ],
+     "pos": [
+      -0.094,
+      0,
+      0.0147
+     ],
+     "quat": [
+      0.70711,
+      0.0,
+      0.70711,
+      0.0
+     ]
+    },
+    {
+     "type": "box",
+     "size": [
+      0.076,
+      0.034,
+      0.007
+     ],
+     "pos": [
+      0.079,
+      0,
+      0.008
+     ],
+     "quat": [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+     ]
+    }
+   ]
+  },
+  "seed_packet": {
+   "meshes": [
+    "sit_seed_packet",
+    "sit_seed_packet_art"
+   ],
+   "origin": "centre of the underside; the long side along Y, the header band at +Y",
+   "attach": "lies on the table at z = 0; any yaw",
+   "mass": 0.01,
+   "collision": [
+    {
+     "type": "box",
+     "size": [
+      0.041,
+      0.06,
+      0.002
+     ],
+     "pos": [
+      0,
+      0,
+      0.002
+     ],
+     "quat": [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+     ]
+    }
+   ]
+  },
+  "pot_small": {
+   "meshes": [
+    "sit_pot_small"
+   ],
+   "origin": "centre of the bottom",
+   "attach": "stands on the table at z = 0 (or lies on its side)",
+   "mass": 0.09,
+   "collision": [
+    {
+     "type": "cylinder",
+     "size": [
+      0.031,
+      0.0225
+     ],
+     "pos": [
+      0,
+      0,
+      0.0225
+     ],
+     "quat": [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+     ]
+    },
+    {
+     "type": "cylinder",
+     "size": [
+      0.037,
+      0.0065
+     ],
+     "pos": [
+      0,
+      0,
+      0.0515
+     ],
+     "quat": [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+     ]
+    }
+   ]
+  },
+  "bee": {
+   "meshes": [
+    "sit_bee_body",
+    "sit_bee_dark",
+    "sit_bee_wings"
+   ],
+   "origin": "on the surface it sits on, under the thorax; head toward +X, up +Z",
+   "attach": "all three meshes in one frame; on a leaf, use the leaf geom's frame moved about 0.03 m along the blade and 0.004 m up (times the leaf's scale). Visual only.",
+   "collision": []
+  },
+  "bench": {
+   "meshes": [
+    "sit_bench_top"
+   ],
+   "origin": "centre of the slab (the top surface is z = +0.02), planks along Y",
+   "attach": "replaces the mesh table_top in the geom table_visual (same position); the collision box stays",
+   "textures": [
+    "sit_bench_wood.png",
+    "sit_bench_stained.png"
+   ],
+   "collision": []
+  },
+  "backdrop": {
+   "meshes": [
+    "sit_backdrop_frame",
+    "sit_backdrop_glass"
+   ],
+   "origin": "bottom centre; 2.4 m along X, 1.6 m up Z, to be seen from -Y",
+   "attach": "stands on the floor (z = -0.76 in the world) behind the scene as the front camera sees it: e.g. at (-0.75, 0, -0.76) turned +90 degrees about Z (it then faces +x) and a second one at (0.2, 0.95, -0.76) not turned. Visual only.",
+   "textures": [
+    "sit_backdrop_greenhouse.png"
+   ],
+   "collision": []
+  },
+  "legend_card": {
+   "meshes": [
+    "sit_legend_card",
+    "sit_legend_card_marks"
+   ],
+   "origin": "on the table, centre of the footprint; the face looks toward +X, leaning back 25 degrees",
+   "attach": "stands on the table at z = 0, turned to face the camera. 'slots' are frames on the face (in the card's frame) for a symbol (sit_symbol_leaf or sit_symbol_sun, mesh scale 1.4) and the arrow it means (plant_arrow_cw or plant_arrow_ccw, mesh scale 1.4), one pair per row. On the buttons, a symbol takes the arrow's place: 0.0094 above the button's origin, scale 1.",
+   "slots": {
+    "row0_symbol": {
+     "pos": [
+      0.00347,
+      -0.03,
+      0.05109
+     ],
+     "quat": [
+      0.59637,
+      0.37993,
+      0.37993,
+      0.59637
+     ]
+    },
+    "row0_arrow": {
+     "pos": [
+      0.00347,
+      0.03,
+      0.05109
+     ],
+     "quat": [
+      0.59637,
+      0.37993,
+      0.37993,
+      0.59637
+     ]
+    },
+    "row1_symbol": {
+     "pos": [
+      0.01784,
+      -0.03,
+      0.02028
+     ],
+     "quat": [
+      0.59637,
+      0.37993,
+      0.37993,
+      0.59637
+     ]
+    },
+    "row1_arrow": {
+     "pos": [
+      0.01784,
+      0.03,
+      0.02028
+     ],
+     "quat": [
+      0.59637,
+      0.37993,
+      0.37993,
+      0.59637
+     ]
+    }
+   },
+   "mass": 0.03,
+   "collision": [
+    {
+     "type": "box",
+     "size": [
+      0.0265,
+      0.055,
+      0.034
+     ],
+     "pos": [
+      0,
+      0,
+      0.034
+     ],
+     "quat": [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+     ]
+    }
+   ]
+  },
+  "flower_rose": {
+   "meshes": [
+    "sit_rose_petals",
+    "sit_rose_sepals"
+   ],
+   "origin": "the receptacle's bottom, where the head meets the top of the main stem (as plant_flower_*)",
+   "attach": "in the plant's frame at (0, 0, 0.308), the top of the main stem, as the plant_flower_* geoms (all meshes of a head in one frame). The head leans 15 degrees toward the plant's +X; the collision cylinder is given in the head's frame.",
+   "collision": [
+    {
+     "type": "cylinder",
+     "size": [
+      0.031,
+      0.014
+     ],
+     "pos": [
+      0.00414,
+      0.0,
+      0.01545
+     ],
+     "quat": [
+      0.99144,
+      0.0,
+      0.13053,
+      0.0
+     ]
+    }
+   ]
+  },
+  "flower_daisy": {
+   "meshes": [
+    "sit_daisy_petals",
+    "sit_daisy_centre",
+    "sit_daisy_sepals"
+   ],
+   "origin": "the receptacle's bottom, where the head meets the top of the main stem (as plant_flower_*)",
+   "attach": "in the plant's frame at (0, 0, 0.308), the top of the main stem, as the plant_flower_* geoms (all meshes of a head in one frame). The head leans 15 degrees toward the plant's +X; the collision cylinder is given in the head's frame.",
+   "collision": [
+    {
+     "type": "cylinder",
+     "size": [
+      0.032,
+      0.008
+     ],
+     "pos": [
+      0.00311,
+      0.0,
+      0.01159
+     ],
+     "quat": [
+      0.99144,
+      0.0,
+      0.13053,
+      0.0
+     ]
+    }
+   ]
+  },
+  "flower_tulip": {
+   "meshes": [
+    "sit_tulip_petals",
+    "sit_tulip_sepals"
+   ],
+   "origin": "the receptacle's bottom, where the head meets the top of the main stem (as plant_flower_*)",
+   "attach": "in the plant's frame at (0, 0, 0.308), the top of the main stem, as the plant_flower_* geoms (all meshes of a head in one frame). The head leans 15 degrees toward the plant's +X; the collision cylinder is given in the head's frame.",
+   "collision": [
+    {
+     "type": "cylinder",
+     "size": [
+      0.018,
+      0.023
+     ],
+     "pos": [
+      0.00647,
+      0.0,
+      0.02415
+     ],
+     "quat": [
+      0.99144,
+      0.0,
+      0.13053,
+      0.0
+     ]
+    }
+   ]
+  },
+  "pot_square": {
+   "meshes": [
+    "sit_pot_square",
+    "sit_soil_square"
+   ],
+   "origin": "bottom centre: the frame of plant_pot and plant_soil",
+   "attach": "replace plant_pot and plant_soil in the geoms pot_vis and soil_vis; the stem stands at z = 0.068 as before. Collision in place of pot_col0, pot_col1 and the rim blocks.",
+   "collision": [
+    {
+     "type": "box",
+     "size": [
+      0.04,
+      0.04,
+      0.0285
+     ],
+     "pos": [
+      0,
+      0,
+      0.0285
+     ],
+     "quat": [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+     ]
+    },
+    {
+     "type": "box",
+     "size": [
+      0.0475,
+      0.0475,
+      0.0058
+     ],
+     "pos": [
+      0,
+      0,
+      0.0628
+     ],
+     "quat": [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+     ]
+    },
+    {
+     "type": "box",
+     "size": [
+      0.0022,
+      0.048,
+      0.0033
+     ],
+     "pos": [
+      0.0458,
+      0.0,
+      0.0717
+     ],
+     "quat": [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+     ]
+    },
+    {
+     "type": "box",
+     "size": [
+      0.0022,
+      0.048,
+      0.0033
+     ],
+     "pos": [
+      0.0,
+      0.0458,
+      0.0717
+     ],
+     "quat": [
+      0.70711,
+      0.0,
+      0.0,
+      0.70711
+     ]
+    },
+    {
+     "type": "box",
+     "size": [
+      0.0022,
+      0.048,
+      0.0033
+     ],
+     "pos": [
+      -0.0458,
+      0.0,
+      0.0717
+     ],
+     "quat": [
+      -0.0,
+      -0.0,
+      -0.0,
+      -1.0
+     ]
+    },
+    {
+     "type": "box",
+     "size": [
+      0.0022,
+      0.048,
+      0.0033
+     ],
+     "pos": [
+      -0.0,
+      -0.0458,
+      0.0717
+     ],
+     "quat": [
+      0.70711,
+      -0.0,
+      -0.0,
+      -0.70711
+     ]
+    }
+   ]
+  },
+  "pot_glazed": {
+   "meshes": [
+    "sit_pot_glazed"
+   ],
+   "origin": "bottom centre: the frame of plant_pot",
+   "attach": "replaces plant_pot in the geom pot_vis; plant_soil stays (inner radius 44.8 mm). The plant's existing collision (pot_col0, pot_col1, rim blocks) fits to within 4 mm; the belly is 51 mm at z = 0.040.",
+   "collision": [
+    {
+     "type": "cylinder",
+     "size": [
+      0.046,
+      0.02
+     ],
+     "pos": [
+      0,
+      0,
+      0.02
+     ],
+     "quat": [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+     ]
+    },
+    {
+     "type": "cylinder",
+     "size": [
+      0.051,
+      0.0143
+     ],
+     "pos": [
+      0,
+      0,
+      0.0543
+     ],
+     "quat": [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+     ]
+    }
+   ]
+  },
+  "leaf_large": {
+   "meshes": [
+    "sit_leaf_large"
+   ],
+   "origin": "as plant_leaf: petiole base, blade toward +X, upper side +Z (no mesh scale)",
+   "attach": "petiole base on the main stem or on a shoot, the blade between the camera and what it hides. For a collision shape that the arm can push: a thin box under the blade.",
+   "collision": [
+    {
+     "type": "box",
+     "size": [
+      0.06,
+      0.03,
+      0.002
+     ],
+     "pos": [
+      0.095,
+      0,
+      0.012
+     ],
+     "quat": [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+     ]
+    }
+   ]
+  },
+  "bin": {
+   "meshes": [
+    "sit_bin"
+   ],
+   "origin": "bottom centre; the sides face +/-X and +/-Y",
+   "attach": "stands on the table at z = 0. Hollow: the collision is a floor and four walls, so that cuttings can be dropped in (inside about 96 mm square at the floor, 113 mm at the rim). 'slots': a frame on the +X side for a symbol (sit_symbol_leaf, mesh scale 2.5).",
+   "colours": {
+    "compost": [
+     0.4,
+     0.27,
+     0.14,
+     1
+    ],
+    "green": [
+     0.16,
+     0.45,
+     0.22,
+     1
+    ]
+   },
+   "slots": {
+    "front": {
+     "pos": [
+      0.0548,
+      0,
+      0.06
+     ],
+     "quat": [
+      0.5,
+      0.5,
+      0.5,
+      0.5
+     ]
+    }
+   },
+   "mass": 0.15,
+   "collision": [
+    {
+     "type": "box",
+     "size": [
+      0.049,
+      0.049,
+      0.003
+     ],
+     "pos": [
+      0,
+      0,
+      0.003
+     ],
+     "quat": [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+     ]
+    },
+    {
+     "type": "box",
+     "size": [
+      0.0025,
+      0.057,
+      0.052
+     ],
+     "pos": [
+      0.0545,
+      0.0,
+      0.058
+     ],
+     "quat": [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+     ]
+    },
+    {
+     "type": "box",
+     "size": [
+      0.0025,
+      0.057,
+      0.052
+     ],
+     "pos": [
+      0.0,
+      0.0545,
+      0.058
+     ],
+     "quat": [
+      0.70711,
+      0.0,
+      0.0,
+      0.70711
+     ]
+    },
+    {
+     "type": "box",
+     "size": [
+      0.0025,
+      0.057,
+      0.052
+     ],
+     "pos": [
+      -0.0545,
+      0.0,
+      0.058
+     ],
+     "quat": [
+      -0.0,
+      -0.0,
+      -0.0,
+      -1.0
+     ]
+    },
+    {
+     "type": "box",
+     "size": [
+      0.0025,
+      0.057,
+      0.052
+     ],
+     "pos": [
+      -0.0,
+      -0.0545,
+      0.058
+     ],
+     "quat": [
+      0.70711,
+      -0.0,
+      -0.0,
+      -0.70711
+     ]
+    }
+   ]
+  }
+ }
+}
