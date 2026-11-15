@@ -1071,9 +1071,7 @@ Averaged weights per checkpoint, 1 s memory: seed 42: 8, 32, 36, 56, 63, 65, 73,
 seed that learned well without memory (70-77 against 79-81) and lifts the seed that learned late from 56 to 89, the
 best final score of any pruning run so far, holding 79-90 over its last six checkpoints. It does not make the policy
 faster (about 680-700 steps per success, as without memory, against the expert's 515): it fails less often, not
-quicker. Two seeds are not enough to call it; a third seed (44) is queued. Successful runs of the earlier policies
-needed the start of the instruction only; this one also sees where the arm was a second ago, which is what tells a
-turn in progress from a stalled one.
+quicker. Two seeds are not enough to call it; a third seed (44) is queued.
 
 ## Throughput
 
