@@ -131,6 +131,11 @@ class RoboticsDataParams(DataParams):
     # the control steps between two notes when served; the held note of a training sample is up to that old.
     notes: bool = field(default=False)
     note_interval: int = field(default=8)
+    # Paraphrases for training (vla_foundry/data/processor/notes.py, paraphrase): a JSON file mapping an instruction to
+    # other ways to say it; each training sample's instruction is replaced by one of them with this probability.
+    # Served policies always get the instruction as given.
+    instruction_paraphrases: str | None = field(default=None)
+    paraphrase_prob: float = field(default=0.0)
 
     def __post_init__(self):
         try:

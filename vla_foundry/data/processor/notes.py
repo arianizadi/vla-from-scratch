@@ -17,6 +17,7 @@ uniformly from 1..interval. Where a new note was written within the last d frame
 it is "same".
 """
 
+import json
 import os
 import random
 
@@ -32,6 +33,24 @@ def _rng():
     if pid not in _RNG:
         _RNG[pid] = random.Random(int.from_bytes(os.urandom(8), "little"))
     return _RNG[pid]
+
+
+_PARAPHRASES: dict[str, dict] = {}
+
+
+def paraphrase(instruction: str, path: str | None, prob: float, rng=None) -> str:
+    """A training sample's instruction, replaced with probability `prob` by one of the other ways to say it that the
+    JSON file at `path` lists for it ({instruction: [paraphrases]}); unchanged if the file lists none."""
+    if not path or prob <= 0:
+        return instruction
+    if path not in _PARAPHRASES:
+        with open(path) as f:
+            _PARAPHRASES[path] = json.load(f)
+    options = _PARAPHRASES[path].get(instruction)
+    rng = rng or _rng()
+    if not options or rng.random() >= prob:
+        return instruction
+    return options[rng.randrange(len(options))]
 
 
 def note_prompt(instruction: str, held: str, now: str | None = None) -> str:

@@ -6,7 +6,7 @@ import numpy as np
 import torch
 
 from vla_foundry.data.processor import apply_chat_template, get_processor
-from vla_foundry.data.processor.notes import NoteTokens, training_pair
+from vla_foundry.data.processor.notes import NoteTokens, paraphrase, training_pair
 from vla_foundry.data.robotics.normalization import RoboticsNormalizer
 from vla_foundry.file_utils import json_load
 from vla_foundry.params.data_params import RoboticsDataParams
@@ -175,6 +175,8 @@ class RoboticsProcessor:
         """
         batch_text, batch_images, batch_attention_mask_images = [], [], []
         notes_now = []
+        # a training batch carries sample metadata; a served policy's does not (and is never paraphrased)
+        training = "metadata" in batch and batch.get("notes") is None
         for index, (sample_images, instruction) in enumerate(
             zip(batch["images"], batch["language_instruction"], strict=False)
         ):
@@ -202,6 +204,12 @@ class RoboticsProcessor:
                 sample_images = [sample_images[k] for k in image_names if k in sample_images]
                 attention_mask_images = [1 for i in sample_images]
 
+            if training:
+                instruction = paraphrase(
+                    instruction,
+                    getattr(self.data_params, "instruction_paraphrases", None),
+                    getattr(self.data_params, "paraphrase_prob", 0.0),
+                )
             if self.note_tokens is not None:
                 if batch.get("notes") is not None:
                     held, now = batch["notes"][index]
@@ -250,8 +258,12 @@ class RoboticsProcessor:
 
         # Labels are for training only: a served policy's notes are passed in (batch["notes"]), and a note a model wrote
         # need not survive the check that its tokens line up.
-        training = batch.get("notes") is None
-        if self.note_tokens is not None and training and notes_now and all(n is not None for n in notes_now):
+        if (
+            self.note_tokens is not None
+            and batch.get("notes") is None
+            and notes_now
+            and all(n is not None for n in notes_now)
+        ):
             processed_batch["note_labels"] = self.note_tokens.labels(
                 processed_batch["input_ids"], processed_batch.get("attention_mask"), notes_now
             )

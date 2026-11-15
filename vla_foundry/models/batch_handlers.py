@@ -343,16 +343,18 @@ class ReasonThenActBatchHandler(DiffusionPolicyBatchHandler):
         return total
 
     def _log(self, lm_loss, lm_tokens, action_loss):
+        # The sums stay on the GPU until they are logged: reading a loss back every batch stalls the step there.
         sums = getattr(self, "_sums", None) or dict(n=0, lm=0.0, tokens=0, action=0.0)
         sums["n"] += 1
-        sums["lm"] += float(lm_loss.detach())
+        sums["lm"] = sums["lm"] + lm_loss.detach()
         sums["tokens"] += lm_tokens
-        sums["action"] += float(action_loss.detach()) if action_loss is not None else 0.0
+        if action_loss is not None:
+            sums["action"] = sums["action"] + action_loss.detach()
         self._sums = sums
         if sums["n"] >= self.LOG_EVERY:
             n = sums["n"]
             logging.info(
-                f"reason_then_act: note loss {sums['lm'] / n:.4f} over {sums['tokens'] / n:.0f} tokens per batch, "
-                f"action loss {sums['action'] / n:.4f} (mean of the last {n} batches)"
+                f"reason_then_act: note loss {float(sums['lm']) / n:.4f} over {sums['tokens'] / n:.0f} tokens per "
+                f"batch, action loss {float(sums['action']) / n:.4f} (mean of the last {n} batches)"
             )
             self._sums = None

@@ -345,3 +345,90 @@ def compositions() -> dict[str, list]:
         exclusion_train=list(EXCLUSION_TRAIN),
         exclusion_heldout=list(EXCLUSION_HELDOUT),
     )
+
+
+# ------------------------------------------------------------------------------------------- training paraphrases
+# More ways to say each training instruction, for training only (data.instruction_paraphrases): the same task, other
+# words and sentence shapes. They never use a word that only held-out instructions use (heldout_only_words; tested),
+# and never a held-out composition, so the held-out evaluation stays unseen. Their point is the reasoner's: it learns to
+# turn any wording into the fixed "ask" of its note.
+ORDINAL_PARAPHRASES = (
+    "please cut the {ord} shoot from the {end}",
+    "the {ord} shoot from the {end} needs cutting",
+    "take off the {ord} side shoot from the {end}",
+    "cut whichever shoot is {ord} from the {end}",
+    "prune away the {ord} shoot from the {end}",
+    "find the {ord} shoot from the {end} and cut it",
+    "cut off the side shoot that is {ord} from the {end}",
+    "remove the {ord} side shoot from the {end} of the stem",
+)
+CONDITIONAL_PARAPHRASES = (
+    "if the flower is {colour}, prune the {yes} shoot, otherwise prune the {no} one",
+    "if the flower looks {colour}, remove the {yes} shoot, else remove the {no} one",
+    "with a {colour} flower cut the {yes} shoot, with any other flower cut the {no} one",
+    "a {colour} flower means the {yes} shoot and any other flower means the {no} one: cut that shoot",
+    "cut the {yes} side shoot if the flower is {colour}; otherwise cut the {no} side shoot",
+    "when the flower is {colour} cut the {yes} shoot, otherwise the {no} one",
+)
+EXCLUSION_PARAPHRASES = (
+    "cut all side shoots except the {keep} one",
+    "prune every shoot other than the {keep} one",
+    "keep the {keep} shoot and cut every other side shoot",
+    "remove every shoot except the {keep} one",
+    "the {keep} shoot stays; cut the other side shoots",
+    "cut off each side shoot but the {keep} one",
+)
+HIDDEN_PARAPHRASES = (
+    "look at the label in the pot and cut the shoot it names",
+    "the label in the pot names a shoot: cut it",
+    "cut the side shoot named by the label in the pot",
+    "prune the shoot the label in the pot names",
+    "find the label in the pot and remove the shoot it names",
+    "read the pot label and cut the shoot it names",
+)
+
+
+def _words(text):
+    import re
+
+    return set(re.findall(r"[a-z]+", text.lower()))
+
+
+def heldout_only_words() -> set[str]:
+    """Words that held-out instructions use and training instructions do not."""
+    train = set().union(*(_words(t) for k in KINDS for t in training_instructions(k)))
+    heldout = set().union(*(_words(t) for k in KINDS for t in all_heldout_instructions(k)))
+    return heldout - train
+
+
+def paraphrase_table() -> dict[str, list[str]]:
+    """Every training instruction -> other training-only ways to say it (same task)."""
+    table: dict[str, list[str]] = {}
+    for k, e in ORDINAL_TRAIN:
+        alts = [f.format(ord=ORDINALS[k], end=e) for f in ORDINAL_PARAPHRASES]
+        for f in ORDINAL_FRAMES:
+            table[f.format(ord=ORDINALS[k], end=e)] = alts
+    for c, y in compositions()["conditional_train"]:
+        n = "lowest" if y == "highest" else "highest"
+        alts = [f.format(colour=c, yes=y, no=n) for f in CONDITIONAL_PARAPHRASES]
+        for f in CONDITIONAL_FRAMES:
+            table[f.format(colour=c, yes=y, no=n)] = alts
+    for keep in EXCLUSION_TRAIN:
+        alts = [f.format(keep=keep) for f in EXCLUSION_PARAPHRASES]
+        for f in EXCLUSION_FRAMES:
+            table[f.format(keep=keep)] = alts
+    for f in HIDDEN_FRAMES:
+        table[f] = list(HIDDEN_PARAPHRASES)
+    return table
+
+
+if __name__ == "__main__":
+    import argparse
+    import json
+
+    ap = argparse.ArgumentParser(description="write the training paraphrase table (data.instruction_paraphrases)")
+    ap.add_argument("out")
+    path = ap.parse_args().out
+    with open(path, "w") as f:
+        json.dump(paraphrase_table(), f, indent=1, sort_keys=True)
+        f.write("\n")

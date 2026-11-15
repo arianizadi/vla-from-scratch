@@ -428,10 +428,11 @@ def main():
     # Reasoning tasks (see the module's docstring)
     ap.add_argument(
         "--notes",
-        choices=["model", "expert", "swap"],
+        choices=["model", "expert", "swap", "reasoner"],
         default="model",
-        help="a policy that writes notes: let it write them (model), hand it the correct ones (expert), or notes about "
-        "a shoot the instruction does not mean (swap)",
+        help="a policy that writes notes: let it write them (model), hand it the correct ones (expert), notes about "
+        "a shoot the instruction does not mean (swap), or the notes of the reasoner on --reasoner_port (reasoner: that "
+        "reasoner thinks, the served policy acts)",
     )
     ap.add_argument(
         "--subgoals",
@@ -472,7 +473,7 @@ def main():
 
         writer = NoteWriter(env)
     reasoner = reasoner_info = None
-    if args.subgoals == "reasoner" or (args.expert and args.reasoner_port is not None):
+    if "reasoner" in (args.subgoals, args.notes) or (args.expert and args.reasoner_port is not None):
         assert env.reason and args.reasoner_port is not None, "a reasoner needs a reasoning task and --reasoner_port"
         reasoner = connect(args.reasoner_port)
         reasoner.send({"cmd": "info"})
@@ -548,6 +549,7 @@ def main():
         # reasoning tasks: the correct notes, the note the policy (or the reasoner) holds, a shoot to swap in, the
         # sub-goal handed to a two-level policy's fast level, the notes written and how they compare, the cuts in order
         held, subgoal, written, agreement, cut_order = "", None, [], [], []
+        reasoned = ("", NOTE_SAME)  # --notes reasoner: the note the reasoner held and what it wrote at the last chunk
         swap = None
         if writer is not None:
             writer.reset()
@@ -561,6 +563,7 @@ def main():
                 request = infer_request(history.at(-1), obs, env.last_action, env.instruction, 0, history=history)
                 reasoner.send({**request, "cmd": "reason", "note_held": held})
                 reply = reasoner.recv()
+                reasoned = (held, reply["note_now"])  # what the reasoner held and what it wrote (for --notes reasoner)
                 if reply["note_now"] != NOTE_SAME:
                     written.append([env.steps, reply["note_now"]])
                 held = reply["note"]
@@ -575,11 +578,13 @@ def main():
                 if first_query and args.first_prev_action == "expert":
                     prev_action = pilot.act()
                 first_query = False
-                instruction, note_now = env.instruction, None
+                instruction, note_now, rta_held = env.instruction, None, held
                 if args.subgoals in ("expert", "swap"):
                     subgoal = reasoning.subgoal(writer.note if swap is None else writer.text(targets=[swap]))
                 if args.subgoals != "none":
                     instruction = subgoal or "stop"
+                elif rta and args.notes == "reasoner":
+                    rta_held, note_now = reasoned  # the policy acts on the reasoner's note
                 elif rta and args.notes != "model":
                     correct = writer.note if args.notes == "expert" else writer.text(targets=[swap])
                     note_now = NOTE_SAME if correct == held else correct
@@ -593,7 +598,7 @@ def main():
                         noise_seed=seed if args.noise == "episode" else None,
                         images_from=(first_obs, first_obs) if args.stale_images else None,
                         history=history,
-                        note_held=held if rta else None,
+                        note_held=rta_held if rta else None,
                         note_now=note_now,
                     )
                 )
@@ -601,7 +606,7 @@ def main():
                 latencies.append(reply["latency_s"])
                 queue = list(reply["actions"][: args.exec_horizon])
                 if rta:
-                    if reply["note_now"] != NOTE_SAME:
+                    if reply["note_now"] != NOTE_SAME and args.notes != "reasoner":  # a reasoner's are recorded above
                         written.append([env.steps, reply["note_now"]])
                     held = reply["note"]
                     if args.notes == "model":

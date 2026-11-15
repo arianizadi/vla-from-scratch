@@ -8,11 +8,14 @@
 #   PICKUP_CHECKPOINT / PICKUP_WEIGHTS                    the fast policy's checkpoint and weights (as for eval.sh)
 #   PICKUP_REASONER_CHECKPOINT / PICKUP_REASONER_WEIGHTS  the reasoner's
 #   PICKUP_OUT=<dir>   where results.json goes (default results/pickup/<fast run>/<task>_two_level_<reasoner run>)
+#   PICKUP_TWO_LEVEL_MODE=notes  the reasoner's whole note goes to a policy that reads notes (a reason_then_act run, as
+#                      its own note: eval.py --notes reasoner) instead of its sub-goal as the instruction (default)
 # Environment and GPU selection: see _common.sh (both servers run on the same GPU).
 set -euo pipefail
 fast=${1:?fast policy experiment dir}; reasoner=${2:?reasoner experiment dir}; task=${3:?task}; episodes=${4:-50}
 shift $(( $# < 4 ? $# : 4 ))
 . "$(dirname "$0")/_common.sh"
+mode=${PICKUP_TWO_LEVEL_MODE:-subgoal}; [ "$mode" = notes ] && mode=note
 out=${PICKUP_OUT:-results/pickup/$(basename "$fast")/${task}_two_level_$(basename "$reasoner")}
 mkdir -p "$out"
 free_port() { "${sim_python[@]}" -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
@@ -38,7 +41,7 @@ for log in "$out/policy_server.log" "$out/reasoner_server.log"; do
   done
 done
 "${sim_python[@]}" -m sim.pickup.eval --task "$task" --episodes "$episodes" --port "$port" --out "$out" \
-  --expect_run "$(basename "$fast")" --subgoals reasoner --reasoner_port "$rport" \
+  --expect_run "$(basename "$fast")" --${mode}s reasoner --reasoner_port "$rport" \
   --expect_reasoner_run "$(basename "$reasoner")" --shutdown_server "$@"
 wait $server $rserver || true
 trap - EXIT

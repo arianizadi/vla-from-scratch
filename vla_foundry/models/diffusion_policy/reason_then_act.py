@@ -112,7 +112,7 @@ class ReasonThenActPolicy(DiffusionPolicy):
             proprio_embeddings=proprio_embeddings,
         )
         transformer_output = self.transformer(
-            inputs_embeds=transformer_input, output_hidden_states=True, use_cache=False
+            inputs_embeds=transformer_input, output_hidden_states=True, use_cache=False, **self._head_kwargs
         )
         direction = self.output_layer(transformer_output.hidden_states[-1][:, -noise.shape[1] :, :])
         return ReasonThenActOutput(direction, lm_loss, lm_tokens)

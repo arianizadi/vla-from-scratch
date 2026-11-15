@@ -234,3 +234,23 @@ def test_cutting_a_shoot_not_meant_fails_and_a_swapped_note_names_it():
         assert env.steps < env.max_steps, "the episode did not end at the wrong cut"
     finally:
         env.close()
+
+
+def test_training_paraphrases_say_the_same_task_without_held_out_words():
+    import json
+
+    table = R.paraphrase_table()
+    assert set(table) == set().union(*(R.training_instructions(k) for k in R.KINDS))
+    forbidden = R.heldout_only_words()
+    heldout = set().union(*(R.all_heldout_instructions(k) for k in R.KINDS))
+    for instruction, alternatives in table.items():
+        assert len(alternatives) >= 6
+        for alt in alternatives:
+            assert not R._words(alt) & forbidden, (alt, R._words(alt) & forbidden)
+            assert alt not in heldout
+        # the parts that decide the task (ordinal and end, colour and branches, the shoot kept) are kept
+        keep = {w for w in R._words(instruction) if w in {*R.ORDINALS.values(), *R.ENDS, *R.FLOWERS, *R.POSITIONS}}
+        assert all(keep <= R._words(alt) for alt in alternatives), instruction
+    # the committed table is this one
+    committed = json.loads((REPOSITORY / "sim" / "pickup" / "configs" / "reason_paraphrases.json").read_text())
+    assert committed == table

@@ -116,3 +116,17 @@ def test_each_process_draws_its_own_intervals():
     seen = {training_pair(dict(note="B", note_prev="A", note_age=4), 8)[1] for _ in range(200)}
     assert seen == {SAME, "B"}
     random.seed(0)  # the module's generator does not depend on the global one
+
+
+def test_paraphrases_replace_a_training_instruction_with_the_given_probability(tmp_path):
+    import json
+
+    from vla_foundry.data.processor.notes import paraphrase
+
+    table = tmp_path / "paraphrases.json"
+    table.write_text(json.dumps({"cut it": ["prune it", "remove it"]}))
+    rng = random.Random(0)
+    drawn = [paraphrase("cut it", str(table), 0.5, rng) for _ in range(400)]
+    assert set(drawn) == {"cut it", "prune it", "remove it"} and 150 < drawn.count("cut it") < 250
+    assert paraphrase("not listed", str(table), 1.0, rng) == "not listed"
+    assert paraphrase("cut it", None, 1.0, rng) == "cut it" and paraphrase("cut it", str(table), 0.0, rng) == "cut it"
