@@ -15,7 +15,11 @@ set -euo pipefail
 fast=${1:?fast policy experiment dir}; reasoner=${2:?reasoner experiment dir}; task=${3:?task}; episodes=${4:-50}
 shift $(( $# < 4 ? $# : 4 ))
 . "$(dirname "$0")/_common.sh"
-mode=${PICKUP_TWO_LEVEL_MODE:-subgoal}; [ "$mode" = notes ] && mode=note
+case ${PICKUP_TWO_LEVEL_MODE:-subgoals} in
+  subgoal|subgoals) flag=--subgoals ;;
+  note|notes) flag=--notes ;;
+  *) echo "PICKUP_TWO_LEVEL_MODE must be subgoals or notes" >&2; exit 1 ;;
+esac
 out=${PICKUP_OUT:-results/pickup/$(basename "$fast")/${task}_two_level_$(basename "$reasoner")}
 mkdir -p "$out"
 free_port() { "${sim_python[@]}" -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
@@ -41,7 +45,7 @@ for log in "$out/policy_server.log" "$out/reasoner_server.log"; do
   done
 done
 "${sim_python[@]}" -m sim.pickup.eval --task "$task" --episodes "$episodes" --port "$port" --out "$out" \
-  --expect_run "$(basename "$fast")" --${mode}s reasoner --reasoner_port "$rport" \
+  --expect_run "$(basename "$fast")" $flag reasoner --reasoner_port "$rport" \
   --expect_reasoner_run "$(basename "$reasoner")" --shutdown_server "$@"
 wait $server $rserver || true
 trap - EXIT
