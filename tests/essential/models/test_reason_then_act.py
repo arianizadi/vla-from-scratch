@@ -151,3 +151,19 @@ def test_a_backbone_that_hands_over_one_vector_is_refused():
         assert "all_tokens" in str(error)
     else:
         raise AssertionError("expected a ValueError")
+
+
+def test_generate_note_uses_the_backbones_own_cached_generation_when_it_has_one():
+    policy = _policy(next_token=lambda seq: STOP if seq[-1] >= 7 else seq[-1] + 1)
+    inner = policy.vision_language_backbone._model
+    calls = []
+
+    def generate(ids, pixels, mask, max_new_tokens, temperature, eos_token_id, use_cache):
+        calls.append((max_new_tokens, temperature, eos_token_id))
+        return torch.cat([ids, torch.tensor([[5, 6, 7, STOP, 3]])], dim=1)  # stops at STOP; what follows is ignored
+
+    inner.generate, inner.transformer = generate, None  # looks like our VLM
+    assert policy.generate_note(torch.tensor([[2, 4]]), None, stop_id=STOP, max_new_tokens=9) == [5, 6, 7]
+    assert calls == [(9, 0, STOP)]
+    assert policy.generate_note(torch.tensor([[2, 4]]), None, stop_id=STOP, use_cache=False) == [5, 6, 7]
+    assert len(calls) == 1  # without the cache, the loop

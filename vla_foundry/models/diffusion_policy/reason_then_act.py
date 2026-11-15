@@ -126,17 +126,24 @@ class ReasonThenActPolicy(DiffusionPolicy):
         attention_mask_images=None,
         stop_id=None,
         max_new_tokens=None,
+        use_cache=True,
         **kwargs,
     ) -> list[int]:
         """Greedy decoding for one prompt (batch of one) that ends where the note begins ("now:"): the tokens the
-        backbone writes until `stop_id` (not included) or `max_new_tokens`. Every step runs the whole sequence again
-        (no cache): a note is a few dozen tokens and most calls write "same"."""
+        backbone writes until `stop_id` (not included) or `max_new_tokens`. With `use_cache` the backbone's own
+        generation with a key-value cache is used where it has one (a Hugging Face model, our VLM); otherwise, or
+        without it, every step runs the whole sequence again."""
         if input_ids.shape[0] != 1:
             raise ValueError("generate_note takes one prompt at a time")
         max_new_tokens = max_new_tokens or self.max_note_tokens
-        ids = input_ids
-        mask = torch.ones_like(ids) if attention_mask is None else attention_mask
-        written = []
+        mask = torch.ones_like(input_ids) if attention_mask is None else attention_mask
+        if use_cache:
+            written = self._generate_cached(
+                input_ids, pixel_values, mask, attention_mask_images, stop_id, max_new_tokens, **kwargs
+            )
+            if written is not None:
+                return written
+        ids, written = input_ids, []
         for _ in range(max_new_tokens):
             outputs, _ = self._run_backbone(ids, pixel_values, mask, attention_mask_images, **kwargs)
             token = outputs.logits[:, -1].argmax(dim=-1)
@@ -145,4 +152,41 @@ class ReasonThenActPolicy(DiffusionPolicy):
             written.append(int(token))
             ids = torch.cat([ids, token[:, None].to(ids.dtype)], dim=1)
             mask = torch.cat([mask, torch.ones_like(mask[:, :1])], dim=1)
+        return written
+
+    def _generate_cached(self, input_ids, pixel_values, mask, mask_images, stop_id, max_new_tokens, **kwargs):
+        """The backbone model's own greedy generation, or None if it has none."""
+        backbone = self.vision_language_backbone
+        ids, pixels, mask, mask_images, model_kwargs = backbone._prepare_inputs(
+            input_ids=input_ids,
+            pixel_values=pixel_values,
+            attention_mask=mask,
+            attention_mask_images=mask_images,
+            **kwargs,
+        )
+        model_kwargs.pop("output_hidden_states", None)
+        inner = backbone._model
+        hf = getattr(inner, "model", None)
+        if hf is not None and hasattr(hf, "generate") and hasattr(hf, "config"):  # a Hugging Face model (VLMHF)
+            out = hf.generate(
+                input_ids=ids,
+                attention_mask=mask,
+                pixel_values=pixels,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                eos_token_id=stop_id,
+                pad_token_id=stop_id,
+                **model_kwargs,
+            )
+        elif hasattr(inner, "generate") and hasattr(inner, "transformer"):  # our VLM
+            out = inner.generate(
+                ids, pixels, mask, max_new_tokens=max_new_tokens, temperature=0, eos_token_id=stop_id, use_cache=True
+            )
+        else:
+            return None
+        written = []
+        for token in out[0, ids.shape[1] :].tolist():
+            if stop_id is not None and token == stop_id:
+                break
+            written.append(int(token))
         return written
