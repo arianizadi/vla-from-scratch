@@ -1073,6 +1073,43 @@ best final score of any pruning run so far, holding 79-90 over its last six chec
 faster (about 680-700 steps per success, as without memory, against the expert's 515): it fails less often, not
 quicker. Two seeds are not enough to call it; a third seed (44) is queued.
 
+### Step 9: named shoots (`prune_named`)
+
+The plant of `prune` (2-3 shoots at any angles); the instruction names one shoot by its height on the stem (lowest,
+middle when there are three, highest), and the robot turns the plant if needed and cuts that shoot only. The episode
+ends at that cut (450 steps at most); cutting another shoot ends it as a wrong shoot. Height was chosen because it does
+not change as the plate turns and reads clearly in the front camera; shoot lengths differ by too little, and a coloured
+tag is a few pixels at 224 px. 24 training phrasings (one word per position, two nouns, four sentence frames).
+`prune_named_heldout` uses the same layouts and named shoots with phrasings never trained on, a third each: new words
+for the position ("bottom", "uppermost", "nearest the pot", "between the other two"), new sentence frames ("snip ...",
+"please trim away ... but spare the others"), or both with new nouns ("branch", "offshoot"). The scripted expert succeeds
+in 99/100. 4000 demonstrations with random starts and a tail of 10 (`prune_named_4k_rs_tail10`).
+
+Final checkpoint, averaged weights, 100 layouts each (successes; wrong shoot / damaged / out of time):
+
+| Policy | Budget | Training phrasings | Held-out phrasings | Held out by kind (new words / new frame / both) |
+|---|---|---|---|---|
+| `dp_vit_lang_reactive` (49M), seed 42 | 20M | 53 (9 / 20 / 18) | 28 (12 / 30 / 30) | 11 / 14 / 3 |
+| the same, seed 43 | 20M | 62 (7 / 5 / 26) | 36 (28 / 6 / 30) | 7 / 21 / 8 |
+| the same, seed 44 | 20M | 67 (2 / 14 / 17) | 41 (22 / 14 / 23) | 9 / 24 / 8 |
+| the same, seed 42 | 2.5M | 22 (3 / 41 / 34) | 20 (13 / 38 / 29) | 3 / 12 / 5 |
+| `vla_qwen_tokens_reactive` (Qwen3-VL-2B), seed 42 | 2.5M | 21 (10 / 26 / 43) | 18 (16 / 24 / 42) | 4 / 12 / 2 |
+| the same, seed 43 | 2.5M | 22 (12 / 12 / 54) | 14 (11 / 9 / 66) | 3 / 6 / 5 |
+
+The custom 130M VLA (`vla_custom_tokens_reactive`, 10M) was stopped at checkpoint 6 of 10 (the stall detector of
+`train_resilient.sh` killed it during a slow save; see Operations), at 5-22 on training phrasings, failing on the
+motion (damage and time-outs), not the choice of shoot.
+
+The small policy learns to read the instruction: at 20M, when it cuts a shoot it is the named one about 7 times in 8
+with training phrasings (2-9 wrong against 53-67 right; chance is 1 in 2-3). Phrasings it never saw cost it a third of
+its successes and multiply the wrong cuts (12-28): a new sentence frame around a known position word is followed in
+about two thirds of the cases where the training phrasing is, a new word for the position mostly is not, as expected
+of a word table learned from scratch, which has no entry for "bottom" or "uppermost". At the budget Qwen could finish
+in a day (2.5M samples, about 60 samples/s against 1100), the two are level (21-22 against 22 on training phrasings,
+14-18 against 20 held out), and both are still learning the motion (damage and time-outs dominate), so this budget
+cannot show whether the pretrained language model generalises better. Answering that needs Qwen at a budget where the
+small policy already reads the instruction (it was at 38-42% with training phrasings from about 4M samples).
+
 ## Throughput
 
 | Model | Machine A (RTX 4090) | Machine B (L40S) |
