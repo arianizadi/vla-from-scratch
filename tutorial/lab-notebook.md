@@ -1071,7 +1071,36 @@ Averaged weights per checkpoint, 1 s memory: seed 42: 8, 32, 36, 56, 63, 65, 73,
 seed that learned well without memory (70-77 against 79-81) and lifts the seed that learned late from 56 to 89, the
 best final score of any pruning run so far, holding 79-90 over its last six checkpoints. It does not make the policy
 faster (about 680-700 steps per success, as without memory, against the expert's 515): it fails less often, not
-quicker. Two seeds are not enough to call it; a third seed (44) is queued.
+quicker. Two seeds are not enough to call it; a third seed (44) is training.
+
+**Test situations and robustness.** `tutorial/test-situations.md` adds situations on top of any plant task
+(`--scenario`): changed lighting, a knocked camera, another bench, distractor objects, wind, a bumped plate, a sticky
+button. A "/test" half of each visual one is never used for training (grow lights, a camera moved 3-4 cm, the
+greenhouse, other distractors). A bug found on the way: every leaf was drawn about 29 mm from its collision box and
+turned on its side (`leaf_fix`, off by default so earlier results stay comparable). Final averaged weights, 100
+layouts per situation (successes):
+
+| Policy | plain | lighting (/test) | camera (/test) | bench (/test) | distractors (/test) | wind | bump | sticky |
+|---|---|---|---|---|---|---|---|---|
+| Step-8 baseline, old leaves (`dp_vit_lang_reactive_prune2k_rs_tail10_20m`) | 79 (74 with the leaves fixed) | 17 (0) | 4 (0) | 13 (0) | 71 (69) | 75 | 74 | 49 |
+| Same recipe, demonstrations with the leaves fixed (`..._prune2k_leaffix_20m`) | 76 | 13 (0) | 3 (0) | 19 (0) | 56 (74) | 74 | 73 | 52 |
+| Same, with a third of the demonstrations under varied lighting, camera, bench and distractors (`..._prune2k_leaffix_vis_20m`) | 5 | 2 (0) | 2 (1) | 6 (2) | 7 (11) | 4 | 7 | 4 |
+
+The policies cope with physical disturbances (wind, a bump, distractors cost 1-20) and fail when what the camera
+sees changes (lighting, camera, bench: 0-19). With the leaves drawn where they are, the policy learns sooner (60/100
+at checkpoint 2 against 2-32 for the earlier runs) but ends at the same level (76). Mixing visual variation into a
+third of the demonstrations at this budget stops the policy from learning the task at all (0-10 over all eleven
+checkpoints), so it is not a way to robustness here; gentler variation or a longer budget would be the next try. The
+sticky button costs about 25 points: the policies do not notice a press that did nothing.
+
+**Aim drills.** Seven motor drills on the bare table (`tutorial/aim-range.md`: touch, touch along a pin, stop on,
+follow, flick between, press, pinch; the expert solves each at 499-500/500), as practice for the arm. Co-trained with
+pruning (75% pruning, 25% drills, `dp_vit_lang_reactive_prune2k_aim8k_co27m`): 22/100 on pruning (66 on the drills),
+against 79 without drills. Pretrained on drills, then fine-tuned 20M on pruning
+(`dp_vit_lang_reactive_prune2k_from_aim8k_20m`): 74/100, ahead early (23 at its first pruning checkpoint, where the
+earlier runs were at 0) and level at the end. Under the situations: wind 69, bump 64, sticky 32, lighting 17, camera
+3, against 75, 74, 49, 17, 4 without drills. The drills do not help pruning; avoidance drills (reaching into boxes,
+through gaps, around a hot zone) are built and collected but not trained.
 
 ### Step 9: named shoots (`prune_named`)
 
