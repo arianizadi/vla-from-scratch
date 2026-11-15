@@ -170,8 +170,8 @@ class RoboticsProcessor:
 
         With data.notes the text also carries notes (processor/notes.py): in training they come from each sample's
         metadata; a served policy passes batch["notes"], one (held note, current note or None) per sample, None
-        meaning a prompt that ends where the current note is to be written. When every sample has its current note,
-        the result has note_labels, the tokens of the language-model loss.
+        meaning a prompt that ends where the current note is to be written. In training the result also has
+        note_labels, the tokens of the language-model loss.
         """
         batch_text, batch_images, batch_attention_mask_images = [], [], []
         notes_now = []
@@ -248,7 +248,10 @@ class RoboticsProcessor:
             if key not in processed_batch:
                 processed_batch[key] = value
 
-        if self.note_tokens is not None and notes_now and all(n is not None for n in notes_now):
+        # Labels are for training only: a served policy's notes are passed in (batch["notes"]), and a note a model wrote
+        # need not survive the check that its tokens line up.
+        training = batch.get("notes") is None
+        if self.note_tokens is not None and training and notes_now and all(n is not None for n in notes_now):
             processed_batch["note_labels"] = self.note_tokens.labels(
                 processed_batch["input_ids"], processed_batch.get("attention_mask"), notes_now
             )
