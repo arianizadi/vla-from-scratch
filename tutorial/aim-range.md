@@ -101,3 +101,63 @@ per drill, random starts): each drill's success, time and accuracy, during pretr
 after fine-tuning (are they kept?). And on the test situations of [test-situations.md](test-situations.md) (wind, a
 bumped turntable, a knocked camera, ...), the final checkpoints against the baseline's: does general arm control make
 the policy steadier where its pruning demonstrations never went?
+
+## Avoidance drills
+
+The pruning policy's other failures, besides running out of time, are touching the flower (2-7 plants in 100), and
+the scripted expert itself once hit the flower when it turned the hand in place among the shoots (the back-out of the
+first takeover dataset). The test situations add more of the same: a thorny rose, a big leaf hiding a shoot, cuttings
+left on the plate. So a second family of drills (`sim/pickup/avoid.py`) puts things in the way: reach into awkward
+places, come in from the right direction, turn the wrist on the way, and grab or touch without hitting anything.
+
+| Task | Instruction | What is in the way | Success | Budget | Expert |
+|---|---|---|---|---|---|
+| `avoid_box` | "grab the cube in the box" | a box on a plinth, open on one side only, the cube just inside | hold the 30 mm cube off the floor for 5 steps | 300 | 500/500, 144 steps |
+| `avoid_shelf` | "grab the cube under the shelf" | a low board on two back legs; the cube on a short post under it | the same | 300 | 500/500, 144 steps |
+| `avoid_gap` | "touch the green dot through the gap" | two posts 20 cm tall, 24-27 cm apart; the dot beyond them | through the gap level, then turn the wrist (sideways or down, 20-40 degrees) to arrive along the dot's pin | 300 | 500/500, 140 steps |
+| `avoid_wall` | "touch the blue dot behind the wall" | a wall 10-16 cm tall, 5-8 cm in front of a low dot | touch it: the straight way runs into the wall, so go over | 240 | 500/500, 93 steps |
+| `avoid_hot` | "touch the yellow dot, keep out of the red zone" | a red sphere of radius 4-6 cm whose surface is 4-6 cm from the dot, beside or above it (a flower above a shoot) | touch the dot with no part of the arm inside the zone | 240 | 500/500, 104 steps |
+| `avoid_turn` | "touch the green dot in the pocket, then back out" | a pocket open on one side; the dot just inside | arrive along the dot's pin (the hand pitches 15-30 degrees inside the pocket), then come back out 6 cm | 360 | 500/500, 151 steps |
+
+Touching an obstacle with any part of the arm, or entering the hot zone, ends the episode as a failure. Every episode
+records the physics steps with such a contact, and the closest the arm came to the obstacles and to the zone (from
+MuJoCo's distance between the arm's collision shapes and theirs); `eval.py` reports them per drill with success and
+time. `avoid_mix` draws one drill per episode, `avoid_each` takes them in turn. As before, the obstacles exist only in
+the avoidance tasks' model.
+
+**The expert's safe approach.** Each drill has an approach direction (the way the gripper points as it comes in, and
+how the jaws lie: level through a box opening, under a shelf and through the gap; pointing down behind the wall,
+with the hand's long side along it) and a few waypoints: a staging point clear of everything, where the hand turns in
+place; a point just outside; the target; and for the pocket the way back out. Translations never turn the hand and
+turns never move it, so the waypoint follower's path is exactly a chain of straight segments and turns in place, and
+`aim_expert_avoid.AvoidExpert.check` walks it: every centimetre and every 0.08 rad it solves the arm's pose and
+measures the distance from every collision shape of the arm (links, hand, open or closed fingers) to every obstacle,
+the table and the zone. A layout is kept only if that distance stays above 6 mm all the way and every pose is reachable; the
+environment draws layouts until one is (layouts with no safe path are left out). For the hot zone the expert tries
+thirteen approaches (from above, and level or pitched from six directions) and takes the clearest. From a random
+start it goes straight to the staging point when that is clear, else up over everything first. In tight places it
+turns at half the usual rate and settles for a few steps after each turn: at full rate the arm lagged its turning
+set-point enough to brush a pocket wall.
+
+Three things found on the way. Obstacles that are moved and resized per episode need their bounding volume resized
+too (`model.bvh_aabb`): without it MuJoCo's collision detection kept the compile-time size, the arm passed through the
+walls without a contact, and a test that drives the hand into a wall caught it. The clearance check has to count the
+table: touching it fails no drill, but a hand pitched down toward a low dot pressed on it and stalled there (5 of 500
+hot-zone episodes) until the table was in the check. And a level hand reaching straight out from the robot's base is
+out of reach near the table, so the gap is crossed from the side.
+
+The expert column: successes on 500 evaluation layouts per drill from random starts, none touching anything, and the
+mean length of its episodes. The planned approaches clear the obstacles by a median of 6 mm (box), 11 mm (shelf), 15
+mm (gap, pocket) and 32 mm (wall), and the hot zone by 34 mm. Most layouts are safe at the first draw; the gap and the pocket need 2-4 draws on
+average (at most 13 and 33).
+
+**Dataset.** `avoid_mix_6k_rs_tail10`: 6000 demonstrations of `avoid_mix` from random starts with a tail of 10 frames,
+842,669 frames (959-1065 episodes and 12-20% of the frames per drill, 104-161 steps an episode on average); the expert
+succeeded in all 6600 attempts. Collecting it took 12 minutes on 32 processes.
+
+```
+sim/pickup/scripts/make_dataset.sh avoid_mix 6000 avoid_mix_6k_rs_tail10 --random_start --tail_steps 10
+```
+
+No policy has been trained on it yet: whether drills help at all is the question the aim-range runs above answer
+first.

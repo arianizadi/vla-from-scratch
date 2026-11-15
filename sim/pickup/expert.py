@@ -90,10 +90,17 @@ class ScriptedExpert:
     path passes within SIDE_BLOCKED of another stem. The second makes the choice follow from where the stem
     stands, not from fine distances to the other stems."""
 
+    turn_rate = 0.08  # radians per control step the set-point's orientation turns at most
+
     def __new__(cls, env: PickupEnv, *args, **kwargs):
-        """On an aim-range task (aim.py), the drills' expert, aim_expert.AimExpert."""
-        if cls is ScriptedExpert and getattr(env, "aim", None):
-            from .aim_expert import AimExpert  # imported here: it imports this module
+        """On an aim-range task (aim.py), the drills' expert, aim_expert.AimExpert; on an avoidance drill (avoid.py),
+        aim_expert_avoid.AvoidExpert."""
+        if cls is ScriptedExpert and getattr(env, "avoid", None):
+            from .aim_expert_avoid import AvoidExpert  # imported here: it imports this module
+
+            cls = AvoidExpert
+        elif cls is ScriptedExpert and getattr(env, "aim", None):
+            from .aim_expert import AimExpert
 
             cls = AimExpert
         return super().__new__(cls)
@@ -520,11 +527,11 @@ class ScriptedExpert:
             dyaw = self.yaw_off - self.des_yaw
             self.des_yaw += np.clip(dyaw, -0.12, 0.12)
             turned = abs(self.yaw_off - self.des_yaw) < 1e-6
-        else:  # turn toward the waypoint's orientation, at most 0.08 rad per control step
+        else:  # turn toward the waypoint's orientation, at most turn_rate (0.08 rad) per control step
             if self.des_R is None:
                 self.des_R = _rotz(self.des_yaw) @ self.R_home
-            self.des_R, left = _turn_toward(self.des_R, R_target, 0.08)
-            turned = left <= 0.08
+            self.des_R, left = _turn_toward(self.des_R, R_target, self.turn_rate)
+            turned = left <= self.turn_rate
 
         arrived = (
             np.linalg.norm(target - self.des_pos) < 1e-6 and np.linalg.norm(env.tcp_pos() - target) < 0.012 and turned

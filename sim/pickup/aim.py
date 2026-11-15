@@ -221,15 +221,10 @@ class AimEnv(E.PickupEnv):
             d.qpos[adr : adr + 3] = [2.0 + 0.3 * i, 2.0, -0.76 + E.OBJECTS[name]["rest_z"]]
             d.qpos[adr + 3 : adr + 7] = [1, 0, 0, 0]
         self._place_leaves(rng, [], 0)
-        self.drill = self.aim
-        if self.aim == "mix":  # from a stream of its own: the layout below is that of the drill's own task
-            p = np.array([MIX_WEIGHTS[k] for k in DRILLS])
-            self.drill = str(np.random.default_rng([seed, 37]).choice(DRILLS, p=p / p.sum()))
-        elif self.aim == "each":
-            self.drill = DRILLS[seed % len(DRILLS)]
+        self.drill = self._choose_drill(seed)
         self.target_label = self.drill
         if self._max_steps_given is None:
-            self.max_steps = BUDGET[self.drill]
+            self.max_steps = self._budget(self.drill)
         # per episode: what was drawn and how the episode is going
         self.dots: dict[str, np.ndarray] = {}  # colour -> position of each dot in view
         self.pin_dir = None  # aim_pose: unit vector the gripper must point along (into the dot)
@@ -250,19 +245,47 @@ class AimEnv(E.PickupEnv):
             m.body_pos[body] = PARK + [0.1 * list(self.pad_body).index(c), 0.2, 0]
         for i, c in enumerate(self.cube_qadr):
             self._put_cube(c, PARK[:2] + [0.1 * i, 0.4], -0.75 + CUBE_HALF, 0.0)
-        getattr(self, f"_reset_{self.drill}")(rng)
-        self.instruction = INSTRUCTIONS[self.drill].format(c=self.colour)
+        self._reset_drill(rng)
+        self.instruction = self._instructions()[self.drill].format(c=self.colour)
         self.target = f"aim_{self.colour}"
         self.active = [self.target] + [f"aim_{c}" for c in self._others()]
         mujoco.mj_forward(m, d)
         for _ in range(100):  # let the cubes and buttons settle
             mujoco.mj_step(m, d)
         self.cube_rest = {c: float(d.qpos[self.cube_qadr[c] + 2]) for c in self.cube_qadr}
+        self._after_settle()
         self.rest_z = {}
         self.last_action = np.concatenate([d.ctrl[:7], [1.0]]).astype(np.float32)
         self.steps = 0
         self.lift_count = 0
         return self.get_obs()
+
+    # hooks for a family of drills built on this one (avoid.py)
+    def _choose_drill(self, seed):
+        if self.aim == "mix":  # from a stream of its own: the layout is that of the drill's own task
+            p = np.array([MIX_WEIGHTS[k] for k in DRILLS])
+            return str(np.random.default_rng([seed, 37]).choice(DRILLS, p=p / p.sum()))
+        if self.aim == "each":
+            return DRILLS[seed % len(DRILLS)]
+        return self.aim
+
+    def _budget(self, drill):
+        return BUDGET[drill]
+
+    def _instructions(self):
+        return INSTRUCTIONS
+
+    def _reset_drill(self, rng):
+        getattr(self, f"_reset_{self.drill}")(rng)
+
+    def _after_settle(self):
+        pass
+
+    def _substep_hook(self):
+        pass
+
+    def _score(self):
+        getattr(self, f"_score_{self.drill}")()
 
     def _others(self):
         if self.drill == "press":
@@ -400,10 +423,11 @@ class AimEnv(E.PickupEnv):
             d.mocap_pos[self.dot_mocap[self.colour]] = self.path[min(self.steps + 1, len(self.path) - 1)]
         for _ in range(E.SUBSTEPS):
             mujoco.mj_step(self.model, d)
+            self._substep_hook()
         self.last_action = np.concatenate([d.ctrl[:7], [d.ctrl[7] / 255.0]]).astype(np.float32)
         self.steps += 1
         if not self.aim_success and not self.wrong:  # once ended, an episode's outcome stays (collect.py's tail)
-            getattr(self, f"_score_{self.drill}")()
+            self._score()
         done = self.aim_success or self.wrong or self.steps >= self.max_steps
         info = dict(
             success=self.aim_success,
@@ -483,7 +507,8 @@ def summary(episodes):
     """Per drill: episodes, successes, wrong targets, the mean steps of successful episodes, and the median error
     (millimetres; for aim_track the mean tracking error, for aim_flick the steps per dot)."""
     out = {}
-    for drill in DRILLS:
+    present = {e.get("aim", {}).get("drill") for e in episodes}
+    for drill in [*DRILLS, *sorted(present - set(DRILLS) - {None})]:
         eps = [e for e in episodes if e.get("aim", {}).get("drill") == drill]
         if not eps:
             continue
@@ -509,8 +534,18 @@ def summary(episodes):
                 for g in [[e for e in eps if e["aim"].get("path") == k]]
                 if g
             }
-        if drill == "pose":
+        if any(e["aim"].get("angle_deg") is not None for e in eps):
             angles = [e["aim"]["angle_deg"] for e in eps if e["aim"].get("angle_deg") is not None]
-            row["median_angle_deg"] = float(np.median(angles)) if angles else None
+            row["median_angle_deg"] = float(np.median(angles))
+        if any("hit" in e["aim"] for e in eps):  # avoidance drills (avoid.py)
+            clear = [e["aim"]["clearance_mm"] for e in eps if e["aim"].get("clearance_mm") is not None]
+            zone = [e["aim"]["zone_mm"] for e in eps if e["aim"].get("zone_mm") is not None]
+            row.update(
+                hit_obstacle=sum(e["aim"]["hit"] for e in eps),
+                entered_zone=sum(e["aim"]["in_zone"] for e in eps),
+                contact_steps=sum(e["aim"]["contacts"] for e in eps),
+                median_clearance_mm=float(np.median(clear)) if clear else None,
+                median_zone_mm=float(np.median(zone)) if zone else None,
+            )
         out[drill] = row
     return out

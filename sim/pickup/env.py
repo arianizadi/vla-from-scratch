@@ -16,6 +16,8 @@ Tasks
                the pot names the shoot); see reasoning.py
   aim_<drill> / aim_mix / aim_each  the aim range (aim.py): short motor drills on the bare table, apart from any
                task (touch, pose, hold, track, flick, press, pinch); "touch the red dot", "press the blue button"
+  avoid_<drill> / avoid_mix / avoid_each  avoidance drills (avoid.py): the same with obstacles and a keep-out zone
+               (box, shelf, gap, wall, hot, turn); touching an obstacle or entering the zone fails
 
 Scenarios (scenarios.py) change the world or the task on top of any of these: PickupEnv("prune", scenario="wind").
 """
@@ -194,6 +196,9 @@ for _kind in (*reasoning.KINDS, "mix"):
 # returns an aim.AimEnv for these; the model gets the drills' dots, buttons and cubes.
 for _drill in ("touch", "pose", "hold", "track", "flick", "press", "pinch", "mix", "each"):
     TASKS[f"aim_{_drill}"] = dict(aim=_drill, num_objects=1)
+# Avoidance drills (avoid.py): the aim range with obstacles and a keep-out zone; touching either fails the drill.
+for _drill in ("box", "shelf", "gap", "wall", "hot", "turn", "mix", "each"):
+    TASKS[f"avoid_{_drill}"] = dict(aim="avoid", avoid=_drill, num_objects=1)
 MAX_LEAVES = 4
 LEAF_HALF = (0.035, 0.0015, 0.065)  # metres: a plate 7 cm wide and 13 cm tall
 LEAF_RGBA = (0.22, 0.52, 0.16, 1)
@@ -466,7 +471,7 @@ def build_model(
     """`cut_stems`: build each flower as a base and a top part held together by a weld that a cut releases.
     `plant`: add the plant stand and the potted plant of the pruning tasks. `label`: with `plant`, also the card of
     the reasoning tasks. `scenarios`: scenarios.Scenario instances whose build() changes the model. `aim`: add the
-    dots, buttons and small cubes of the aim range (aim.py)."""
+    dots, buttons and small cubes of the aim range (aim.py); "avoid": also the obstacles of the avoidance drills."""
     spec = mujoco.MjSpec.from_file(str(PANDA_XML))
     spec.option.timestep = TIMESTEP
     spec.option.impratio = 10
@@ -624,6 +629,10 @@ def build_model(
         from . import aim as aim_range  # imported here: it imports this module
 
         aim_range.add_to_spec(spec)
+        if aim == "avoid":  # the avoidance drills' obstacles, keep-out zone and cube as well
+            from . import avoid as avoid_drills
+
+            avoid_drills.add_to_spec(spec)
     return spec.compile()
 
 
@@ -634,8 +643,12 @@ class PickupEnv:
 
     def __new__(cls, task: str = "pick_cube", *args, **kwargs):
         """An aim-range task (TASKS entry `aim`) gets its own environment, aim.AimEnv."""
-        if cls is PickupEnv and TASKS.get(task, {}).get("aim"):
-            from .aim import AimEnv  # imported here: it imports this module
+        if cls is PickupEnv and TASKS.get(task, {}).get("avoid"):
+            from .avoid import AvoidEnv  # imported here: it imports this module
+
+            cls = AvoidEnv
+        elif cls is PickupEnv and TASKS.get(task, {}).get("aim"):
+            from .aim import AimEnv
 
             cls = AimEnv
         return super().__new__(cls)
@@ -685,7 +698,7 @@ class PickupEnv:
             plant=self.plant_task,
             label=bool(TASKS[task].get("label")),
             scenarios=self.scenarios,
-            aim=bool(TASKS[task].get("aim")),
+            aim=TASKS[task].get("aim") or False,
         )
         self.data = mujoco.MjData(self.model)
         self.renderer = mujoco.Renderer(self.model, image_size, image_size)
