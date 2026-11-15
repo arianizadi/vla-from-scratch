@@ -151,7 +151,13 @@ Three.js for the arm. Animated explanations, driven by real data from the runs w
 - a top-down map of where each policy closed the gripper; the tolerance curve with an offset slider
 - 3D replay of rollouts from logged joint angles
 
-## Phase 7: what the policy intends, and reasoning in words  (planned, not started)
+## Phase 7: what the policy intends, and reasoning in words  (reasoning in words: stage 1 works)
+
+**Stage 1 result (details in the lab notebook, "Reasoning in words").** On four reasoning task kinds on the plant
+(ordinal, conditional, exclusion, hidden label), a two-level policy (Qwen3-VL-2B writes a short note whose sub-goal
+names the shoot, a small policy acts on the sub-goal) solves 133/200 against 21/100 for the same small policy reading
+the instruction alone, and 26/33 against 1/11 when a label it read is out of view at the cut. Swapping the note for
+another shoot's makes it cut that shoot, so the text drives the action. Held-out instructions are the weak point (66/200).
 
 The policies here go from pixels and joint angles to joint targets in one pass. They do not reason
 in words, and the instruction has one job: to say which object. Two kinds of work would open them up.
@@ -169,16 +175,16 @@ in words, and the instruction has one job: to say which object. Two kinds of wor
 
 **Reasoning in words** (retraining)
 
-- [ ] Text in the demonstrations. The scripted expert knows its phase (reach, descend, close, lift,
+- [x] Text in the demonstrations. The scripted expert knows its phase (reach, descend, close, lift,
       plan again) and where every object is, so `collect.py` can write a line of text per frame.
-- [ ] Reason, then act. The backbone writes a short text before each chunk (the object, where it is,
+- [x] Reason, then act. The backbone writes a short text before each chunk (the object, where it is,
       the phase) and the action head reads those tokens with the rest: the every-token conditioning
       of the VLM backbones already hands it the whole sequence. Background, to be checked when the
       chapter is written: embodied chain-of-thought (Zawalski et al., 2024).
-- [ ] Two levels. A vision-language model names the next sub-task at a low rate and the reactive
+- [x] Two levels. A vision-language model names the next sub-task at a low rate and the reactive
       policy carries it out. This is the form that fits trimming: choosing what to cut is the
       reasoning, following a stem that moves is the control.
-- [ ] The test that the text matters. Swap in the text of another object or phase and measure
+- [x] The test that the text matters. Swap in the text of another object or phase and measure
       whether the action follows it, as `--prefix_target distractor` does for motion. A text the
       action ignores is a narration.
 - [ ] The cost: latency per chunk with and without the text, and success at the same budget.
