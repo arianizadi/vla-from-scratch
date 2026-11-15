@@ -1,0 +1,71 @@
+# Reason, then act, on Qwen3-VL-2B (tutorial/reasoning-vla.md): vla_qwen_tokens_reactive.yaml whose backbone also
+# writes the expert's notes. The prompt carries the note held and the current one ("same" if it still stands); a
+# language-model loss on the current note's tokens (teacher-forced) is added to the flow-matching loss on the actions,
+# and the action head reads every token, the note's included. When served the backbone writes the note every chunk
+# (8 control steps) and then the actions are drawn. Needs a dataset written with notes (reasoning tasks).
+save_path: experiments/pickup
+wandb: false
+db_logging: false
+# Averaged weights are off here: a float32 copy of this backbone takes another 9 GB of GPU memory.
+# Switch them on with --ema.enabled True where that fits.
+
+model:
+  <<: !include ../../../vla_foundry/config_presets/models/vla_diffusion_paligemma2.yaml
+  type: reason_then_act
+  lm_loss_weight: 1.0
+  action_loss_weight: 1.0
+  vision_language_backbone:
+    type: vlm_backbone
+    hf_pretrained: Qwen/Qwen3-VL-2B-Thinking
+    num_vlm_layers_to_use: 4
+    num_trainable_vlm_layers: 4
+    conditioning: all_tokens
+    # The prompt's real tokens (chat template + 2 images x 49 + the instruction + the held note and the current
+    # one, about 260 for the longest seen) are right-aligned in a sequence of this length, padded in front with
+    # zeros, so that the action head sees the same length in a training batch and when served.
+    conditioning_len: 352
+
+data:
+  <<: !include ../../../vla_foundry/config_presets/data/vla_diffusion.yaml
+  processor: Qwen/Qwen3-VL-2B-Thinking
+  # Qwen's image processor takes pixel-count bounds, not height/width (the preset's PaliGemma-style
+  # `size: {height, width}` makes every batch fail). 224*224 = 50176 keeps the rendered resolution:
+  # 14x14 patches of 16 px, merged 2x2 -> 49 tokens per image, 98 for the 2 images.
+  processor_kwargs:
+    size:
+      shortest_edge: 50176
+      longest_edge: 50176
+  img_num_tokens: 49
+  dataset_modality:
+    - robotics
+  dataset_weighting:
+    - 1.0
+  camera_names:
+    - front
+    - wrist
+  image_indices:
+    - 0
+  lowdim_past_timesteps: 0
+  action_fields:
+    - action
+  proprioception_fields:
+    - state
+  language_instruction_types:
+    - original
+  # the held note and the current one in the prompt (vla_foundry/data/processor/notes.py); a note is written every
+  # 8 control steps when served, so the held note of a training sample is 1-8 frames old
+  notes: true
+  note_interval: 8
+  # The VLM consumes ~50 samples/s, so the prefetch queue fills up. Keep it small: queued batches live
+  # in the 2 GB /dev/shm of the container and overflowing it kills the run without a traceback.
+  num_workers: 4
+  prefetch_factor: 2
+
+distributed:
+  fsdp: false
+
+hparams:
+  <<: !include ../../../vla_foundry/config_presets/hparams/diffusion_policy.yaml
+  lr: 1e-4
+  per_gpu_batch_size: 16
+  global_batch_size: 16

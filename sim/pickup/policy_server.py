@@ -8,6 +8,12 @@ Inputs are pushed through the *same* RoboticsProcessor code path as training
 preprocessing and normalization cannot drift from what the model saw.
 
   python -m sim.pickup.policy_server --checkpoint_dir experiments/pickup/<run> --port 6200
+
+A reason-then-act policy (model type reason_then_act) also writes notes. An "infer" request may carry note_held, the
+note the client holds (None at the start of an episode), and note_now, a note to use instead of writing one; without
+note_now the backbone writes it (greedy) before the actions are drawn. The reply then carries note_now (what was
+written: a note or "same") and note (the note now held). A "reason" request does only the writing: the slow level of a
+two-level policy, served from a reason-then-act checkpoint trained without the action loss.
 """
 
 import argparse
@@ -21,6 +27,7 @@ import numpy as np
 import torch
 
 from vla_foundry.data.augmentations.decode_and_augment import fast_image_decoder
+from vla_foundry.data.processor.notes import SAME
 from vla_foundry.data.processor.robotics_processor import RoboticsProcessor
 from vla_foundry.file_utils import load_ema_checkpoint, load_model_checkpoint
 from vla_foundry.models import create_model
@@ -62,15 +69,60 @@ class Policy:
         self.action_field = data.action_fields[0]
         self.state_field = data.proprioception_fields[0]
         self.autocast = get_autocast(self.cfg.hparams.precision)
+        self.reasons = self.cfg.model.type == "reason_then_act"  # writes notes (see the module's docstring)
+        self.acts = not self.reasons or self.cfg.model.action_loss_weight > 0
+
+    def _decode(self, images: dict) -> dict:
+        return {name: fast_image_decoder(f"{name}.jpg", images[name]) for name in self.image_names}
 
     @torch.no_grad()
-    def infer(self, images: dict, state, prev_action, instruction: str, num_flow_steps: int = 10, noise_seed=None):
+    def write_note(self, images: dict, instruction: str, held: str | None) -> tuple[str, str]:
+        """(what the backbone writes after "now:", the note held afterwards)."""
+        if not self.reasons:
+            raise ValueError("this checkpoint does not write notes (model type is not reason_then_act)")
+        batch = {
+            "images": [self._decode(images)],
+            "language_instruction": [instruction],
+            "lowdim": [{}],
+            "notes": [(held or "", None)],
+        }
+        batch = self.processor.process_inputs(
+            batch, image_names=self.image_names, max_text_seq_len=self.cfg.data.max_text_seq_len
+        )
+        keys = ("input_ids", "pixel_values", "attention_mask", "attention_mask_images", "image_grid_thw")
+        inputs = {k: batch[k].to(self.device) for k in keys if isinstance(batch.get(k), torch.Tensor)}
+        with self.autocast():
+            tokens = self.model.generate_note(**inputs, stop_id=self.processor.note_tokens.stop_id)
+        now = self.processor.note_tokens.tokenizer.decode(tokens).strip() or SAME
+        return now, (held or "") if now == SAME else now
+
+    @torch.no_grad()
+    def infer(
+        self,
+        images: dict,
+        state,
+        prev_action,
+        instruction: str,
+        num_flow_steps: int = 10,
+        noise_seed=None,
+        note_held=None,
+        note_now=None,
+    ):
         """images: {"<camera>_t<idx>": jpeg bytes}; state: [past+1, D]; prev_action: [D] last executed command.
 
         noise_seed: seed of the noise the sampler starts from. None draws fresh noise for every chunk.
         Sending the same seed with every query of an episode starts every chunk from the same noise, so
         that where the data offers several ways to act, successive chunks keep choosing the same one.
+
+        Returns the actions, and for a reason-then-act policy also (note_now, note): the note written (or given) and
+        the note held afterwards.
         """
+        note = None
+        if self.reasons:
+            if note_now is None:
+                note_now, note = self.write_note(images, instruction, note_held)
+            else:
+                note = (note_held or "") if note_now == SAME else note_now
         if noise_seed is not None:
             torch.manual_seed(int(noise_seed))
         state = np.asarray(state, dtype=np.float32)[-(self.past + 1) :]  # no-history policies take only the last
@@ -79,17 +131,19 @@ class Policy:
         action_seq[: self.past] = prev_action
         state_seq = np.concatenate([state, np.repeat(state[-1:], self.total - len(state), axis=0)])
         batch = {
-            "images": [{name: fast_image_decoder(f"{name}.jpg", images[name]) for name in self.image_names}],
+            "images": [self._decode(images)],
             "language_instruction": [instruction],
             "lowdim": [{self.action_field: action_seq, self.state_field: state_seq}],
         }
+        if self.reasons:
+            batch["notes"] = [(note_held or "", note_now)]
         batch = self.processor.process_inputs(
             batch, image_names=self.image_names, max_text_seq_len=self.cfg.data.max_text_seq_len
         )
         batch = self.processor.add_action_and_proprioception_fields(
             batch, action_fields=[self.action_field], proprioception_fields=[self.state_field]
         )
-        inputs = {k: v.to(self.device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
+        inputs = {k: v.to(self.device) for k, v in batch.items() if isinstance(v, torch.Tensor) and k != "note_labels"}
         past_mask = torch.zeros(1, self.total, dtype=torch.bool, device=self.device)
         past_mask[:, : self.past] = True
         with self.autocast():
@@ -97,7 +151,8 @@ class Policy:
         out = out.float().cpu()
         if self.processor.normalizer is not None:
             out = self.processor.normalizer.denormalize_tensor(out, self.action_field, anchor_timestep=self.past)
-        return out[0, self.past :].numpy()  # [1 + future, D]: actions for t, t+1, ...
+        actions = out[0, self.past :].numpy()  # [1 + future, D]: actions for t, t+1, ...
+        return (actions, note_now, note) if self.reasons else actions
 
 
 def main():
@@ -134,21 +189,33 @@ def main():
                                 image_names=policy.image_names,
                                 past=policy.past,
                                 future=policy.future,
+                                reasons=policy.reasons,
+                                acts=policy.acts,
                             )
                         )
                         continue
                     t0 = time.perf_counter()
-                    actions = policy.infer(
+                    if msg["cmd"] == "reason":  # write a note only
+                        note_now, note = policy.write_note(msg["images"], msg["instruction"], msg.get("note_held"))
+                        conn.send(dict(note_now=note_now, note=note, latency_s=time.perf_counter() - t0))
+                        continue
+                    out = policy.infer(
                         msg["images"],
                         msg["state"],
                         msg["prev_action"],
                         msg["instruction"],
                         msg.get("num_flow_steps", 10),
                         msg.get("noise_seed"),
+                        msg.get("note_held"),
+                        msg.get("note_now"),
                     )
                     if policy.device.type == "cuda":
                         torch.cuda.synchronize()
-                    conn.send({"actions": actions.tolist(), "latency_s": time.perf_counter() - t0})
+                    reply = dict(latency_s=time.perf_counter() - t0)
+                    if policy.reasons:
+                        out, reply["note_now"], reply["note"] = out
+                    reply["actions"] = out.tolist()
+                    conn.send(reply)
 
 
 if __name__ == "__main__":

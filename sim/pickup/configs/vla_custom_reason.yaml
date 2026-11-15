@@ -1,0 +1,76 @@
+# Reason, then act, on our own 130M LLM -> VLM backbone (tutorial/reasoning-vla.md): vla_custom_tokens_reactive.yaml
+# whose backbone also writes the expert's notes, as vla_qwen_reason.yaml does for Qwen. Pass the VLM with
+# --model.vision_language_backbone.resume_from_checkpoint <.../checkpoint_N.pt>.
+save_path: experiments/pickup
+wandb: false
+db_logging: false
+# A running average of the weights is saved next to the trained ones (ema_N.pt) and evaluated with
+# them. While a policy is starting to work the average is far ahead of the trained weights
+# (tutorial/notes.md, "Averaged weights and the sampler's settings").
+ema:
+  enabled: true
+
+model:
+  type: reason_then_act
+  lm_loss_weight: 1.0
+  action_loss_weight: 1.0
+  vision_language_backbone:
+    type: vlm_foundry_backbone
+    num_vlm_layers_to_use: 4
+    conditioning: all_tokens
+    # 3 prompt tokens + 2 images x 256 + the instruction + the held note and the current one (about 680 for the
+    # longest); fixed so that the sequence the action head sees has the same length in training batches and when
+    # served.
+    conditioning_len: 768
+  transformer:
+    type: transformer
+    hidden_dim: 256
+    n_heads: 4
+    n_layers: 6
+    max_seq_len: 2048
+    is_causal: false
+  noise_scheduler:
+    num_timesteps: 1000
+    beta_start: 0.0001
+    beta_end: 0.02
+    clamp_range: [-3, 3]
+  use_flow_matching_scheduler: true
+
+data:
+  <<: !include ../../../vla_foundry/config_presets/data/vla_diffusion.yaml
+  processor: simple_vlm
+  processor_kwargs: {}
+  image_size: 224
+  img_num_tokens: 256
+  # 2 images x 256 tokens + the instruction and the notes
+  seq_len: 768
+  dataset_modality:
+    - robotics
+  dataset_weighting:
+    - 1.0
+  camera_names:
+    - front
+    - wrist
+  image_indices:
+    - 0
+  lowdim_past_timesteps: 0
+  action_fields:
+    - action
+  proprioception_fields:
+    - state
+  language_instruction_types:
+    - original
+  # the held note and the current one in the prompt (vla_foundry/data/processor/notes.py)
+  notes: true
+  note_interval: 8
+  num_workers: 8
+  prefetch_factor: 2
+
+distributed:
+  fsdp: false
+
+hparams:
+  <<: !include ../../../vla_foundry/config_presets/hparams/diffusion_policy.yaml
+  lr: 3e-4
+  per_gpu_batch_size: 32
+  global_batch_size: 32

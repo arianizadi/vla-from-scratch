@@ -3,6 +3,7 @@
 from vla_foundry.models.diffusion_policy.clip_hf import CLIPHF
 from vla_foundry.models.diffusion_policy.clip_openclip import CLIP_OpenCLIP
 from vla_foundry.models.diffusion_policy.diffusion_policy import DiffusionPolicy
+from vla_foundry.models.diffusion_policy.reason_then_act import ReasonThenActPolicy
 from vla_foundry.models.registry import register_model
 from vla_foundry.models.vlm_hf import VLMHF
 from vla_foundry.params.model_params import ModelParams
@@ -83,8 +84,21 @@ def create_diffusion_policy(model_params: ModelParams, load_pretrained: bool = T
     return DiffusionPolicy(model_params, vision_language_backbone, transformer, noise_scheduler)
 
 
+@register_model("reason_then_act")
+def create_reason_then_act(model_params: ModelParams, load_pretrained: bool = True):
+    from vla_foundry.models.diffusion import create_noise_scheduler
+    from vla_foundry.models.registry import create_model
+    from vla_foundry.models.vision_language_backbones import get_vision_language_backbone
+
+    vision_language_backbone = get_vision_language_backbone(model_params.vision_language_backbone, load_pretrained)
+    transformer = create_model(model_params.transformer, load_pretrained)
+    noise_scheduler = create_noise_scheduler(model_params)
+    return ReasonThenActPolicy(model_params, vision_language_backbone, transformer, noise_scheduler)
+
+
 __all__ = [
     "CLIPHF",
     "CLIP_OpenCLIP",
     "DiffusionPolicy",
+    "ReasonThenActPolicy",
 ]

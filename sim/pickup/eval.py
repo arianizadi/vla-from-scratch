@@ -4,6 +4,21 @@ Evaluation seeds start at 1_000_000 and are disjoint from the demonstration seed
 evaluated layout is unseen. Writes results.json (+ rollout videos) to --out.
 
   python -m sim.pickup.eval --task pick_cube --episodes 50 --port 6200 --out results/pickup/<run>
+
+Reasoning tasks (reason_*) are reported by kind, phrasing and number of shoots, with the correct notes (notes.py)
+written alongside every rollout. Three ways of running a policy on them:
+
+  plain          the policy reads the instruction (as for every other task)
+  reason-then-act  the server's policy writes a note every chunk and acts on it (model type reason_then_act);
+                 --notes expert hands it the correct note instead, --notes swap a note about another shoot
+  two-level      --subgoals: the served policy reads a sub-goal ("cut the middle shoot") as its instruction, from a
+                 reasoner served on --reasoner_port (reasoner), from the correct notes (expert), or about another
+                 shoot (swap)
+
+The swap modes are the test that the text matters: if the policy cuts the shoot the note names rather than the one the
+instruction means, it acts on the text. With --expert and --reasoner_port, the expert drives and the reasoner's notes
+are compared with the correct ones at every chunk; --reason_check does the same with the served policy as the
+reasoner (to evaluate a reasoner's checkpoints with eval.sh / eval_checkpoints.sh).
 """
 
 import argparse
@@ -19,6 +34,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from . import reasoning
 from .diagnostics import GraspProbe, summarize
 from .disturb import Disturbance
 from .env import BUTTONS, CONTROL_HZ, PRESS_TRAVEL, REACH_AZIMUTH, PickupEnv
@@ -79,12 +95,24 @@ class FrameHistory:
         return self.frames[max(0, len(self.frames) - 1 + k)]
 
 
-def infer_request(prev_obs, obs, prev_action, instruction, flow_steps, noise_seed=None, images_from=None, history=None):
+def infer_request(
+    prev_obs,
+    obs,
+    prev_action,
+    instruction,
+    flow_steps,
+    noise_seed=None,
+    images_from=None,
+    history=None,
+    note_held=None,
+    note_now=None,
+):
     """The message that asks the policy server for an action chunk: both cameras' images, the joint states at t-1
     and t, the command the robot is under and the instruction. The images are those of `prev_obs` and `obs` (t-1 and
     t), or, with `history` (a FrameHistory whose newest observation is `obs`), one per offset it keeps, for policies
     that look further back. `images_from`: a pair of observations to take the images from instead (to show the policy
-    stale images): the second for t, the first for every earlier offset."""
+    stale images): the second for t, the first for every earlier offset. `note_held` / `note_now`: for a policy that
+    writes notes, the note the client holds and a note to use instead of writing one (policy_server.py)."""
     if history is None:
         history = FrameHistory(prev_obs)
         history.push(obs)
@@ -105,6 +133,8 @@ def infer_request(prev_obs, obs, prev_action, instruction, flow_steps, noise_see
         instruction=instruction,
         num_flow_steps=flow_steps,
         noise_seed=noise_seed,
+        **({"note_held": note_held} if note_held is not None else {}),
+        **({"note_now": note_now} if note_now is not None else {}),
     )
 
 
@@ -213,6 +243,66 @@ def _named_summary(episodes):
     )
 
 
+NOTE_SAME = "same"  # what a policy writes when the note it holds still stands (vla_foundry/data/processor/notes.py)
+
+
+def note_agreement(written: str, correct: str) -> dict:
+    """Which fields of a written note match the correct one (exact text after normalising spaces)."""
+    a, b = reasoning.note_fields(written), reasoning.note_fields(correct)
+    return {k: " ".join(a.get(k, "").split()) == " ".join(b[k].split()) for k in reasoning.NOTE_FIELDS if k in b}
+
+
+def swap_shoot(env, seed):
+    """For the test that the text matters: a shoot the instruction does not mean, chosen per seed."""
+    others = [n for n in env.active if n not in env.targets]
+    rng = np.random.default_rng([seed, 41])
+    return others[int(rng.integers(len(others)))] if others else None
+
+
+def _reason_summary(episodes):
+    """Reasoning tasks: success, a shoot cut that was not meant, damage and running out of time, overall and by kind, by
+    phrasing (train or a kind of held-out instruction), by number of shoots, and for the hidden kind by whether the card
+    is out of view once the shoot faces the robot. With notes: how often each field of the policy's notes was right.
+    With a swap: how often the policy cut the shoot the note named, and how often one the instruction meant."""
+
+    def counts(eps):
+        out = dict(
+            episodes=len(eps),
+            successes=sum(e["success"] for e in eps),
+            wrong_shoot=sum(bool(e["wrong_shoots"]) for e in eps),
+            damaged=sum(e["damaged"] is not None for e in eps),
+            timeout=sum(not e["success"] and not e["wrong_shoots"] and e["damaged"] is None for e in eps),
+        )
+        swapped = [e for e in eps if e.get("swap_shoot")]
+        if swapped:
+            out["cut_note_shoot"] = sum(e["swap_shoot"] in e["cut_order"] for e in swapped)
+            out["cut_meant_shoot"] = sum(any(c in e["targets_named"] for c in e["cut_order"]) for e in swapped)
+        return out
+
+    def by(field):
+        values = sorted({str(e[field]) for e in episodes})
+        return {v: counts([e for e in episodes if str(e[field]) == v]) for v in values}
+
+    hidden = [e for e in episodes if e["kind"] == "hidden"]
+    agreement = [a for e in episodes for a in e.get("note_agreement", [])]
+    return dict(
+        **counts(episodes),
+        by_kind=by("kind"),
+        by_phrasing=by("phrasing"),
+        by_shoots=by("shoots"),
+        hidden_by_card_at_reach={
+            "out of view": counts([e for e in hidden if e["label_hidden_at_reach"]]),
+            "in view": counts([e for e in hidden if not e["label_hidden_at_reach"]]),
+        }
+        if hidden
+        else None,
+        notes_right={k: float(np.mean([a[k] for a in agreement if k in a])) for k in reasoning.NOTE_FIELDS}
+        if agreement
+        else None,
+        notes_written=sum(len(e.get("notes_written", [])) for e in episodes),
+    )
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--task", default="pick_cube")
@@ -291,11 +381,50 @@ def main():
         action="store_true",
         help="start every episode from a random gripper pose above the table instead of the home pose",
     )
+    # Reasoning tasks (see the module's docstring)
+    ap.add_argument(
+        "--notes",
+        choices=["model", "expert", "swap"],
+        default="model",
+        help="a policy that writes notes: let it write them (model), hand it the correct ones (expert), or notes about "
+        "a shoot the instruction does not mean (swap)",
+    )
+    ap.add_argument(
+        "--subgoals",
+        choices=["none", "reasoner", "expert", "swap"],
+        default="none",
+        help="two-level: the served policy's instruction is a sub-goal, from the reasoner on --reasoner_port, from the "
+        "correct notes, or about a shoot the instruction does not mean",
+    )
+    ap.add_argument("--reasoner_port", type=int, default=None, help="port of a policy_server.py serving a reasoner")
+    ap.add_argument(
+        "--expect_reasoner_run", default=None, help="stop unless the reasoner serves a checkpoint of this run"
+    )
+    ap.add_argument(
+        "--reason_check",
+        action="store_true",
+        help="the served policy is a reasoner: the expert drives and the server writes notes every chunk, compared "
+        "with the correct ones",
+    )
     args = ap.parse_args()
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     env = PickupEnv(args.task, max_steps=args.max_steps)
+    writer = None
+    if env.reason:
+        from .notes import NoteWriter
+
+        writer = NoteWriter(env)
+    reasoner = reasoner_info = None
+    if args.subgoals == "reasoner" or (args.expert and args.reasoner_port is not None):
+        assert env.reason and args.reasoner_port is not None, "a reasoner needs a reasoning task and --reasoner_port"
+        reasoner = connect(args.reasoner_port)
+        reasoner.send({"cmd": "info"})
+        reasoner_info = reasoner.recv()
+        check_server(reasoner_info, args.reasoner_port, args.expect_reasoner_run, None, None)
+        assert reasoner_info.get("reasons"), "the server on --reasoner_port does not write notes"
+    assert args.subgoals == "none" or env.reason, "--subgoals needs a reasoning task"
     expert = conn = None
     if args.expert:
         from .expert import ScriptedExpert
@@ -309,6 +438,14 @@ def main():
         check_server(server_info, args.port, args.expect_run, args.expect_number, args.expect_weights)
     # How far back the policy's images reach (t-1 and t unless its config takes older frames).
     offsets = image_offsets(server_info.get("image_names", [])) if conn is not None else [-1, 0]
+    rta = conn is not None and bool(server_info.get("reasons"))  # the served policy writes notes itself
+    if args.reason_check:
+        assert rta and env.reason, "--reason_check needs a server that writes notes and a reasoning task"
+        from .expert import ScriptedExpert
+
+        reasoner, reasoner_info = conn, server_info
+        expert = ScriptedExpert(env, seed=0, reactive=args.expert_reactive, side=args.expert_side)
+    assert args.notes == "model" or rta, "--notes expert / swap need a policy that writes notes"
     pilot = None
     if expert is None and (args.expert_prefix > 0 or args.first_prev_action == "expert"):
         from .expert import ScriptedExpert
@@ -353,7 +490,27 @@ def main():
             # the shoot to cut first: the lowest in prune_one / prune_turn / prune, the named one in prune_named
             off0 = float(_wrap_pi(REACH_AZIMUTH - env.shoot_azimuth(env.target)))
             turn = dict(plate=env.plate_angle(), turned=0.0, offset0=off0, first_press=None)
+        # reasoning tasks: the correct notes, the note the policy (or the reasoner) holds, a shoot to swap in, the
+        # sub-goal handed to a two-level policy's fast level, the notes written and how they compare, the cuts in order
+        held, subgoal, written, agreement, cut_order = "", None, [], [], []
+        swap = None
+        if writer is not None:
+            writer.reset()
+            if "swap" in (args.notes, args.subgoals):
+                swap = swap_shoot(env, seed)
         while not done:
+            if writer is not None:
+                writer.update()
+            fresh = not queue and expert is None and not (pilot is not None and env.steps < args.expert_prefix)
+            if reasoner is not None and (fresh or (expert is not None and env.steps % args.exec_horizon == 0)):
+                request = infer_request(history.at(-1), obs, env.last_action, env.instruction, 0, history=history)
+                reasoner.send({**request, "cmd": "reason", "note_held": held})
+                reply = reasoner.recv()
+                if reply["note_now"] != NOTE_SAME:
+                    written.append([env.steps, reply["note_now"]])
+                held = reply["note"]
+                agreement.append(note_agreement(held, writer.note))
+                subgoal = reasoning.subgoal(held) or subgoal
             if expert is not None:
                 queue = [expert.act()]
             elif pilot is not None and env.steps < args.expert_prefix:
@@ -363,21 +520,37 @@ def main():
                 if first_query and args.first_prev_action == "expert":
                     prev_action = pilot.act()
                 first_query = False
+                instruction, note_now = env.instruction, None
+                if args.subgoals in ("expert", "swap"):
+                    subgoal = reasoning.subgoal(writer.note if swap is None else writer.text(targets=[swap]))
+                if args.subgoals != "none":
+                    instruction = subgoal or "stop"
+                elif rta and args.notes != "model":
+                    correct = writer.note if args.notes == "expert" else writer.text(targets=[swap])
+                    note_now = NOTE_SAME if correct == held else correct
                 conn.send(
                     infer_request(
                         history.at(-1),
                         obs,
                         prev_action,
-                        env.instruction,
+                        instruction,
                         args.flow_steps,
                         noise_seed=seed if args.noise == "episode" else None,
                         images_from=(first_obs, first_obs) if args.stale_images else None,
                         history=history,
+                        note_held=held if rta else None,
+                        note_now=note_now,
                     )
                 )
                 reply = conn.recv()
                 latencies.append(reply["latency_s"])
                 queue = list(reply["actions"][: args.exec_horizon])
+                if rta:
+                    if reply["note_now"] != NOTE_SAME:
+                        written.append([env.steps, reply["note_now"]])
+                    held = reply["note"]
+                    if args.notes == "model":
+                        agreement.append(note_agreement(held, writer.note))
             if ep < args.videos:
                 frames.append(np.concatenate([obs["front"], obs["wrist"]], axis=1))
             action = queue.pop(0)
@@ -385,8 +558,11 @@ def main():
                 trace.append(trace_step(env, obs, action))
             probe.update(action)  # before the disturbance: the first close is judged on the scene it was aimed at
             disturbance.update(action)
+            cut_before = set(env.cut) if env.plant_task else None
             obs, done, info = env.step(action)
             history.push(obs)
+            if cut_before is not None:
+                cut_order += sorted(set(env.cut) - cut_before)
             if turn is not None:
                 angle = env.plate_angle()
                 turn["turned"] += abs(angle - turn["plate"])
@@ -425,6 +601,28 @@ def main():
                         wrong_shoots=info.get("wrong_shoots", []),
                     )
                     if env.named
+                    else {}
+                ),
+                # reasoning tasks: what was asked, what was cut in which order, the notes the policy wrote (control
+                # step, text), how its held note compared with the correct one at every chunk, the shoot of a swapped
+                # note
+                **(
+                    dict(
+                        kind=env.reason_kind,
+                        phrasing=env.phrasing_kind,
+                        shoots=len(env.active),
+                        targets_named=list(env.targets),
+                        target_positions=list(env.reason_task.target_positions),
+                        label=env.label_colour,
+                        label_hidden_at_reach=bool(env.label_hidden_at_reach()) if env.label_colour else None,
+                        wrong_shoots=info.get("wrong_shoots", []),
+                        cut_order=cut_order,
+                        notes_correct=[[int(t), n] for t, n in writer.written],
+                        notes_written=written,
+                        note_agreement=agreement,
+                        swap_shoot=swap,
+                    )
+                    if env.reason
                     else {}
                 ),
             )
@@ -500,6 +698,16 @@ def main():
         wall_time_s=time.time() - t_start,
         server=server_info,
         **(dict(named=_named_summary(episodes)) if env.named else {}),
+        **(
+            dict(
+                reasoning=_reason_summary(episodes),
+                notes=args.notes if rta else None,
+                subgoals=args.subgoals,
+                reasoner=reasoner_info,
+            )
+            if env.reason
+            else {}
+        ),
         per_episode=episodes,
     )
     write_json(out / "results.json", results, indent=2)
@@ -515,6 +723,11 @@ def main():
             f"median miss {g['median_xy_err_target_mm']:.0f} mm to the named object, "
             f"{g['median_xy_err_nearest_mm']:.0f} mm to the nearest object"
         )
+    if reasoner is not None and reasoner is not conn:
+        if args.shutdown_server:
+            reasoner.send({"cmd": "shutdown"})
+            reasoner.recv()
+        reasoner.close()
     if conn is not None:
         if args.shutdown_server:
             conn.send({"cmd": "shutdown"})

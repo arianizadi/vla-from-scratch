@@ -126,6 +126,12 @@ class RoboticsDataParams(DataParams):
     action_dim: int = field(default=None)
     proprioception_dim: int | None = field(default=None)
 
+    # Notes for reason-then-act policies (vla_foundry/data/processor/notes.py): the prompt carries the note held and the
+    # one written now, from frame metadata (note, note_prev, note_age) written with the demonstrations. note_interval:
+    # the control steps between two notes when served; the held note of a training sample is up to that old.
+    notes: bool = field(default=False)
+    note_interval: int = field(default=8)
+
     def __post_init__(self):
         try:
             self._post_init_impl()
@@ -143,7 +149,9 @@ class RoboticsDataParams(DataParams):
             raise ValueError("mask_padded_images requires pad_missing_images to be True")
 
         # Validate language instruction types
-        valid_types = {"original", "randomized", "verbose", "alternative"}
+        # "subgoal": a per-frame instruction (a column instruction_subgoal in a LeRobot dataset, e.g. the sub-goal of
+        # the expert's notes in sim/pickup), for the fast level of a two-level policy
+        valid_types = {"original", "randomized", "verbose", "alternative", "subgoal"}
         invalid_types = set(self.language_instruction_types) - valid_types
         if invalid_types:
             raise ValueError(f"Invalid language instruction types: {invalid_types}. Valid types are: {valid_types}")

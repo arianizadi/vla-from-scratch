@@ -323,3 +323,19 @@ class DiffusionPolicyParams(ModelParams):
         super().init_shared_attributes(cfg)
         object.__setattr__(self, "action_dim", cfg.data.action_dim)
         object.__setattr__(self, "proprioception_dim", cfg.data.proprioception_dim)
+
+
+@register_model_params("reason_then_act")
+@dataclass(frozen=True)
+class ReasonThenActParams(DiffusionPolicyParams):
+    """A diffusion policy on a vision-language backbone that also writes text: the prompt carries the previous note
+    and the current one (data.notes), the backbone is trained to write the current one (a language-model loss on its
+    tokens, teacher-forced), and the action head is conditioned on every token, the note's included. Needs a backbone
+    that predicts tokens (vlm_backbone or vlm_foundry_backbone) with conditioning: all_tokens."""
+
+    # Weights of the two losses. action_loss_weight 0 trains a reasoner only (the action head gets no gradient and is
+    # not run in training): the slow level of a two-level policy.
+    lm_loss_weight: float = field(default=1.0)
+    action_loss_weight: float = field(default=1.0)
+    # Longest note the policy server lets the backbone write (tokens).
+    max_note_tokens: int = field(default=96)

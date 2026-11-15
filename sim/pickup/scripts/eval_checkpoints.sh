@@ -12,6 +12,8 @@
 #   PICKUP_WATCH=1        keep polling for new checkpoints until the training log reports the end of
 #                         the run. Start it next to train_resilient.sh to evaluate while training.
 #   PICKUP_VIDEOS=<n>     rollout videos to save per checkpoint (default 0)
+#   PICKUP_EVAL_ARGS="..." more eval.py arguments for every evaluation (e.g. "--subgoals expert")
+#   PICKUP_EVAL_TAG=<tag> results go to results/pickup/<run>/<task>_<tag>/ instead (to keep such evaluations apart)
 set -uo pipefail
 exp=${1:?experiment dir}; task=${2:?task}; episodes=${3:-100}
 cd "$(dirname "$0")/../../.."
@@ -39,7 +41,7 @@ while true; do
       [ "$weights" = ema ] && file=$exp/checkpoints/ema_$n.pt
       [ -f "$file" ] || continue
       [ "$(age "$file")" -ge 60 ] || continue  # may still be being written
-      out=results/pickup/$name/$task/ckpt_${n}_$weights
+      out=results/pickup/$name/$task${PICKUP_EVAL_TAG:+_$PICKUP_EVAL_TAG}/ckpt_${n}_$weights
       [ -f "$out/results.json" ] && continue
       # Claim the evaluation by creating its directory; mkdir fails if another worker has it.
       # A claim without results after $stale seconds belongs to a worker that died: take it over.
@@ -50,7 +52,8 @@ while true; do
       fi
       echo "== $name checkpoint $n ($weights)"
       if ! PICKUP_CHECKPOINT=$ckpt PICKUP_WEIGHTS=$weights PICKUP_OUT=$out \
-        sim/pickup/scripts/eval.sh "$exp" "$task" "$episodes" --videos "${PICKUP_VIDEOS:-0}" 2>&1 | tail -3; then
+        sim/pickup/scripts/eval.sh "$exp" "$task" "$episodes" --videos "${PICKUP_VIDEOS:-0}" ${PICKUP_EVAL_ARGS:-} 2>&1 \
+        | tail -3; then
         rm -rf "$out"  # give the claim back so the evaluation is tried again
         sleep 20
       fi

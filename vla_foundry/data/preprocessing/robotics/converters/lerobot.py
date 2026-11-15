@@ -218,7 +218,13 @@ class LeRobotConverter(BaseRoboticsConverter):
 
     def get_language_instructions(self, sample_metadata) -> dict[str, str]:
         episode_index = sample_metadata["episode_index"]
-        return {"original": self.entries[episode_index]["tasks"][0]}
+        instructions = {"original": self.entries[episode_index]["tasks"][0]}
+        # Per-frame instructions: a column instruction_<type> gives the instruction of type <type> at each frame (for
+        # example a sub-goal that changes during the episode). Datasets without such columns are unchanged.
+        for key, value in sample_metadata.items():
+            if isinstance(key, str) and key.startswith("instruction_"):
+                instructions[key[len("instruction_") :]] = str(value)
+        return instructions
 
     def discover_chunks(self, source_paths: list[str]) -> list[str]:
         """Discover all chunk directories in the base path."""

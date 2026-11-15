@@ -7,6 +7,7 @@ eliminating the need for if/elif statements in the training loop.
 Batch handlers are registered using decorators from the registry module.
 """
 
+import logging
 from abc import ABC, abstractmethod
 
 import torch
@@ -322,3 +323,36 @@ class DiffusionPolicyBatchHandler(BatchHandler):
             mask = mask[:, -seq_len:]
 
         return loss_fn(input=predicted_direction, target=target_direction, mask=mask)
+
+
+@register_batch_handler("reason_then_act")
+class ReasonThenActBatchHandler(DiffusionPolicyBatchHandler):
+    """A diffusion policy that also writes a note: the flow-matching loss on the actions plus a language-model loss on
+    the note's tokens (data.notes), weighted by model.action_loss_weight and model.lm_loss_weight. The two parts are
+    logged every LOG_EVERY batches."""
+
+    LOG_EVERY = 200
+
+    def compute_loss(self, outputs, targets, loss_fn, cfg, mask=None):
+        total = cfg.model.lm_loss_weight * outputs.lm_loss
+        action_loss = None
+        if outputs.direction is not None:
+            action_loss = super().compute_loss(outputs.direction, targets, loss_fn, cfg, mask=mask)
+            total = total + cfg.model.action_loss_weight * action_loss
+        self._log(outputs.lm_loss, outputs.lm_tokens, action_loss)
+        return total
+
+    def _log(self, lm_loss, lm_tokens, action_loss):
+        sums = getattr(self, "_sums", None) or dict(n=0, lm=0.0, tokens=0, action=0.0)
+        sums["n"] += 1
+        sums["lm"] += float(lm_loss.detach())
+        sums["tokens"] += lm_tokens
+        sums["action"] += float(action_loss.detach()) if action_loss is not None else 0.0
+        self._sums = sums
+        if sums["n"] >= self.LOG_EVERY:
+            n = sums["n"]
+            logging.info(
+                f"reason_then_act: note loss {sums['lm'] / n:.4f} over {sums['tokens'] / n:.0f} tokens per batch, "
+                f"action loss {sums['action'] / n:.4f} (mean of the last {n} batches)"
+            )
+            self._sums = None

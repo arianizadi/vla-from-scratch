@@ -6,6 +6,7 @@ import numpy as np
 import torch
 
 from vla_foundry.data.processor import apply_chat_template, get_processor
+from vla_foundry.data.processor.notes import NoteTokens, training_pair
 from vla_foundry.data.robotics.normalization import RoboticsNormalizer
 from vla_foundry.file_utils import json_load
 from vla_foundry.params.data_params import RoboticsDataParams
@@ -21,6 +22,10 @@ class RoboticsProcessor:
         self.data_params = data_params
         self.vlm_processor = get_processor(data_params)
         self.processor_kwargs = getattr(data_params, "processor_kwargs", {})
+        # Reason-then-act policies: the prompt carries the held note and the current one (processor/notes.py)
+        self.note_tokens = (
+            NoteTokens(self.vlm_processor, apply_chat_template) if getattr(data_params, "notes", False) else None
+        )
 
         if pretrained_path is not None:
             self.normalizer = (
@@ -162,9 +167,17 @@ class RoboticsProcessor:
         Args:
             batch: Batch of samples to convert to tensors.
             image_names: Automatically generated from camera_names and image_indices in the data_params.
+
+        With data.notes the text also carries notes (processor/notes.py): in training they come from each sample's
+        metadata; a served policy passes batch["notes"], one (held note, current note or None) per sample, None
+        meaning a prompt that ends where the current note is to be written. When every sample has its current note,
+        the result has note_labels, the tokens of the language-model loss.
         """
         batch_text, batch_images, batch_attention_mask_images = [], [], []
-        for sample_images, instruction in zip(batch["images"], batch["language_instruction"], strict=False):
+        notes_now = []
+        for index, (sample_images, instruction) in enumerate(
+            zip(batch["images"], batch["language_instruction"], strict=False)
+        ):
             if image_names is None or len(image_names) == 0:
                 image_names = list(sample_images.keys())
                 logging.warning(
@@ -189,7 +202,15 @@ class RoboticsProcessor:
                 sample_images = [sample_images[k] for k in image_names if k in sample_images]
                 attention_mask_images = [1 for i in sample_images]
 
-            instruction = apply_chat_template(self.vlm_processor, len(sample_images), instruction)
+            if self.note_tokens is not None:
+                if batch.get("notes") is not None:
+                    held, now = batch["notes"][index]
+                else:
+                    held, now = training_pair(batch["metadata"][index], self.data_params.note_interval)
+                notes_now.append(now)
+                instruction = self.note_tokens.text(len(sample_images), instruction, held, now)
+            else:
+                instruction = apply_chat_template(self.vlm_processor, len(sample_images), instruction)
 
             batch_text.append(instruction)
             if len(sample_images) > 0:
@@ -226,6 +247,11 @@ class RoboticsProcessor:
         for key, value in batch.items():
             if key not in processed_batch:
                 processed_batch[key] = value
+
+        if self.note_tokens is not None and notes_now and all(n is not None for n in notes_now):
+            processed_batch["note_labels"] = self.note_tokens.labels(
+                processed_batch["input_ids"], processed_batch.get("attention_mask"), notes_now
+            )
 
         processed_batch["attention_mask_images"] = batch_attention_mask_images
         processed_batch["camera_names"] = self.data_params.camera_names
