@@ -1102,13 +1102,14 @@ motion (damage and time-outs), not the choice of shoot.
 
 The small policy learns to read the instruction: at 20M, when it cuts a shoot it is the named one about 7 times in 8
 with training phrasings (2-9 wrong against 53-67 right; chance is 1 in 2-3). Phrasings it never saw cost it a third of
-its successes and multiply the wrong cuts (12-28): a new sentence frame around a known position word is followed in
-about two thirds of the cases where the training phrasing is, a new word for the position mostly is not, as expected
-of a word table learned from scratch, which has no entry for "bottom" or "uppermost". At the budget Qwen could finish
+its successes and multiply the wrong cuts (12-28). Each held-out kind is about a third of the episodes: a new
+sentence frame around a known position word is followed nearly as well as a training phrasing (14-24 successes), a new
+word for the position much less (7-11), and both new least (3-8), as expected of a word table learned from scratch,
+which has no entry for "bottom" or "uppermost". At the budget Qwen could finish
 in a day (2.5M samples, about 60 samples/s against 1100), the two are level (21-22 against 22 on training phrasings,
 14-18 against 20 held out), and both are still learning the motion (damage and time-outs dominate), so this budget
 cannot show whether the pretrained language model generalises better. Answering that needs Qwen at a budget where the
-small policy already reads the instruction (it was at 38-42% with training phrasings from about 4M samples).
+small policy already reads the instruction (it was at 30-40% with training phrasings by 4-6M samples).
 
 ## Throughput
 
