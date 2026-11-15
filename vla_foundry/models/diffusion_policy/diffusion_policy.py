@@ -36,6 +36,10 @@ class DiffusionPolicy(BaseModel):
         self.diffusion_step_conditioning = model_params.diffusion_step_conditioning
         self.input_noise_std = model_params.input_noise_std
         self.num_action_head_repeats = model_params.num_action_head_repeats
+        # The action head reads the transformer's last hidden states and nothing else. Our own Transformer would
+        # also project every token onto its vocabulary, logits that are thrown away (for a 256-wide, 6-layer head
+        # with the default 50k vocabulary that projection is more arithmetic than the layers), so it is told not to.
+        self._head_kwargs = {"compute_logits": False} if isinstance(transformer, Transformer) else {}
         self.initialize_weights()
 
     def initialize_weights(self):
@@ -158,6 +162,7 @@ class DiffusionPolicy(BaseModel):
             inputs_embeds=transformer_input,
             output_hidden_states=True,
             use_cache=False,
+            **self._head_kwargs,
         )
 
         # Extract predicted direction to denoise the action (B, 1+N+P+T, D) -> (B, T, D)
@@ -253,6 +258,7 @@ class DiffusionPolicy(BaseModel):
                 inputs_embeds=transformer_input,
                 output_hidden_states=True,
                 use_cache=False,
+                **self._head_kwargs,
             )
 
             # Extract predicted direction to denoise the action

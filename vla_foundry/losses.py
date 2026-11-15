@@ -51,10 +51,13 @@ def masked_mse_loss(input: Tensor, target: Tensor, mask=None) -> Tensor:
     else:
         raise ValueError(f"Mask shape {mask.shape} is not compatible with input shape {input.shape}")
 
-    if mask.sum() == 0:
-        return torch.tensor(0.0)
-    else:
-        return torch.nn.functional.mse_loss(input, target, weight=mask)
+    # The weighted mean is sum(mask * (input - target)^2) / sum(mask), which is 0 / 0 for an empty mask. Asking
+    # `if mask.sum() == 0` in Python reads a value back from the GPU: the training loop then stops after every forward
+    # pass until the GPU has finished it, instead of queueing the backward pass behind it. Dividing by 1 where the sum
+    # is 0 gives the same 0 for an empty mask and the same bits for every other mask, with nothing read back.
+    total = mask.sum()
+    weighted_sum = torch.nn.functional.mse_loss(input, target, weight=mask, reduction="sum")
+    return weighted_sum / torch.where(total == 0, torch.ones_like(total), total)
 
 
 def _ignore_mask(loss_fn):

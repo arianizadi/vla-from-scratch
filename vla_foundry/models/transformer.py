@@ -240,6 +240,7 @@ class Transformer(TransformerBase):
         attention_mask=None,
         output_hidden_states=False,
         is_causal=None,
+        compute_logits=True,
         **kwargs,
     ):
         """
@@ -252,6 +253,9 @@ class Transformer(TransformerBase):
                 token for sequence s.
             output_hidden_states (bool): Whether to return the hidden states of the transformer.
             is_causal (bool): Whether the transformer is causal, default set in init, can be overridden by the caller.
+            compute_logits (bool): False skips the final norm and the projection onto the vocabulary and returns
+                logits=None. For callers that read the hidden states only (an action head): the hidden states are the
+                same either way, and the logits are a [batch, tokens, vocab_size] tensor nobody would look at.
         """
         if input_ids is not None:
             x = self.embeddings(input_ids)
@@ -291,10 +295,13 @@ class Transformer(TransformerBase):
                 hidden_states.append(x)
         if past_key_values[0] is None:
             past_key_values = None
-        x = self.norm(x)
-        output = self.output(x)
-        if self.model_params.cast_output_to_float32:
-            output = output.float()
+        if compute_logits:
+            x = self.norm(x)
+            output = self.output(x)
+            if self.model_params.cast_output_to_float32:
+                output = output.float()
+        else:
+            output = None
 
         return TransformerOutput(
             logits=output,

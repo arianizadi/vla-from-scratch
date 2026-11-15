@@ -128,6 +128,18 @@ class EMAModel(EMABaseModel):
 
         self.register_buffer("optimization_step", torch.zeros(1, dtype=torch.long))
 
+    def _apply(self, fn, recurse=True):
+        """Move or cast the averaged model, and leave the step counter where it is: on the CPU.
+
+        The counter is read on every update to compute the decay. On the GPU that read is a round trip: the training
+        loop would stop at every update until the GPU has finished the backward pass and the optimizer step queued
+        before it.
+        """
+        counter = self._buffers["optimization_step"]
+        super()._apply(fn, recurse)
+        self._buffers["optimization_step"] = counter
+        return self
+
     @property
     def model(self):
         """Return the averaged model."""
