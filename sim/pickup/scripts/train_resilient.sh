@@ -49,7 +49,9 @@ for attempt in $(seq 1 "${PICKUP_MAX_ATTEMPTS:-20}"); do
   [ -f "$log" ] && mv "$log" "$log.part$(date +%s)"
   latest=$(ls experiments/pickup/"$name"/checkpoints/checkpoint_*.pt 2>/dev/null | sort -V | tail -1)
   # Own session, so that the whole process tree (trainer, data-loader workers) can be killed at once.
-  setsid sim/pickup/scripts/train.sh "$@" ${latest:+--model.resume_from_checkpoint "$latest"} &
+  # (resume_weights_only False: a fine-tuning run started with --model.resume_weights_only True continues where it
+  # stopped, with its optimiser, schedule and data position, rather than starting over from its own checkpoint)
+  setsid sim/pickup/scripts/train.sh "$@" ${latest:+--model.resume_from_checkpoint "$latest" --model.resume_weights_only False} &
   job=$!
   while kill -0 $job 2>/dev/null; do
     sleep "${PICKUP_POLL_SECONDS:-30}" &

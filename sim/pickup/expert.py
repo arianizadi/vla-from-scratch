@@ -90,6 +90,14 @@ class ScriptedExpert:
     path passes within SIDE_BLOCKED of another stem. The second makes the choice follow from where the stem
     stands, not from fine distances to the other stems."""
 
+    def __new__(cls, env: PickupEnv, *args, **kwargs):
+        """On an aim-range task (aim.py), the drills' expert, aim_expert.AimExpert."""
+        if cls is ScriptedExpert and getattr(env, "aim", None):
+            from .aim_expert import AimExpert  # imported here: it imports this module
+
+            cls = AimExpert
+        return super().__new__(cls)
+
     def __init__(self, env: PickupEnv, seed: int = 0, reactive: bool = False, side: str = "clearance"):
         assert side in ("clearance", "preferred"), side
         self.env = env

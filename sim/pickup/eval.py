@@ -23,6 +23,9 @@ reasoner (to evaluate a reasoner's checkpoints with eval.sh / eval_checkpoints.s
 --scenario applies test situations (scenarios.py: lighting, camera, wind, bump, sticky, nothing_to_do, order, ...) on
 top of the task; each episode records what its scenarios drew, and results.json counts the outcomes by variation.
 Episodes of the same seeds with and without a scenario have the same layouts.
+
+The aim range's drills (aim_*, aim.py) are reported per drill: success, wrong targets, the steps of successful episodes
+and how close the gripper came (aim_each takes the drills in turn, for equal numbers of each).
 """
 
 import argparse
@@ -245,6 +248,13 @@ def _named_summary(episodes):
         by_position=by("named"),
         by_shoots=by("shoots"),
     )
+
+
+def _aim_summary(episodes):
+    """Aim range: success, wrong targets, time and accuracy per drill (aim.summary)."""
+    from .aim import summary
+
+    return summary(episodes)
 
 
 NOTE_SAME = "same"  # what a policy writes when the note it holds still stands (vla_foundry/data/processor/notes.py)
@@ -643,6 +653,8 @@ def main():
                     if env.named
                     else {}
                 ),
+                # aim range: the drill, the colour named, and how close the gripper came (aim.AimEnv.aim_record)
+                **(dict(aim=env.aim_record(info)) if getattr(env, "aim", None) else {}),
                 # reasoning tasks: what was asked, what was cut in which order, the notes the policy wrote (control
                 # step, text), how its held note compared with the correct one at every chunk, the shoot of a swapped
                 # note
@@ -759,6 +771,7 @@ def main():
         server=server_info,
         **(dict(named=_named_summary(episodes)) if env.named else {}),
         **(dict(scenario=_scenario_summary(env, episodes)) if env.scenarios else {}),
+        **(dict(aim=_aim_summary(episodes)) if getattr(env, "aim", None) else {}),
         **(
             dict(
                 reasoning=_reason_summary(episodes),

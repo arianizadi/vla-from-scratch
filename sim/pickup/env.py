@@ -14,6 +14,8 @@ Tasks
   reason_<kind> / reason_<kind>_heldout / reason_mix / reason_mix_heldout  the same plant; the shoots to cut follow
                from the instruction and what is seen (ordinal, conditional, exclusion) or was seen (hidden: a card in
                the pot names the shoot); see reasoning.py
+  aim_<drill> / aim_mix / aim_each  the aim range (aim.py): short motor drills on the bare table, apart from any
+               task (touch, pose, hold, track, flick, press, pinch); "touch the red dot", "press the blue button"
 
 Scenarios (scenarios.py) change the world or the task on top of any of these: PickupEnv("prune", scenario="wind").
 """
@@ -187,6 +189,11 @@ for _kind in (*reasoning.KINDS, "mix"):
         TASKS[f"reason_{_kind}" + ("_heldout" if _split == "heldout" else "")] = dict(
             plant=True, shoots=(2, 3), num_objects=3, reason=(_kind, _split), label=True
         )
+# The aim range (aim.py): short motor drills on the bare table, each with its own success rule and time budget
+# (aim.BUDGET); aim_mix draws one per episode (training data), aim_each takes them in turn (evaluation). PickupEnv(task)
+# returns an aim.AimEnv for these; the model gets the drills' dots, buttons and cubes.
+for _drill in ("touch", "pose", "hold", "track", "flick", "press", "pinch", "mix", "each"):
+    TASKS[f"aim_{_drill}"] = dict(aim=_drill, num_objects=1)
 MAX_LEAVES = 4
 LEAF_HALF = (0.035, 0.0015, 0.065)  # metres: a plate 7 cm wide and 13 cm tall
 LEAF_RGBA = (0.22, 0.52, 0.16, 1)
@@ -453,10 +460,13 @@ def _add_plant(spec, label=False):
         exclude.bodyname1, exclude.bodyname2 = "stand", other
 
 
-def build_model(cut_stems: bool = False, plant: bool = False, label: bool = False, scenarios=()) -> mujoco.MjModel:
+def build_model(
+    cut_stems: bool = False, plant: bool = False, label: bool = False, scenarios=(), aim: bool = False
+) -> mujoco.MjModel:
     """`cut_stems`: build each flower as a base and a top part held together by a weld that a cut releases.
     `plant`: add the plant stand and the potted plant of the pruning tasks. `label`: with `plant`, also the card of
-    the reasoning tasks. `scenarios`: scenarios.Scenario instances whose build() changes the model."""
+    the reasoning tasks. `scenarios`: scenarios.Scenario instances whose build() changes the model. `aim`: add the
+    dots, buttons and small cubes of the aim range (aim.py)."""
     spec = mujoco.MjSpec.from_file(str(PANDA_XML))
     spec.option.timestep = TIMESTEP
     spec.option.impratio = 10
@@ -610,6 +620,10 @@ def build_model(cut_stems: bool = False, plant: bool = False, label: bool = Fals
         _add_plant(spec, label=label)
     for scenario in scenarios:
         scenario.build(spec)
+    if aim:
+        from . import aim as aim_range  # imported here: it imports this module
+
+        aim_range.add_to_spec(spec)
     return spec.compile()
 
 
@@ -617,6 +631,14 @@ class PickupEnv:
     camera_names = ("front", "wrist")
     state_dim = 8
     action_dim = 8
+
+    def __new__(cls, task: str = "pick_cube", *args, **kwargs):
+        """An aim-range task (TASKS entry `aim`) gets its own environment, aim.AimEnv."""
+        if cls is PickupEnv and TASKS.get(task, {}).get("aim"):
+            from .aim import AimEnv  # imported here: it imports this module
+
+            cls = AimEnv
+        return super().__new__(cls)
 
     def __init__(self, task: str = "pick_cube", image_size: int = 224, max_steps: int | None = None, scenario=None):
         """`max_steps`: episode length limit; by default the task's own (200 unless TASKS says otherwise).
@@ -653,6 +675,7 @@ class PickupEnv:
             plant=self.plant_task,
             label=bool(TASKS[task].get("label")),
             scenarios=self.scenarios,
+            aim=bool(TASKS[task].get("aim")),
         )
         self.data = mujoco.MjData(self.model)
         self.renderer = mujoco.Renderer(self.model, image_size, image_size)
