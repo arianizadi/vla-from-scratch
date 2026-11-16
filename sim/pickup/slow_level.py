@@ -69,6 +69,9 @@ TURN = math.radians(10)  # the target's bearing moving by more than this is prog
 FAR = math.radians(45)  # a shoot further than this from facing the robot cannot be cut where it is
 JAWS_CUT = (0.45, 0.75)  # the jaws' opening (1 open, 0 shut) while they are set to cut
 RESET_LOOKS = 3  # looks in a row with the jaws set to cut, the target that far and the plate still
+STILL = math.radians(
+    6
+)  # a bearing that moved less than this since the last look: the plate stands (it turns 16 a look)
 # What SlowLevel takes where nothing is given, by where its percepts come from. The simulator's truth is exact: one look
 # counts, nothing is unseen and no cut needs taking back. The eyes err (tutorial/architecture-v2.md, "First results"):
 # three looks in a row, a part they are sure of counts although they judge no camera to show it, a cut is unmarked
@@ -142,7 +145,9 @@ class Supervisor:
                     level chooses again. 0: no such rule
     aim             an Execute also says what its shoot needs, from the part's remembered bearing (Decision.aim:
                     "in reach", "press blue", "press orange"), for a fast level trained to be told
-                    (dp_vit_lang_reactive_aim.yaml). Off by default: the fast level decides by itself
+                    (dp_vit_lang_reactive_aim.yaml). Off by default: the fast level decides by itself. A "press"
+                    stands until the plate stands still (STILL), as the note it was written from stood until the
+                    turn had ended: a shoot that comes within reach while the plate still turns is not yet "in reach"
 
     `step(percept, step)` takes one look; `step` is the control step, and every clock above counts control steps. The
     runner holds the arm for one control step per hold, so `hold_steps` counts those steps. `withdrawn` counts the
@@ -178,6 +183,7 @@ class Supervisor:
         self.text, self.plan = _compile(program)
         self.patience, self.max_recoveries, self.give_up = patience, max_recoveries, give_up
         self.aim = bool(aim)
+        self._aimed: dict[int, tuple] = {}  # part id -> (the aim last said of it, its bearing then)
         self.max_resets, self.resets = resets, 0
         self.reset_steps: list[int] = []
         self._cut_row = 0  # rule e: looks in a row with the jaws set to cut and the target out of reach
@@ -239,9 +245,7 @@ class Supervisor:
             return Decision("need_observation", None, detail="plant"), None
         outcome = self.plan.step(memory)
         if isinstance(outcome, Execute):
-            aim = ""
-            if self.aim:  # what the shoot needs, from where the memory last saw it point
-                aim = aim_of(next((part.bearing for part in memory.parts if part.id == outcome.part), None))
+            aim = self._aim(outcome.part) if self.aim else ""
             return Decision("execute", outcome.subgoal, aim=aim), outcome.part
         if isinstance(outcome, NeedObservation):  # "show the label" for the card, else hold
             return Decision("need_observation", outcome.subgoal, detail=outcome.what), None
@@ -250,6 +254,16 @@ class Supervisor:
                 self.declared_complete = step
             return Decision("complete", STOP), None
         return Decision("failed", STOP, detail=outcome.reason), None
+
+    def _aim(self, target: int) -> str:
+        """What the target needs, from where the memory last saw it point; a "press" is kept while the plate turns."""
+        bearing = next((part.bearing for part in self.memory.parts if part.id == target), None)
+        aim = aim_of(bearing)
+        said, then = self._aimed.get(target, ("", None))
+        if aim == "in reach" and said.startswith("press") and then is not None and abs(_wrap(bearing - then)) > STILL:
+            aim = said
+        self._aimed[target] = (aim, bearing)
+        return aim
 
     def _watch(self, decision: Decision, target: int | None, step: int) -> Decision:
         """Rule d: progress, and a recovery or a failure when there has been none for `patience` control steps."""

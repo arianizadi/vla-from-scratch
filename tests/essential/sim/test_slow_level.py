@@ -414,10 +414,15 @@ def test_an_execute_says_what_its_shoot_needs_when_asked_to_and_a_changing_aim_s
     assert first.instruction == "cut the middle shoot, press blue"
     plant.bearings = [-1.4, 0.5, -2.5]  # being turned: still out of the sector
     assert run.look()[-1].instruction == "cut the middle shoot, press blue"
-    plant.bearings = [-1.7, 0.2, -2.8]
+    plant.bearings = [-1.7, 0.2, -2.8]  # within it, and the plate still turning: the press stands, as in the notes
+    assert run.look()[-1].instruction == "cut the middle shoot, press blue"
+    plant.bearings = [-1.75, 0.15, -2.85]  # the plate has stopped (3 degrees since the last look)
+    assert run.look()[-1].instruction == "cut the middle shoot, in reach"
     assert run.look()[-1].instruction == "cut the middle shoot, in reach"
     plant.bearings = [-2.4, -0.5, 2.9]  # turned too far: back the other way
     assert run.look()[-1].instruction == "cut the middle shoot, press orange"
+    plant.bearings = [-2.1, -0.2, -3.1]
+    assert run.look()[-1].instruction == "cut the middle shoot, press orange"  # turning back, not there yet
     # one attempt and one outcome through all of it: the sub-goal is the same, only what is said with it changed
     assert _ledger(run) == [_entry("cut the middle shoot", 1, 5, None, "open")]
     assert [o[1:] for o in run.supervisor.outcomes] == [
