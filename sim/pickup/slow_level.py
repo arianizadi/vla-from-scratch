@@ -69,6 +69,9 @@ TURN = math.radians(10)  # the target's bearing moving by more than this is prog
 FAR = math.radians(45)  # a shoot further than this from facing the robot cannot be cut where it is
 JAWS_CUT = (0.45, 0.75)  # the jaws' opening (1 open, 0 shut) while they are set to cut
 RESET_LOOKS = 3  # looks in a row with the jaws set to cut, the target that far and the plate still
+RESET_GRACE = 4  # looks not counted once the target has passed from one shoot to another: the hand is coming back
+#                  from the shoot it cut with its jaws still at the cutting width, and has not chosen yet. Without it
+#                  the rule fires after the first cut of nearly every task of two cuts, 4 times in 5 for nothing
 STILL = math.radians(
     6
 )  # a bearing that moved less than this since the last look: the plate stands (it turns 16 a look)
@@ -142,7 +145,8 @@ class Supervisor:
                     from facing the robot, the plate has not turned and the jaws are set to cut (JAWS_CUT; `jaws`
                     of step) for RESET_LOOKS looks in a row, the fast level has gone for a shoot it cannot reach:
                     the decision asks for a recovery that ends at the start pose (detail "reset"), where the fast
-                    level chooses again. 0: no such rule
+                    level chooses again. The first RESET_GRACE looks at a target that follows another do not count.
+                    0: no such rule
     aim             an Execute also says what its shoot needs, from the part's remembered bearing (Decision.aim:
                     "in reach", "press blue", "press orange"), for a fast level trained to be told
                     (dp_vit_lang_reactive_aim.yaml). Off by default: the fast level decides by itself. A "press"
@@ -188,6 +192,8 @@ class Supervisor:
         self.reset_steps: list[int] = []
         self._cut_row = 0  # rule e: looks in a row with the jaws set to cut and the target out of reach
         self._cut_from: tuple | None = None  # the target of that row and its bearing when the row began
+        self._reset_target: int | None = None  # the last target an Execute named
+        self._reset_grace = 0  # looks still not counted, after the target passed from one shoot to another
         self.decision: Decision | None = None  # the last one
         self.outcomes: list[list] = []  # [step, kind, sub-goal or detail], whenever that changes
         self.looks = 0
@@ -289,10 +295,16 @@ class Supervisor:
 
     def _reset(self, decision: Decision, target: int | None, jaws: float | None, step: int) -> Decision:
         """Rule e: the jaws are set to cut a shoot that is out of reach, and the plate is not turning."""
+        if target is not None and target != self._reset_target:
+            if self._reset_target is not None:  # after another shoot: the hand is still coming back from it
+                self._reset_grace = RESET_GRACE
+            self._reset_target = target
+        waiting, self._reset_grace = self._reset_grace > 0, max(0, self._reset_grace - 1)
         part = next((p for p in self.memory.parts if p.id == target), None)
         bearing = None if part is None else part.bearing
         wrong = (
             decision.kind == "execute"
+            and not waiting
             and not decision.recover
             and jaws is not None
             and JAWS_CUT[0] <= jaws <= JAWS_CUT[1]

@@ -484,6 +484,40 @@ def test_jaws_set_to_cut_a_shoot_that_is_out_of_reach_ask_for_a_reset_as_often_a
     assert "resets" not in L.Supervisor("Cut(Rank(1,bottom))").record()  # as records were before the rule
 
 
+def test_a_target_that_follows_another_is_given_looks_of_grace_before_the_reset_rule_counts():
+    # two cuts: the lowest shoot faces the robot, the middle one faces away. After the first cut the hand comes back
+    # with its jaws still at the cutting width: those looks are not a choice of the fast level's and are not counted
+    def asked(jaws_after):
+        plant = Plant(bearings=[0.0, 2.0, 0.1])
+        sup = L.Supervisor("Cut(Except(All(),Rank(1,top)))", resets=2)
+        first = _jaws(sup, plant, [1.0] * 6 + [0.6] * 3)  # settles, then goes for the lowest shoot: in reach
+        assert first[-1].subgoal == "cut the lowest shoot" and not any(d.recover for d in first)
+        plant.cut.add(0)  # the cut is made; the memory marks it after its looks in a row, and the target passes on
+        step = 9
+        while sup.step(plant.percept(), step, jaws=0.6).subgoal != "cut the middle shoot":
+            step += 1
+        later = _jaws(sup, plant, jaws_after, first=step + 1)  # the looks after the one that first named the middle
+        assert all(d.subgoal == "cut the middle shoot" for d in later)
+        return [k for k, d in enumerate(later, start=1) if d.recover]
+
+    last = L.RESET_GRACE + L.RESET_LOOKS - 1  # the grace began with the look that named the new target
+    assert asked([0.6] * (last - 1)) == []  # the grace, and not yet three looks after it
+    assert asked([0.6] * (last + 1)) == [last]
+    assert asked([0.6] * (L.RESET_GRACE - 1) + [0.0] * 6) == []  # its jaws shut for a button meanwhile: all is well
+    # the first target of an episode has no grace (the arm starts at the home pose with open jaws): three looks
+    plant = Plant(bearings=[2.0, 0.1, 0.0])
+    sup = L.Supervisor("Cut(Rank(1,bottom))", resets=2)
+    assert [k for k, d in enumerate(_jaws(sup, plant, [1.0] * 6 + [0.6] * 3)) if d.recover] == [8]
+    # nor has the target that follows the card: the arm was not at a shoot
+    plant = Plant(bearings=[2.0, 0.1, 0.0], card="white", facing=False)  # white names the lowest shoot
+    sup = L.Supervisor("Cut(ReadLabel())", resets=2)
+    shown = _jaws(sup, plant, [1.0] * 8)
+    assert shown[-1].subgoal == L.SHOW
+    plant.facing = True
+    after = _jaws(sup, plant, [1.0] * 4 + [0.6] * 3, first=8)
+    assert after[-1].kind == "execute" and [d.recover for d in after][-3:] == [False, False, True]
+
+
 def test_the_no_progress_rule_gives_up_the_attempt_with_its_recoveries_counted():
     run = _stuck(max_recoveries=2, patience=160)
     run.look(80)
