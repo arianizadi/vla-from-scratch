@@ -42,12 +42,17 @@ same in every row:
 | v2, its scene from the simulator | 166 | 138 |
 | v2, its scene from the eyes (all of v2), the memory's rules as designed | 160 | 135 |
 | v2, its scene from the eyes, the memory's two options on | 169 | 148 |
+| the same, with a reset when the fast level has gone for a shoot it cannot reach | 180 | 165 |
 
 One run of 200 episodes per cell, with the written program and the eyes that also take the plant crop; a difference of
 fewer than about 15 episodes between two such runs can be chance. With a slow level that makes no error the same fast
-level solves 169 and 154: it is the ceiling, and nothing here improves it. The two options answer two errors that the
-closed loop showed and single frames did not (the eyes are right in 97% to 99% of frames): an inventory that never
-completes, and a cut seen that did not happen. Everything is under "First results".
+level solves 169 and 154: what a slow level can add by seeing and reasoning rightly ends there. The two options answer
+two errors that the closed loop showed and single frames did not (the eyes are right in 97% to 99% of frames): an
+inventory that never completes, and a cut seen that did not happen. The reset answers the fast level's own most
+frequent error: told to cut a shoot that faces away, it goes for the shoot without turning the plant in about one
+episode in ten, and three in four of those are lost unless the arm is taken back to its start pose to choose again.
+With a second seed of the fast level the last two rows are 169 and 145, and 175 and 157. Everything is under "First
+results".
 
 ## What limits the reasoning policy now
 
@@ -186,9 +191,9 @@ at the budget it can be given, its action side is the weaker part. The text hand
 
 Every policy falls to 0-19 of 100 when the lighting, the camera or the bench changes (lab notebook). That is a limit
 of the fast level's vision, separate from reasoning. The large model trains at about 60 samples per second against
-1100 for the small policy, and at about 20 with images at 448 pixels (the run in progress). The reasoner never learned
-the count in 600k samples; the 130M model, at about 130 samples per second with its checkpoints evaluated beside it,
-had it after 5M to 7M.
+1100 for the small policy, and at about 20 with images at 448 pixels (that run has since ended: 141 and 100 of 200).
+The reasoner never learned the count in 600k samples; the 130M model, at about 130 samples per second with its
+checkpoints evaluated beside it, had it after 5M to 7M.
 
 ### Ranking
 
@@ -212,10 +217,12 @@ For the slow level, yes, and a modest one. Its largest loss is what it sees, and
 new model (E0). More training of the same reasoner helps slowly: to 600k samples the count it writes is a constant
 (eleven checkpoints); continued to 1.5M samples (`qwen_reasoner_mix8k_600k_cont900k`) its first note has the right
 count for 128 of 200 plants and the two-level policy reaches 153 of 200 (lab notebook). The run with images at 448
-pixels tests more tokens from the same frozen tower, at a third of the speed; the tower probes below find the count
-already in the 49 tokens it has, so more tokens are not what it lacks. Whatever either shows, the held-out failures of
-section 2 remain (78 and 87 of 200 for the two continued reasoners). For the fast level, no: its lever is memory and
-it is being tested. For the one-model form, no: it has the same eyes and a weaker action side.
+pixels (more tokens from the same frozen tower, at a third of the speed; 600k samples and 500k more with paraphrases)
+ends at 141 and 100 of 200 (`qwen_reasoner_hires_mix8k_600k_para500k`), its first note with the right count for 133
+and 134 of 200 plants: no better at the count than the reasoners continued at 224 pixels (128 and 133; 118 and 124),
+as the tower probes below lead one to expect, since the count is already in the 49 tokens. The held-out failures of
+section 2 remain: 78, 87 and 100 of 200 for the three, against 148 for v2. For the fast level, no: its lever is memory
+and it is being tested. For the one-model form, no: it has the same eyes and a weaker action side.
 
 ## The hypothesis
 
@@ -232,10 +239,12 @@ measured since ("First results" below has the details).
 | P2 | Eyes trained on the simulator's labels read the count of unseen three-shoot plants in at least 97% of chunks, the flower's colour in 99%, the label in 95%, from 224-pixel views | under 90% for three-shoot plants with the plant crop as well | without the plant crop 97.4% of the frames of three-shoot plants, the flower 99.8%, the label 99.6% (96.7% of the frames whose plant has a card); with it 99.1%, 99.8% and 100% |
 | P3 | With the eyes and the memory in place of the truth, the result of P1 holds to within 8 episodes | a larger drop: the memory's rules or the eyes on the policy's own states are the problem | with the memory as designed, from 17 fewer to 3 more than the same program on the truth over eight runs (training instructions 152 to 160 against 169 and 166, held-out 135 to 157 against 154 and 138); within 8 in five of the eight. With the memory's two options the eight runs lie between 9 fewer and 10 more (628 and 641 of 800 over the four runs with and without the plant crop, against 627 on the truth) |
 | P4 | Given the true scene as text, the reasoner names the right first sub-goal for at least 98% of training instructions and 85% of held-out ones (the reasoner now: 159 and 74 of 200, from pixels) | under 70% held-out for every variant of the reasoner | the written program has the right meaning for 100 of 100 training and 92 of 100 held-out instructions |
-| P5 | The whole of v2 with T's fast level solves at least 150 of 200 with training instructions and 110 of 200 held-out | under 143 or under 85 | with the simulator's scene: 166 and 138; with the eyes: 160 and 135 (157 and 139 without the plant crop); with the memory's two options 169 and 148 |
+| P5 | The whole of v2 with T's fast level solves at least 150 of 200 with training instructions and 110 of 200 held-out | under 143 or under 85 | with the simulator's scene: 166 and 138; with the eyes: 160 and 135 (157 and 139 without the plant crop); with the memory's two options 169 and 148; with the reset as well 180 and 165 |
 | P6 | Training the slow level takes under one GPU-hour (3 to 7 now per reasoner run) | | 21 minutes of data collection and 35 minutes of training for the eyes (44 with the plant crop); the language model is not trained |
 
-The ceiling is the fast level: about 150 to 170 of 200 with the one used in T.
+The ceiling is the fast level: about 150 to 170 of 200 with the one used in T. (Measured later: that is the ceiling of
+what seeing and reasoning rightly can add. The runner can also repair one error of the fast level's own from outside,
+its wrong first move, and with that reset all of v2 solves 180 and 165: "First results".)
 
 One assumption of the hypothesis did not survive: the frozen vision was not the obstacle. The count is in the features
 the frozen tower hands on (the tower probes under "First results"); what the reasoner lacked was a loss on what it was
@@ -369,11 +378,15 @@ or three shoots, every flower, every label).
 
 The runner (`eval.py --slow_level v2`) hands the sub-goal to the fast level as its instruction, counts the control
 steps without progress, starts a recovery when asked to (`--recover N`, off by default), and ends the episode once
-`Complete` or `Failed` has stood for two seconds. Each episode records the program, every change of outcome, the
-recoveries, whether a `Complete` was false, how the memory compared with the simulator at every look, and a ledger:
-one entry per attempt (the cut of one part, or showing the label) with what it was meant to bring about, closed only
-by what the memory then shows (confirmed, with the look that showed it; violated; superseded; given up) and open
-otherwise.
+`Complete` or `Failed` has stood for two seconds (four with the eyes). Two things were added for the fast level's
+first move ("First results"): with `--aim` the sub-goal says what its shoot needs ("cut the lowest shoot, press
+blue"), for a fast level trained to be told; and with `--resets N` the arm is taken back to the start pose when the
+jaws are set to cut a shoot that is more than 45 degrees out of reach and the plate is not turning, three looks in a
+row, so that the fast level chooses again (a target that follows another is given four looks first: the hand is still
+coming back from the shoot it cut). Each episode records the program, every change of outcome, the recoveries, whether
+a `Complete` was false, how the memory compared with the simulator at every look, and a ledger: one entry per attempt
+(the cut of one part, or showing the label) with what it was meant to bring about, closed only by what the memory then
+shows (confirmed, with the look that showed it; violated; superseded; given up) and open otherwise.
 
 **5. Fast level.** As it is: the small flow-matching policy that reads the sub-goal
 (`dp_vit_lang_reactive_subgoal.yaml`, or `dp_vit_lang_frames_1s_subgoal.yaml` once those runs are in).
@@ -395,6 +408,7 @@ fewer than about 15 episodes is not a finding.
 |---|---|---|
 | the first design: the reasoner writes notes from pixels (T, H) | 133 | 66 |
 | the same reasoner continued to 1.5M samples, without and with paraphrases (lab notebook) | 153, 129 | 78, 87 |
+| the same reasoner with images at 448 pixels (600k samples, then 500k with paraphrases) | 141 | 100 |
 | **E0**: the same reasoner (600k) handed the true `see` field | 159 | 96 |
 | **v2, the simulator's scene, the task's own program** | 169 | 154 |
 | **v2, the simulator's scene, the written program** | 166 | 138 |
@@ -569,6 +583,134 @@ control steps without progress; 60 and 38 recoveries in 38 and 28 episodes, of w
 episodes were given up), with more wrong shoots cut (5 and 8 against 2). A scripted move out of the plant does not
 turn time-outs into successes here. It stays off.
 
+**Where the fast level loses: the first move.** With a correct sub-goal from the first second, 5 to 8 of the 200
+episodes of every run on the simulator's scene end without a button pressed or the jaws closed: 8 of the 22 episodes
+out of time with the task's program. Traces of such episodes (four validation layouts, eight repetitions each) show an
+arm that is not idle. In its first second it sets its jaws to the cutting width, goes to the plant and waits there for
+a shoot that faces away. In the other repetitions of the same layouts it shuts its jaws, presses a button and cuts.
+Over the 32 runs of v2 with this fast level it happens in 139 of the 2047 episodes whose first sub-goal is "cut the
+lowest shoot" (6.8%) and in about 1% of those for the middle and the highest shoot; in 1 of the 940 episodes whose
+shoot starts within 30 degrees of reach; and twice as often when the plate has to turn counter-clockwise as when
+clockwise (11.8% against 5.8%, the lowest shoot more than 45 degrees away).
+
+A probe asked the fast level for its first chunk 24 times in each of 16 validation layouts whose lowest shoot is 64 to
+179 degrees from reach. 89 of the 384 chunks (23%) set the jaws to cut, the others shut them to press; 18 of 128
+rollouts from those states stood at the plant after eight seconds. Asked again where they stood, all 18 answered with
+the jaws set to cut, 24 times of 24: the first choice is not revisited. Put back at the home pose with open jaws, they
+answered as at the start (27% to cut). So "turn the plant first, or go" is drawn once, with the odds of the first
+chunk, and a wrong draw costs the episode.
+
+The same judgment decides the way round. Over six runs (1200 episodes), 768 began with the first shoot out of reach:
+462 with the button of the shorter way (95% solved, 295 control steps on average), 208 with the other (88%, 369
+steps), 98 with no press at all (11 solved). Were every such start like the first group, the fast level would solve
+about 8 more episodes in 100. The slow level knows the part's bearing, and the sub-goal did not say it: that is the
+first item of the fast-level track below.
+
+**A reset for a wrong first move (E11).** The jaws say which of the two the fast level has chosen: it shuts them to
+press a button and sets them to the cutting width on its way to a shoot. Rule e of the runner (`eval.py --resets N`,
+off by default): the jaws at the cutting width, the target more than 45 degrees from reach and the plate standing,
+three looks in a row, and the arm is taken back to the start pose with open jaws, where the fast level chooses again;
+at most N times an episode.
+
+To see what the rule fires on, two runs of the 200 validation layouts were traced without it (162 and 166 solved) and
+the rule was run over the traces. It would have fired in 55 and 46 episodes, and they hold 59 of the 72 episodes not
+solved:
+
+| Where the rule fires | Episodes of 400 | Solved unhelped | Solved with the reset (three runs of 200) |
+|---|---|---|---|
+| the first move of a task of one cut (before step 60) | 40 | 10 | 58 of 66 |
+| later in a task of one cut, after a turn that ended short or went the long way round | 21 | 0 | 16 of 37 |
+| a task of two cuts, after the first cut, while the hand comes back with its jaws still at the cutting width | 40 | 32 | 49 of 60 |
+
+So the wrong first move costs more than the 5 to 8 episodes counted above, which were the arms that never pressed or
+closed: about 20 episodes in 200 start for a shoot that faces away, three in four of them are lost unhelped, and a
+reset saves most. The third row is a false alarm: the rule fired after the first cut of nearly every task of two cuts
+and gained nothing there. The first four looks at a target that follows another are therefore not counted
+(`RESET_GRACE`); over the traces the rule then fires in 8 of those 40 episodes and in every other as before.
+
+On the validation layouts, with the simulator's scene and the task's program, 200 episodes a run: 171, 161, 162 and
+166 without the reset; 178 and 173 with up to two, as first built; 173 and 179 with the grace. With the eyes and both
+options: 162 without, 180 as first built, 174 with the grace. With the grace a reset was asked for in 34, 41 and 32
+episodes of 200 (54, 63 and 46 as first built), and 17 of those 107 were tasks of two cuts (60 of 163 before). The
+grace takes away most of the resets after a first cut and changes nothing that 200 episodes can show (526 of 600 with
+it, 531 of 600 as first built, 494 of 600 in the three matching runs without the rule). The rule was tuned on this
+fast level. Under the seed-44 fast level, which it had not seen, the simulator's scene gives 170 without it and 182
+with it, and the eyes 180 (both before the grace).
+
+**Other fast levels under v2 (E12).** The slow level stays and the fast level changes. A fast level is judged first on
+the validation layouts under a slow level without errors (the simulator's scene, the task's program): nothing of the
+evaluation layouts is in that number, and nothing of the eyes. Episodes solved of 200:
+
+| Fast level | Validation layouts, the simulator's scene | the same with up to two resets | Validation, the eyes with both options and resets | Evaluation layouts, the simulator's scene: training instructions, held out | All of v2 (the first eyes, both options, no resets), the task's program | the written program |
+|---|---|---|---|---|---|---|
+| the sub-goal fast level, seed 43 (the one used above) | 171, 161, 162, 166 | 173, 179 | 174 | 169, 154 | 160, 151 | 169, 148 |
+| the same, seed 44 | 170 | 182 (no grace) | 180 (no grace) | 170, 171 | 167, 155 | 169, 145 |
+| with a memory of one second, seed 42 | 157 | 157 | 164 | 151, 143 | 136, 137 | 147, 131 |
+| the sub-goal fast level, seed 42 (the weak one) | | | | 99, 72 | | |
+
+Two seeds of the sub-goal fast level carry v2 equally, on the validation layouts and on the evaluation's; the third is
+the weak one of "The fast level is the ceiling". A memory of one second lifts that seed from 99 and 72 to 151 and 143
+under a slow level without errors, and it stays below the two strong seeds that have no memory, with more wrong shoots
+cut (10 to 16 episodes in 200 against 2 to 7). The reset does not help it: 157 with and without. It is asked for later
+in a task of one cut far more often than with seed 43 (43 episodes of 200 against 11 and 12, 14 of them solved); wrong
+shoots fall from 10 to 1 and episodes out of time rise from 29 to 40. Whether a memory helps a seed that is already
+strong is the second run with one, still in training. Between seeds 43 and 44 the validation layouts do not decide
+(165 on average over four runs against 170 in one; 176 against 182 with resets), so v2 stays on seed 43, which every
+other measurement here was made with, and seed 44 is its repetition: the seed of the fast level moves the result more
+than anything the slow level still gets wrong.
+
+**With the reset, once on the evaluation layouts.** The memory's two options, the reset and its grace, the eyes and
+the fast level were all settled on the validation layouts. All of v2 with the first eyes, both options and up to two
+resets (`--resets 2`), 200 episodes a cell:
+
+| Fast level | Training instructions: the task's program, the written one | Held out |
+|---|---|---|
+| seed 43, without resets (above) | 160, 169 | 151, 148 |
+| seed 43, up to two resets | 178, 180 | 183, 165 |
+| seed 44, without resets | 167, 169 | 155, 145 |
+| seed 44, up to two resets | 171, 175 | 174, 157 |
+| the simulator's scene, without resets, seed 43 | 169, 166 | 154, 138 |
+| the simulator's scene, without resets, seed 44 (the task's program only) | 170 | 171 |
+
+A reset was asked for in 33 to 37 episodes of 200 with seed 43 and 25 to 32 with seed 44. Every cell rises: 706 of 800
+against 628 with seed 43, 677 against 636 with seed 44. With the reset v2 passes what the same fast level solves under
+a slow level without errors and without resets (169 and 154), because what the reset repairs is the fast level's error
+and not the slow level's. It also takes away the wrong shoots: with the task's program and seed 43 a wrong shoot was
+cut in 7 and 8 episodes of 200 before and in 0 and 1 now. A fast level that has gone for a shoot it cannot reach ends
+by closing on one it can. What is left with the written program on held-out instructions is the writer's: 17 episodes
+with a wrong shoot cut, the instructions it reads as "keep the middle" (a known limit of the writer, left as it is).
+With seed 44 the first eyes, which never saw that fast level's states, still end 7 and 8 episodes of 200 on a false
+`Complete` with training instructions.
+
+**Eyes trained on the fast level's own frames (E8).** `eval.py --record_scene` recorded 2000 rollouts of the fast
+level under v2 on the simulator's scene (new layouts; 178,840 frames) and 200 more for validation (18,052 frames),
+each frame with the simulator's truth. `eyes_vit_fwp_pol_2m` was trained on the expert's frames and these, 2M samples.
+On the fast level's validation frames the first eyes report a whole part in view as cut, with confidence, 337 times in
+42,598 (0.79%, against 0.11% on the expert's frames); the new eyes 45 times (0.11%), and they are as good as the first
+on the expert's frames (the count 98.9%, 32 such reports in 40,948). In closed loop, the evaluation layouts:
+
+| Eyes, memory | Training instructions: the task's program, the written one | Held out |
+|---|---|---|
+| the first eyes, as designed | 152, 160 | 157, 135 |
+| trained also on the fast level's frames, as designed | 160, 146 | 147, 136 |
+| the first eyes, both options | 160, 169 | 151, 148 |
+| trained also on the fast level's frames, both options | 166, 162 | 157, 136 |
+| the simulator's scene | 169, 166 | 154, 138 |
+
+With the memory as designed, 0 to 2 episodes of 200 ended on a false `Complete` (3 to 6 with the first eyes) and 0 to
+2 on a `Failed` for a shoot to keep (0 to 7); the memory ended with a cut that had not happened in 0 to 4 (3 to 10).
+With both options: 0 to 1 and 0 to 1 (0 to 4 and 1 to 3), and 0 episodes with a cut unmarked (2 to 8). The new eyes do
+what they were trained for: the cut that did not happen is nearly gone, and with both options the memory no longer has
+a cut to take back. The episodes solved do not rise (589 and 621 of 800 against 604 and 628, inside the spread of such
+runs): the first eyes lost few episodes to that error, and the two options had recovered most of them. What v2 still
+loses is the fast level's. Which eyes to go on with was decided on the validation layouts, with both options and up to
+two resets: 180 with the first eyes and 179 with the new ones under the seed-43 fast level (162 and 164 without
+resets), 180 and 172 under seed 44, whose frames neither was trained on. Nothing in the episodes solved favours the
+new eyes, so the first stay. One thing does speak for them where the fast level changes: under seed 44 the first eyes
+end 3 of 200 validation episodes on a false `Complete` and the new eyes 0 (7 and 8 on the evaluation layouts with the
+first eyes, above). The recorder and the recipe are in the repository for a fast level whose states the eyes read
+worse.
+
 ## What it fixed of what was diagnosed
 
 | Diagnosed | Part | Mechanism | Measured |
@@ -618,7 +760,9 @@ those validation layouts, and one setting, fixed before any run with it, was run
 | E5 | The memory's two options (`unseen`, `revoke`): variants on validation layouts, one setting on T and H | do they remove the inventory that never completes and the cut that did not happen? | done: 143 to 162 of 200 on validation layouts; all of v2 169 and 148 |
 | E6 | The three slow levels under perturbation: the plate turned mid-task, a button that sticks | does an explicit memory hold up when the scene changes under the policy? | done: the plate turned 111, 126, 146 (notes, eyes, simulator); the button 83, 101, 110 |
 | E7 | v2 over the weak seed of the fast level; the bounded recovery (`--recover 2`) on validation layouts | how much of v2 is the fast level; does a retry turn time-outs into successes? | done: the weak seed 99 and 88, 72 and 91; the recovery 171 without, 159 and 157 with: it stays off |
-| E8 | Three seeds of the eyes; frames from the fast level's own rollouts added to their training data | how much the eyes vary; the cure at the source for the cut that did not happen | three seeds: done (97.2%, 97.6%, 98.1%; with the crop 98.9%, 99.0%, 98.5%); the policy's frames: recording (`eyes_vit_fwp_pol_2m`), `eval.py --record_scene` is built |
+| E8 | Three seeds of the eyes; frames from the fast level's own rollouts added to their training data | how much the eyes vary; the cure at the source for the cut that did not happen | three seeds: done (97.2%, 97.6%, 98.1%; with the crop 98.9%, 99.0%, 98.5%); the policy's frames: done (`eyes_vit_fwp_pol_2m`: the cut that did not happen 0.79% to 0.11% of parts in view on those frames; episodes solved unchanged) |
+| E11 | The fast level's first move: traces and a probe of its first chunk; a reset to the start pose; the aim in the sub-goal (two fast levels, each served with and without it) | where the fast level loses with a correct sub-goal, and what telling it the aim buys | the traces, the probe and the reset: done (validation layouts: 161 to 171 without the reset, 173 to 179 with); the aim: two fast levels in training |
+| E12 | v2 over the other fast levels (a third seed; two with a memory of one second) | which fast level carries v2 best; how much the seed matters under a slow level without errors | done for seed 44 (170 on the validation layouts against 161 to 171) and for the first with a memory (157); the second with a memory is in training |
 | E9 | Kinds no policy was trained on, with the fast level's existing skills only: "cut from the top down" (the `order` situation), "leave exactly one shoot" | does the reasoning carry to new kinds without new demonstrations? | later |
 | E10 | Optional, for the fast level: its vision transformer started from the eyes' weights, three seeds | do all seeds start to look early, and does the spread between seeds shrink? | later |
 
@@ -627,22 +771,36 @@ robustness and is left out here.
 
 ## The fast level: a second track
 
-Everything above leaves the fast level as it is, and it is the ceiling: with a perfect slow level 31 to 46 of 200
-episodes still fail, most of them out of time. With the weaker of its two finished seeds, 101 to 128 fail. One kind of
-failure stands out in the records: in 5 to 8 of the 200 episodes of each run on the simulator's scene, where the
-sub-goal is right from the first second, the arm never moves (no button pressed, the jaws never closed). That is 8 of
-the 22 episodes out of time with the task's program. Four reviews of recent work on control (model-based training of
+Everything above leaves the fast level's weights as they are, and they are the ceiling: with a perfect slow level 31
+to 46 of 200 episodes still fail, most of them out of time. The reset takes back a third to a half of those from
+outside; what follows is about the fast level itself. With the weaker of its two finished seeds, 101 to 128 fail. What
+a correct sub-goal still leaves to the fast level's own judgment costs most: whether the plant must be turned first,
+and which way ("First results", the first move). Four reviews of recent work on control (model-based training of
 whole-body controllers, video world-action models, memory for long tasks) were read for what they offer this arm. None
 is a drop-in: their controllers read numerical state, not images, and none cuts anything. What is taken from them is a
-set of experiments for after the slow level. Only the ledger of item 3 is built so far, as a record.
+set of experiments for after the slow level. The aim of item 1 is built and its fast levels are in training; the
+ledger of item 4 is built as a record.
 
 **Adopted, in this order:**
 
-1. **Numeric goals for the fast level.** The plan knows which part is meant, its height and its bearing. Hand the fast
-   level those numbers beside the words, with the phase (turn, approach, cut, retreat), and keep one target active
-   until its check passes (the plan already does). The same data and seeds with and without the numbers say whether
-   wandering between shoots is a problem of finding the shoot named.
-2. **A state-based primitive for one shoot** (approach, align, close, retract), learned as a correction to the
+1. **The aim in the sub-goal** (built; its two fast levels are in training:
+   `dp_vit_lang_reactive_aim_reason8k_20m_seed43` and, with a memory of one second,
+   `dp_vit_lang_frames_1s_aim_reason8k_20m`). The fast level's most frequent error with a correct sub-goal is its
+   first move ("First results", the first move): told "cut the lowest shoot", it has to judge by itself whether the
+   shoot is in reach or the plant must be turned first, and which way. The plan knows the part's bearing, and the
+   expert's notes carry the same fact in their `aim` field, which the sub-goal fast level was never shown. So the
+   sub-goal now can carry it: "cut the lowest shoot, in reach", "cut the lowest shoot, press blue". The instruction
+   type `aim` writes that text from the note in each frame's metadata, so the demonstrations and their preprocessed
+   shards are used as they are; `dp_vit_lang_reactive_aim.yaml` trains on the sub-goal with the aim and without it,
+   half each, so that one set of weights can be served both ways (`eval.py --aim`) and what the aim buys is measured
+   without a second seed in the way. The plan says "in reach" within 25 degrees of facing the robot (the expert's own
+   sector) and names the button of the shorter way otherwise.
+2. **Numbers beside the words.** The same for the part's height, and for the phase (turn, approach, cut, retreat), as
+   numbers the fast level reads beside its instruction, with one target kept active until its check passes (the plan
+   already does). After the aim, and only if it leaves something: the wrong shoots cut under a correct sub-goal (7 and
+   8 episodes of 200) turned out to be cut by an arm that had gone for a shoot it could not reach, and with the reset
+   they are 0 and 1.
+3. **A state-based primitive for one shoot** (approach, align, close, retract), learned as a correction to the
    scripted expert's reference move and started from the demonstrations; then imitation alone against imitation plus
    reinforcement learning through a learned model of the arm's dynamics over short imagined stretches. Five seeds
    each, first on the simulator's geometry and then on the eyes', with the scripted controller as the baseline.
@@ -656,7 +814,7 @@ set of experiments for after the slow level. Only the ledger of item 3 is built 
    judging a learned model by the closed loop and not by its fit (a model with 34% lower loss gave no better control).
    One report of the same method on an arm describes policies that hover or hold on for ever until the reward and the
    ending of an episode are changed: the failure to expect here.
-3. **The memory as a ledger of outcomes** (built, as a record: `slow_level.Supervisor.ledger`). For each attempt: what
+4. **The memory as a ledger of outcomes** (built, as a record: `slow_level.Supervisor.ledger`). For each attempt: what
    was aimed at, what it was meant to bring about, what was then seen, and the look that supports it. A cut is entered
    only on evidence, and an attempt without an outcome stays open. What is still missing is the comparison made
    beforehand: the expected effect of a sub-goal in numbers ("this part cut, the flower untouched, the plate turned by
@@ -665,10 +823,10 @@ set of experiments for after the slow level. Only the ledger of item 3 is built 
    enough holds the fast level fixed and compares notes alone (the first design), the ledger from the eyes, and the
    ledger from the simulator, on the same plants, undisturbed and disturbed: the table of "First results" and its
    paragraph on perturbation.
-4. **Corrections after the policy's own failures.** The scripted expert labels the correction after a missed cut, a
+5. **Corrections after the policy's own failures.** The scripted expert labels the correction after a missed cut, a
    press that did nothing or an overshoot, with the failure kept as the context. The takeover demonstrations of step 8
    dropped the policy's part and did not help; these keep it, and recovery is evaluated apart from success.
-5. **One cheap ablation: an auxiliary loss on the future.** Beside the action loss the fast level predicts the part
+6. **One cheap ablation: an auxiliary loss on the future.** Beside the action loss the fast level predicts the part
    records, or its own features, a short time ahead. Its size and its speed when served do not change. Same seeds with
    and without.
 
@@ -716,8 +874,10 @@ Real images.
 
 ## Alternatives considered
 
-- **More tokens for the same reasoner** (448 pixels; training now), or its vision unfrozen. Neither is what it lacks:
-  the 49 tokens it has carry the count (the tower probes). Both leave section 2 as it is.
+- **More tokens for the same reasoner** (448 pixels, 196 tokens per image), or its vision unfrozen. Neither is what it
+  lacks: the 49 tokens it has carry the count (the tower probes). Both leave section 2 as it is. The reasoner at 448
+  pixels: 141 and 100 of 200 with the same fast level (133 and 66 at 224 pixels; 153 and 78, 129 and 87 with its two
+  continuations). The one-model line ends there.
 - **A loss on the count for the reasoner itself**: the eyes' heads on its vision tokens, trained beside the loss on
   its notes. The smallest change to the first design that the tower probes suggest, and the one to try if one model is
   to do everything. It leaves section 2 as it is, and it is not built.
@@ -838,10 +998,11 @@ The first design's own references (embodied chain-of-thought, Hi Robot) are in [
 | The eyes: model, loss, metrics, serving; the tower probe | `sim/pickup/eyes.py`, `sim/pickup/eyes_data.py`, `sim/pickup/train_eyes.py` |
 | Programs: the language, the acceptor, the plan and its outcomes | `sim/pickup/program.py` |
 | The program writer and its evaluation | `sim/pickup/program_writer.py` |
-| The slow level in the loop, the recovery, the ledger, the episode record | `sim/pickup/slow_level.py`, `sim/pickup/eval.py --slow_level v2` (`--scene`, `--program`, `--slow_unseen`, `--slow_revoke`, `--slow_give_up`, `--recover`) |
+| The slow level in the loop, the recovery, the ledger, the episode record | `sim/pickup/slow_level.py`, `sim/pickup/eval.py --slow_level v2` (`--scene`, `--program`, `--slow_unseen`, `--slow_revoke`, `--slow_give_up`, `--aim`, `--resets`, `--recover`) |
 | Serving the eyes and the writer; starting everything | `sim/pickup/slow_server.py`, `sim/pickup/scripts/eval_v2.sh` |
 | E0 | `sim/pickup/eval.py --see expert`, `sim/pickup/policy_server.py` |
-| Tests | `tests/essential/sim/test_scene.py`, `test_program.py`, `test_program_writer.py`, `test_eyes.py`, `test_eyes_tower.py`, `test_slow_level.py`, `test_see.py` |
+| The aim in the sub-goal: its text, the instruction type, the fast levels' configs | `sim/pickup/reasoning.py` (`aim_of`, `aimed_subgoal`), `vla_foundry/data/pipelines/robotics.py` (`aim_instruction`), `sim/pickup/configs/dp_vit_lang_reactive_aim.yaml`, `dp_vit_lang_frames_1s_aim.yaml` |
+| Tests | `tests/essential/sim/test_scene.py`, `test_program.py`, `test_program_writer.py`, `test_eyes.py`, `test_eyes_tower.py`, `test_slow_level.py`, `test_see.py`; `tests/essential/data/test_aim_instruction.py` |
 
 ```
 python -m sim.pickup.collect_scene --task reason_mix --episodes 6000 --crop --out data/scene/scene_reason_mix_6k
