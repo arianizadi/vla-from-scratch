@@ -102,6 +102,17 @@ def test_labels_cover_the_note_and_the_end_token(template):
     assert prompt == notes.text(2, "prune it", "held", "x")[: len(prompt)]
 
 
+def test_a_prompt_can_end_after_a_given_beginning_of_the_note():
+    processor = _Processor(True)
+    notes = NoteTokens(processor, _template)
+    start = "see: 3 shoots, red flower |"
+    prompt = notes.text(2, "prune it", "held", None, prefix=start)
+    assert prompt.endswith(NOTE_MARK + " " + start) and "<end>" not in prompt
+    # character for character the beginning of a training text whose note starts with that field
+    assert notes.text(2, "prune it", "held", start + " ask: x | next: stop").startswith(prompt)
+    assert notes.text(2, "prune it", "held", None, prefix=None) == notes.text(2, "prune it", "held", None)
+
+
 def test_a_note_that_does_not_line_up_is_an_error():
     processor = _Processor(True)
     notes = NoteTokens(processor, _template)

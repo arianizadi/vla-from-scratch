@@ -170,8 +170,9 @@ class RoboticsProcessor:
 
         With data.notes the text also carries notes (processor/notes.py): in training they come from each sample's
         metadata; a served policy passes batch["notes"], one (held note, current note or None) per sample, None
-        meaning a prompt that ends where the current note is to be written. In training the result also has
-        note_labels, the tokens of the language-model loss.
+        meaning a prompt that ends where the current note is to be written (a third element gives the beginning of
+        that note, which the prompt then ends after). In training the result also has note_labels, the tokens of the
+        language-model loss.
         """
         batch_text, batch_images, batch_attention_mask_images = [], [], []
         notes_now = []
@@ -211,12 +212,14 @@ class RoboticsProcessor:
                     getattr(self.data_params, "paraphrase_prob", 0.0),
                 )
             if self.note_tokens is not None:
-                if batch.get("notes") is not None:
-                    held, now = batch["notes"][index]
+                prefix = None
+                if batch.get("notes") is not None:  # (held, now) or (held, None, the beginning of the note to write)
+                    held, now, *rest = batch["notes"][index]
+                    prefix = rest[0] if rest else None
                 else:
                     held, now = training_pair(batch["metadata"][index], self.data_params.note_interval)
                 notes_now.append(now)
-                instruction = self.note_tokens.text(len(sample_images), instruction, held, now)
+                instruction = self.note_tokens.text(len(sample_images), instruction, held, now, prefix=prefix)
             else:
                 instruction = apply_chat_template(self.vlm_processor, len(sample_images), instruction)
 

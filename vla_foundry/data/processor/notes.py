@@ -94,12 +94,14 @@ class NoteTokens:
             self._stop_id = self.tokenizer(self.stop_text, add_special_tokens=False)["input_ids"][0]
         return self._stop_id
 
-    def text(self, num_images: int, instruction: str, held: str, now: str | None) -> str:
+    def text(self, num_images: int, instruction: str, held: str, now: str | None, prefix: str | None = None) -> str:
         """The full prompt text for the processor (chat template applied); with `now` None, cut where the note to be
-        written begins."""
+        written begins, or, with `prefix`, after that beginning of the note (a note whose first words are given: the
+        model writes the rest)."""
         if now is None:
             full = self.apply_chat_template(self.processor, num_images, note_prompt(instruction, held, "\x00"))
-            return full[: full.rindex(NOTE_MARK) + len(NOTE_MARK)]
+            start = full[: full.rindex(NOTE_MARK) + len(NOTE_MARK)]
+            return f"{start} {prefix}" if prefix else start
         full = self.apply_chat_template(self.processor, num_images, note_prompt(instruction, held, now))
         return full + self.stop_text if self.append_stop else full
 

@@ -14,6 +14,10 @@ note the client holds (None at the start of an episode), and note_now, a note to
 note_now the backbone writes it (greedy) before the actions are drawn. The reply then carries note_now (what was
 written: a note or "same") and note (the note now held). A "reason" request does only the writing: the slow level of a
 two-level policy, served from a reason-then-act checkpoint trained without the action loss.
+
+Either request may carry see: the note's first field, given from outside (what a perception module, or the simulator's
+truth, says is there). The backbone then writes the rest of each new note after that field instead of its own
+(Policy.write_note): the test of how much of a reasoner's errors come from what it sees.
 """
 
 import argparse
@@ -34,7 +38,16 @@ from vla_foundry.models import create_model
 from vla_foundry.params.train_experiment_params import load_experiment_params_from_yaml
 from vla_foundry.precision import get_autocast
 
+from . import reasoning
+
 AUTHKEY = b"pickup-sim"
+
+
+def rewrite_with_see(now: str, held: str | None, see: str | None) -> bool:
+    """Is a note to be written again from a given `see` field on? Yes when one is given and the backbone has just
+    written a new note (its own `see` may be wrong), or the note it holds was written for another `see` (what is seen
+    has changed, so the note no longer stands, whatever the backbone thinks)."""
+    return see is not None and (now != SAME or reasoning.note_fields(held or "").get("see") != see)
 
 
 def latest_checkpoint(checkpoint_dir: str, prefix: str) -> str:
@@ -76,15 +89,27 @@ class Policy:
         return {name: fast_image_decoder(f"{name}.jpg", images[name]) for name in self.image_names}
 
     @torch.no_grad()
-    def write_note(self, images: dict, instruction: str, held: str | None) -> tuple[str, str]:
-        """(what the backbone writes after "now:", the note held afterwards)."""
+    def write_note(self, images: dict, instruction: str, held: str | None, see: str | None = None) -> tuple[str, str]:
+        """(what the backbone writes after "now:", the note held afterwards).
+
+        `see`: the note's first field, given from outside. The backbone writes as usual first; if it wrote a new note,
+        or holds one written for another `see` (rewrite_with_see), the note is written again with that field in place
+        and the backbone continuing after it, so that the rest of the note follows from the facts given."""
         if not self.reasons:
             raise ValueError("this checkpoint does not write notes (model type is not reason_then_act)")
+        now = self._write(images, instruction, held) or SAME
+        if rewrite_with_see(now, held, see):
+            start = f"see: {see} |"
+            now = f"{start} {self._write(images, instruction, held, start)}".strip()
+        return now, (held or "") if now == SAME else now
+
+    def _write(self, images: dict, instruction: str, held: str | None, start: str | None = None) -> str:
+        """The text the backbone writes after "now:", or after `start`, the beginning of a note."""
         batch = {
             "images": [self._decode(images)],
             "language_instruction": [instruction],
             "lowdim": [{}],
-            "notes": [(held or "", None)],
+            "notes": [(held or "", None) if start is None else (held or "", None, start)],
         }
         batch = self.processor.process_inputs(
             batch, image_names=self.image_names, max_text_seq_len=self.cfg.data.max_text_seq_len
@@ -93,8 +118,7 @@ class Policy:
         inputs = {k: batch[k].to(self.device) for k in keys if isinstance(batch.get(k), torch.Tensor)}
         with self.autocast():
             tokens = self.model.generate_note(**inputs, stop_id=self.processor.note_tokens.stop_id)
-        now = self.processor.note_tokens.tokenizer.decode(tokens).strip() or SAME
-        return now, (held or "") if now == SAME else now
+        return self.processor.note_tokens.tokenizer.decode(tokens).strip()
 
     @torch.no_grad()
     def infer(
@@ -107,6 +131,7 @@ class Policy:
         noise_seed=None,
         note_held=None,
         note_now=None,
+        see=None,
     ):
         """images: {"<camera>_t<idx>": jpeg bytes}; state: [past+1, D]; prev_action: [D] last executed command.
 
@@ -120,7 +145,7 @@ class Policy:
         note = None
         if self.reasons:
             if note_now is None:
-                note_now, note = self.write_note(images, instruction, note_held)
+                note_now, note = self.write_note(images, instruction, note_held, see)
             else:
                 note = (note_held or "") if note_now == SAME else note_now
         if noise_seed is not None:
@@ -196,7 +221,9 @@ def main():
                         continue
                     t0 = time.perf_counter()
                     if msg["cmd"] == "reason":  # write a note only
-                        note_now, note = policy.write_note(msg["images"], msg["instruction"], msg.get("note_held"))
+                        note_now, note = policy.write_note(
+                            msg["images"], msg["instruction"], msg.get("note_held"), msg.get("see")
+                        )
                         conn.send(dict(note_now=note_now, note=note, latency_s=time.perf_counter() - t0))
                         continue
                     out = policy.infer(
@@ -208,6 +235,7 @@ def main():
                         msg.get("noise_seed"),
                         msg.get("note_held"),
                         msg.get("note_now"),
+                        msg.get("see"),
                     )
                     if policy.device.type == "cuda":
                         torch.cuda.synchronize()

@@ -20,6 +20,10 @@ instruction means, it acts on the text. With --expert and --reasoner_port, the e
 are compared with the correct ones at every chunk; --reason_check does the same with the served policy as the
 reasoner (to evaluate a reasoner's checkpoints with eval.sh / eval_checkpoints.sh).
 
+--see expert hands whoever writes the notes (a reasoner, or a policy that writes its own) the `see` field of the
+correct note, what is on the stand, and lets it write the rest: how well it reasons when it sees correctly
+(tutorial/architecture-v2.md, experiment E0).
+
 --scenario applies test situations (scenarios.py: lighting, camera, wind, bump, sticky, nothing_to_do, order, ...) on
 top of the task; each episode records what its scenarios drew, and results.json counts the outcomes by variation.
 Episodes of the same seeds with and without a scenario have the same layouts.
@@ -113,13 +117,15 @@ def infer_request(
     history=None,
     note_held=None,
     note_now=None,
+    see=None,
 ):
     """The message that asks the policy server for an action chunk: both cameras' images, the joint states at t-1
     and t, the command the robot is under and the instruction. The images are those of `prev_obs` and `obs` (t-1 and
     t), or, with `history` (a FrameHistory whose newest observation is `obs`), one per offset it keeps, for policies
     that look further back. `images_from`: a pair of observations to take the images from instead (to show the policy
     stale images): the second for t, the first for every earlier offset. `note_held` / `note_now`: for a policy that
-    writes notes, the note the client holds and a note to use instead of writing one (policy_server.py)."""
+    writes notes, the note the client holds and a note to use instead of writing one; `see`: the first field of the
+    note it is to write, given from outside (policy_server.py)."""
     if history is None:
         history = FrameHistory(prev_obs)
         history.push(obs)
@@ -142,6 +148,7 @@ def infer_request(
         noise_seed=noise_seed,
         **({"note_held": note_held} if note_held is not None else {}),
         **({"note_now": note_now} if note_now is not None else {}),
+        **({"see": see} if see is not None else {}),
     )
 
 
@@ -441,6 +448,13 @@ def main():
         help="two-level: the served policy's instruction is a sub-goal, from the reasoner on --reasoner_port, from the "
         "correct notes, or about a shoot the instruction does not mean",
     )
+    ap.add_argument(
+        "--see",
+        choices=["model", "expert"],
+        default="model",
+        help="who fills the `see` field of the notes (what is on the stand): the model that writes them, or the "
+        "correct note (expert), after which the model writes the rest of each note",
+    )
     ap.add_argument("--reasoner_port", type=int, default=None, help="port of a policy_server.py serving a reasoner")
     ap.add_argument(
         "--expect_reasoner_run", default=None, help="stop unless the reasoner serves a checkpoint of this run"
@@ -502,6 +516,9 @@ def main():
         reasoner, reasoner_info = conn, server_info
         expert = ScriptedExpert(env, seed=0, reactive=args.expert_reactive, side=args.expert_side)
     assert args.notes == "model" or rta, "--notes expert / swap need a policy that writes notes"
+    assert args.see == "model" or (env.reason and (reasoner is not None or rta)), (
+        "--see expert needs a reasoning task and something that writes notes (a reasoner or a policy that does)"
+    )
     pilot = None
     if expert is None and (args.expert_prefix > 0 or args.first_prev_action == "expert"):
         from .expert import ScriptedExpert
@@ -558,10 +575,12 @@ def main():
         while not done:
             if writer is not None:
                 writer.update()
+            # --see expert: what the correct note says is on the stand, for whoever writes the notes
+            see = reasoning.note_fields(writer.note).get("see", "") if args.see == "expert" else None
             fresh = not queue and expert is None and not (pilot is not None and env.steps < args.expert_prefix)
             if reasoner is not None and (fresh or (expert is not None and env.steps % args.exec_horizon == 0)):
                 request = infer_request(history.at(-1), obs, env.last_action, env.instruction, 0, history=history)
-                reasoner.send({**request, "cmd": "reason", "note_held": held})
+                reasoner.send({**request, "cmd": "reason", "note_held": held, **({} if see is None else {"see": see})})
                 reply = reasoner.recv()
                 reasoned = (held, reply["note_now"])  # what the reasoner held and what it wrote (for --notes reasoner)
                 if reply["note_now"] != NOTE_SAME:
@@ -600,6 +619,7 @@ def main():
                         history=history,
                         note_held=rta_held if rta else None,
                         note_now=note_now,
+                        see=see if rta and note_now is None else None,
                     )
                 )
                 reply = conn.recv()
@@ -788,6 +808,7 @@ def main():
                 reasoning=_reason_summary(episodes),
                 notes=args.notes if rta else None,
                 subgoals=args.subgoals,
+                see=args.see,
                 reasoner=reasoner_info,
             )
             if env.reason
