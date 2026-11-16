@@ -751,9 +751,11 @@ class PickupEnv:
             s.restore(self)
 
     # ------------------------------------------------------------------ reset
-    def reset(self, seed: int, target_index: int | None = None):
+    def reset(self, seed: int, target_index: int | None = None, scenario_seed: int | None = None):
         """Build the layout of `seed`. `target_index` names one of the layout's objects (0, 1, ...) as
-        the target instead of the seed's own choice, which gives the same scene with another instruction."""
+        the target instead of the seed's own choice, which gives the same scene with another instruction.
+        `scenario_seed`: draw the scenarios' variation from this seed instead of `seed` (the same layout in another
+        look, as rerender.py does)."""
         rng = np.random.default_rng(seed)
         m, d = self.model, self.data
         mujoco.mj_resetData(m, d)
@@ -804,7 +806,7 @@ class PickupEnv:
         if self.plant_task:
             self._place_shoots()
         if self.scenarios:
-            self._reset_scenarios(seed)
+            self._reset_scenarios(seed if scenario_seed is None else scenario_seed)
         mujoco.mj_forward(m, d)
         for _ in range(100):  # let objects settle
             mujoco.mj_step(m, d)

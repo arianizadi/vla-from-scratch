@@ -87,6 +87,12 @@ class Scenario:
     splits: dict = {}
 
     def __init__(self, mode=None, prob=1.0, split=None):
+        # several modes joined by "|" (lighting:dusk|noon): the draw is among those
+        self.choices = tuple(mode.split("|")) if mode and "|" in mode else None
+        if self.choices:
+            assert all(m in self.modes for m in self.choices), f"{self.name}: unknown mode in {mode!r}"
+            assert split is None or all(m in self.splits[split] for m in self.choices), f"{mode} is not in {split}"
+            mode = None
         assert mode is None or mode in self.modes, f"{self.name}: unknown mode {mode!r}; choose from {self.modes}"
         assert 0.0 < prob <= 1.0, f"{self.name}: probability {prob} not in (0, 1]"
         assert split is None or split in self.splits, f"{self.name}: no split {split!r}; it has {sorted(self.splits)}"
@@ -98,6 +104,7 @@ class Scenario:
         return (
             self.name
             + (f":{self.mode}" if self.mode else "")
+            + (f":{'|'.join(self.choices)}" if self.choices else "")
             + (f"/{self.split}" if self.split else "")
             + (f"@{self.prob:g}" if self.prob < 1 else "")
         )
@@ -142,7 +149,7 @@ class Scenario:
         self.restore(env)
         rng = np.random.default_rng([int(seed), 53, zlib.crc32(self.name.encode()) & 0xFFFFFFF])
         self.applied = bool(rng.random() < self.prob)  # always drawn, so a pinned probability keeps the stream
-        modes = self.splits[self.split] if self.split else self.modes
+        modes = self.choices or (self.splits[self.split] if self.split else self.modes)
         mode = self.mode or modes[int(rng.integers(len(modes)))]
         self.rng = rng
         self.variation = {"applied": self.applied, **({"split": self.split} if self.split else {})}

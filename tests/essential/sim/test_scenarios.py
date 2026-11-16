@@ -541,3 +541,48 @@ def test_the_leaf_fix_changes_what_is_seen_and_nothing_else():
     finally:
         env.close()
         old.close()
+
+
+# ------------------------------------------------------------------------------------------- paired re-rendering
+def test_a_replay_reproduces_the_states_and_a_look_changes_only_the_images():
+    from io import BytesIO
+
+    from PIL import Image
+
+    from sim.pickup.rerender import Replayer
+
+    env = _env("prune_turn")
+    env.close()
+    info = dict(sim_task="prune_turn", leaf_fix=True, random_start=True)
+    rec = PickupEnv("prune_turn", leaf_fix=True)
+    try:
+        seed = SEEDS[1]
+        rec.reset(seed=seed)
+        expert = ScriptedExpert(rec, seed=0)
+        obs, yaw = random_start(rec, expert, seed)
+        expert.reset(yaw=yaw)
+        states, actions, fronts, done = [], [], [], False
+        while not done:
+            states.append(obs["state"])
+            fronts.append(obs["front"])
+            a = expert.act()
+            actions.append(a)
+            obs, done, _ = rec.step(a)
+        replayer = Replayer(info)
+        frames = replayer.trajectory(seed, np.array(states), np.array(actions))
+        assert len(frames) == len(actions)
+        with pytest.raises(RuntimeError):  # a state that is not reproduced is caught
+            replayer.trajectory(seed, np.array(states) + 1e-3, np.array(actions))
+        same, _ = replayer.render(seed, 7, "", frames[:40:10])  # no look: the source's own images
+        for img, src in zip(same["front"], fronts[:40:10], strict=True):
+            decoded = np.asarray(Image.open(BytesIO(img))).astype(int)
+            assert np.abs(decoded - src).mean() < 2.0  # (JPEG)
+        bench, variation = replayer.render(seed, 7, "bench/train", frames[:40:10])
+        assert variation["bench"]["mode"] in ("wood", "stained")
+        assert bench["front"] != same["front"]
+        again, _ = replayer.render(seed, 7, "bench/train", frames[:40:10])
+        for a, b in zip(again["front"], bench["front"], strict=True):  # the same look for the same scenario seed
+            diff = np.abs(np.asarray(Image.open(BytesIO(a))).astype(int) - np.asarray(Image.open(BytesIO(b))))
+            assert diff.mean() < 0.05  # (the renderer's own noise of a level in a few pixels, through JPEG)
+    finally:
+        rec.close()
