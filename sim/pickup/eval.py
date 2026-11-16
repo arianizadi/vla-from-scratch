@@ -517,16 +517,18 @@ def main():
     ap.add_argument("--slow_p_min", type=float, default=0.7, help="v2: the confidence a percept needs to count")
     ap.add_argument(
         "--slow_unseen",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=None,
         help="v2: a part the eyes are sure of counts as being there although they see no camera show it (it is "
-        "added, never marked cut by such sightings; scene.SceneMemory unseen)",
+        "added, never marked cut by such sightings; scene.SceneMemory unseen). Default: on for --scene eyes, off "
+        "for the truth (slow_level.DEFAULTS); --no-slow_unseen turns it off",
     )
     ap.add_argument(
         "--slow_revoke",
         type=int,
-        default=0,
+        default=None,
         help="v2: a part marked cut is unmarked after this many confident sightings in a row of it not cut "
-        "(scene.SceneMemory revoke). 0: a cut is never unmarked",
+        "(scene.SceneMemory revoke). 0: a cut is never unmarked. Default: 3 for --scene eyes, 0 for the truth",
     )
     ap.add_argument(
         "--patience", type=int, default=160, help="v2: control steps without progress before a recovery (--recover)"
@@ -541,8 +543,10 @@ def main():
     ap.add_argument(
         "--slow_give_up",
         type=int,
-        default=40,
-        help="v2: control steps a verdict (complete or failed) must stand before the episode ends",
+        default=None,
+        help="v2: control steps a verdict (complete or failed) must stand before the episode ends. Default: 80 for "
+        "--scene eyes, 40 for the truth. The eyes' settings before these defaults: --no-slow_unseen --slow_revoke 0 "
+        "--slow_give_up 40",
     )
     ap.add_argument(
         "--park_reset",
@@ -579,14 +583,14 @@ def main():
             "--scene eyes and --program writer are served by slow_server.py: give its --slow_port"
         )
         assert args.recover >= 0 and args.patience >= 1, "--recover must be 0 or more and --patience 1 or more"
-        assert args.slow_revoke >= 0 and args.slow_give_up >= 0, (
-            "--slow_revoke must be 0 or more and --slow_give_up 0 or more"
-        )
+        assert (args.slow_revoke is None or args.slow_revoke >= 0) and (
+            args.slow_give_up is None or args.slow_give_up >= 0
+        ), "--slow_revoke must be 0 or more and --slow_give_up 0 or more"
     else:
         assert (args.scene, args.program, args.slow_port, args.recover) == ("truth", "gold", None, 0), (
             "--scene, --program, --slow_port and --recover are for --slow_level v2"
         )
-        assert (args.slow_unseen, args.slow_revoke, args.slow_give_up) == (False, 0, 40), (
+        assert (args.slow_unseen, args.slow_revoke, args.slow_give_up) == (None, None, None), (
             "--slow_unseen, --slow_revoke and --slow_give_up are for --slow_level v2"
         )
     recorder = None  # --record_scene: the perception dataset of the rollouts (collect_scene.SceneRecorder)

@@ -795,6 +795,25 @@ def test_the_eyes_get_the_images_their_keys_name_and_their_percepts_drive_the_me
     assert slow.record({"success": True})["see_ms"] == 4.0
 
 
+def test_the_eyes_scene_has_the_memory_s_two_options_on_unless_told_otherwise_and_the_truth_has_them_off():
+    info = dict(eyes=dict(keys=["front_t0"]), writer=None)
+    eyes = L.SlowLevel(StubEnv(ORDINAL), scene="eyes", server=StubServer(info=info))
+    assert (eyes.stable, eyes.give_up, eyes.unseen, eyes.revoke) == (3, 80, True, 3)
+    assert L.DEFAULTS["eyes"] == dict(stable=3, give_up=80, unseen=True, revoke=3)
+    settings = eyes.settings()
+    assert (settings["stable"], settings["give_up"], settings["unseen"], settings["revoke"]) == (3, 80, True, 3)
+    eyes.reset()  # and they reach the rules and the memory
+    memory = eyes.supervisor.memory
+    assert (memory.stable, memory.unseen, memory.revoke, eyes.supervisor.give_up) == (3, True, 3, 80)
+    truth = L.SlowLevel(StubEnv(ORDINAL), truth=_truth)
+    assert (truth.stable, truth.give_up, truth.unseen, truth.revoke) == (1, 40, False, 0)
+    # the eyes' settings before these defaults are still there for whoever names them
+    old = L.SlowLevel(StubEnv(ORDINAL), scene="eyes", server=StubServer(info=info), give_up=40, unseen=False, revoke=0)
+    assert (old.stable, old.give_up, old.unseen, old.revoke) == (3, 40, False, 0)
+    told = L.SlowLevel(StubEnv(ORDINAL), truth=_truth, stable=2, give_up=10, unseen=True, revoke=1)
+    assert (told.stable, told.give_up, told.unseen, told.revoke) == (2, 10, True, 1)
+
+
 def test_the_slow_server_s_refusals_are_errors_here():
     with pytest.raises(AssertionError, match="no eyes"):
         L.SlowLevel(StubEnv(ORDINAL), scene="eyes", server=StubServer(info=dict(eyes=None, writer="w")))
@@ -1146,6 +1165,7 @@ V2_ARGUMENTS = [
     (["--task", "reason_mix", "--slow_level", "v2", "--slow_revoke", "-1"], "--slow_revoke must be 0 or more"),
     (["--task", "reason_mix", "--slow_level", "v2", "--slow_give_up", "-1"], "--slow_give_up 0 or more"),
     (["--task", "reason_mix", "--slow_unseen"], "are for --slow_level v2"),
+    (["--task", "reason_mix", "--no-slow_unseen"], "are for --slow_level v2"),
     (["--task", "reason_mix", "--slow_revoke", "3"], "are for --slow_level v2"),
     (["--task", "reason_mix", "--slow_give_up", "80"], "are for --slow_level v2"),
 ]

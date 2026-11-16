@@ -329,12 +329,14 @@ that show it cut. The flower's colour and the label are debounced the same way; 
 the card turns away. The inventory counts as settled when it has not grown for three looks. With the simulator's truth
 as the percept the same memory is used, with one look in place of three: an oracle that still has to see each part.
 
-Two options were added after the first closed-loop runs showed what the eyes get wrong ("First results"). They are off
-by default, so that those runs can be repeated. `unseen`: a part the eyes are sure exists counts for the inventory
-although they judge that no camera shows it; such a sighting marks nothing cut, and a sighting between 1.75 and 2.6 cm
-from a remembered part is dropped as ambiguous instead of founding a second part. `revoke`: a part marked cut is
-unmarked when the eyes then report it, three looks in a row and with confidence, as not cut. The plan is evaluated at
-every look, so a `Complete` or a `Failed` that rested on that cut is withdrawn with it.
+Two options were added after the first closed-loop runs showed what the eyes get wrong ("First results"). They are on
+by default where the percepts come from the eyes, with a verdict that must stand four seconds in place of two before
+an episode ends on it (`slow_level.DEFAULTS`), and off for the simulator's truth, which is exact. The runs made before
+them are repeated with `--no-slow_unseen --slow_revoke 0 --slow_give_up 40`. `unseen`: a part the eyes are sure exists
+counts for the inventory although they judge that no camera shows it; such a sighting marks nothing cut, and a
+sighting between 1.75 and 2.6 cm from a remembered part is dropped as ambiguous instead of founding a second part.
+`revoke`: a part marked cut is unmarked when the eyes then report it, three looks in a row and with confidence, as not
+cut. The plan is evaluated at every look, so a `Complete` or a `Failed` that rested on that cut is withdrawn with it.
 
 **3. Program writer** (`sim/pickup/program.py`, `sim/pickup/program_writer.py`). The language:
 
@@ -492,7 +494,7 @@ these layouts. `unseen` removes the episodes that end holding for the plant. The
 not happen end 13 episodes as designed, 5 with `revoke` alone and 2 to 3 with both. The rest of what `unseen` gains is
 not in the records (the sub-goals given are the same) and may be chance: without it the arm never moved in 13 and 10
 episodes, with it in 5 to 8. With both on (`--slow_unseen --slow_revoke 3 --slow_give_up 80`, the setting fixed
-beforehand), on the evaluation layouts:
+beforehand and since then the default for the eyes' scene), on the evaluation layouts:
 
 | Eyes, memory | Training instructions: the task's program, the written one | Held out |
 |---|---|---|
@@ -847,6 +849,5 @@ python -m sim.pickup.train_eyes --data data/scene/scene_reason_mix_6k --val data
     --cameras front wrist plant --out experiments/pickup/eyes_vit_fwp_2m --samples 2000000
 python -m sim.pickup.program_writer --model Qwen/Qwen3-VL-2B-Thinking --out writer.json
 PICKUP_SCENE=eyes PICKUP_EYES=experiments/pickup/eyes_vit_fwp_2m PICKUP_PROGRAM=writer \
-    PICKUP_WRITER=Qwen/Qwen3-VL-2B-Thinking sim/pickup/scripts/eval_v2.sh experiments/pickup/<fast run> reason_mix 200 \
-    --slow_unseen --slow_revoke 3 --slow_give_up 80
+    PICKUP_WRITER=Qwen/Qwen3-VL-2B-Thinking sim/pickup/scripts/eval_v2.sh experiments/pickup/<fast run> reason_mix 200
 ```

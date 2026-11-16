@@ -63,6 +63,16 @@ SHOW = "show the label"  # the sub-goal of the card not read yet
 STAYED = "a shoot that was to stay is cut"  # program.Plan's reason for a cut the program did not ask for
 OUTCOMES = ("open", "confirmed", "violated", "superseded", "gave_up")  # of an attempt in the ledger
 TURN = math.radians(10)  # the target's bearing moving by more than this is progress: the plant is being turned
+# What SlowLevel takes where nothing is given, by where its percepts come from. The simulator's truth is exact: one look
+# counts, nothing is unseen and no cut needs taking back. The eyes err (tutorial/architecture-v2.md, "First results"):
+# three looks in a row, a part they are sure of counts although they judge no camera to show it, a cut is unmarked
+# after three confident sightings of the part whole, and a verdict stands twice as long, so that the arm has left the
+# plant and the eyes have looked again before an episode ends on it. The settings before these were the truth's with
+# stable 3: stable=3, give_up=40, unseen=False, revoke=0
+DEFAULTS = dict(
+    truth=dict(stable=1, give_up=40, unseen=False, revoke=0),
+    eyes=dict(stable=3, give_up=80, unseen=True, revoke=3),
+)
 CHECKS = ("parts", "cut", "label", "flower")  # the memory against the simulator, at every look (memory_right)
 # The memory's errors that no lag explains (memory_false): more parts than the plant has, a cut the plant does not have
 FALSE_CHECKS = ("parts", "cut")
@@ -366,8 +376,9 @@ class SlowLevel:
     program         "gold": the reasoning task's own program (program.from_task); "writer": the program the slow
                     server's language model writes for the instruction, once per episode
     server          an open connection to a slow server (slow_server.py); needed for the eyes and for the writer
-    stable          the memory's rows; by default 1 for the truth (it is exact) and 3 for the eyes
-    p_min, patience, max_recoveries, give_up, unseen, revoke: the Supervisor's
+    stable, give_up, unseen, revoke: the Supervisor's; where one is None it is DEFAULTS[scene]'s (for the truth 1, 40,
+                    off and 0; for the eyes 3, 80, on and 3)
+    p_min, patience, max_recoveries: the Supervisor's
     truth           what gives the simulator's truth (default scene.scene_truth); a stand-in for tests
 
     reset() after env.reset (and any random start); tick(obs, history) at every look; record(info) at the end of an
@@ -385,9 +396,9 @@ class SlowLevel:
         p_min: float = 0.7,
         patience: int = 160,
         max_recoveries: int = 0,
-        give_up: int = 40,
-        unseen: bool = False,
-        revoke: int = 0,
+        give_up: int | None = None,
+        unseen: bool | None = None,
+        revoke: int | None = None,
         truth=None,
     ):
         assert scene in SCENES, f"scene {scene!r}: one of {SCENES}"
@@ -395,9 +406,10 @@ class SlowLevel:
         assert env.plant_task, "the slow level reads a plant: it needs a plant task"
         assert program == "writer" or env.reason, "the gold program is a reasoning task's own: it needs a reason_* task"
         self.env, self.scene, self.source, self.server = env, scene, program, server
-        self.stable = (1 if scene == "truth" else 3) if stable is None else stable
-        self.p_min, self.patience, self.max_recoveries, self.give_up = p_min, patience, max_recoveries, give_up
-        self.unseen, self.revoke = unseen, revoke
+        given = dict(stable=stable, give_up=give_up, unseen=unseen, revoke=revoke)
+        chosen = {name: DEFAULTS[scene][name] if value is None else value for name, value in given.items()}
+        self.stable, self.give_up, self.unseen, self.revoke = (chosen[name] for name in given)
+        self.p_min, self.patience, self.max_recoveries = p_min, patience, max_recoveries
         self.truth = scene_truth if truth is None else truth
         self.info: dict | None = None  # the slow server's
         if scene == "eyes" or program == "writer":
