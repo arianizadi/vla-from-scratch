@@ -586,3 +586,47 @@ def test_a_replay_reproduces_the_states_and_a_look_changes_only_the_images():
             assert diff.mean() < 0.05  # (the renderer's own noise of a level in a few pixels, through JPEG)
     finally:
         rec.close()
+
+
+# ------------------------------------------------------------------------------------------- the parked shoot
+def _model_arrays(env):
+    m = env.model
+    return {f: getattr(m, f).copy() for f in ("body_ipos", "geom_pos", "geom_size", "geom_contype", "eq_data")}
+
+
+@pytest.mark.parametrize("park_reset", [False, True])
+def test_with_park_reset_an_episode_does_not_depend_on_the_ones_before(park_reset):
+    _env("prune").close()  # (skips where the simulator cannot run)
+    used, fresh = PickupEnv("prune", park_reset=park_reset), PickupEnv("prune", park_reset=park_reset)
+    try:
+        three = next(s for s in range(50) if len(fresh.reset(seed=s) and fresh.active) == 3)
+        two = next(s for s in range(50) if len(fresh.reset(seed=s) and fresh.active) == 2)
+        expert = ScriptedExpert(used, seed=0)
+        used.reset(seed=three)
+        expert.reset()
+        done = False
+        while not done:  # an episode that uses the third shoot, cuts it, and leaves it on the floor or the plate
+            _, done, _ = used.step(expert.act())
+        used.reset(seed=two)
+        fresh.reset(seed=two)
+        same = all(
+            np.array_equal(a, b)
+            for a, b in zip(_model_arrays(used).values(), _model_arrays(fresh).values(), strict=True)
+        )
+        if not park_reset:  # the history the flag removes: the unused shoot keeps the last episode's shape
+            assert not same
+            return
+        assert same
+        experts = [ScriptedExpert(e, seed=0) for e in (used, fresh)]
+        for x in experts:
+            x.reset()
+        done = False
+        while not done:
+            a, b = experts[0].act(), experts[1].act()
+            assert np.array_equal(a, b)
+            _, done, _ = used.step(a)
+            fresh.step(b)
+            assert np.array_equal(used.data.qpos, fresh.data.qpos)
+    finally:
+        used.close()
+        fresh.close()

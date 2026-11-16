@@ -660,14 +660,19 @@ class PickupEnv:
         max_steps: int | None = None,
         scenario=None,
         leaf_fix: bool = False,
+        park_reset: bool = False,
     ):
         """`max_steps`: episode length limit; by default the task's own (200 unless TASKS says otherwise).
         `scenario`: test situations applied on top of the task (scenarios.py), e.g. "wind" or "lighting:dusk,bump".
         `leaf_fix`: draw each leaf of the plant where its collision box is (see _pose_leaf). Off by default, so that
-        evaluations stay comparable with the policies trained on the leaves as they were drawn before."""
+        evaluations stay comparable with the policies trained on the leaves as they were drawn before.
+        `park_reset`: a side shoot that an episode's plant does not use is put back as built (see _park_shoot), so that
+        an episode does not depend on the ones the environment ran before it. Off by default, so that datasets and
+        evaluations made before stay reproducible."""
         assert task in TASKS, f"unknown task {task}; choose from {list(TASKS)}"
         self.task = task
         self.leaf_fix = leaf_fix
+        self.park_reset = park_reset
         self.image_size = image_size
         self.max_steps = max_steps if max_steps is not None else TASKS[task].get("max_steps", 200)
         self._max_steps_given = max_steps  # reasoning tasks: else the episode limit is set per episode, by kind
@@ -1032,6 +1037,17 @@ class PickupEnv:
             n: [(m.geom(f"{n}_leaf{j}").id, m.geom(f"{n}_leaf{j}_col").id) for j in range(2)] for n in self.shoot_names
         }
         self.shoot_weld = {n: m.equality(f"{n}_weld").id for n in self.shoot_names}
+        # park_reset: each shoot's outer part and leaves as built, to put an unused shoot back to
+        self._shoot_built = {}
+        for n in self.shoot_names:
+            geoms = [*self.outer_geoms[n], *(g for pair in self.leaf_geoms[n] for g in pair)]
+            fields = ("geom_pos", "geom_quat", "geom_size", "geom_rbound", "geom_aabb", "geom_group", "geom_contype")
+            self._shoot_built[n] = dict(
+                geoms=geoms,
+                arrays={f: getattr(m, f)[geoms].copy() for f in (*fields, "geom_conaffinity")},
+                ipos=m.body_ipos[self.obj_body[n]].copy(),
+                eq=m.eq_data[self.shoot_weld[n]].copy(),
+            )
         # the card of the reasoning tasks (only in models built with it): collision box, coloured face, brown back
         self.label_geoms = [m.geom(f"label_{p}").id for p in ("col", "face", "back")] if self.reason else []
         if self.label_geoms:
@@ -1100,6 +1116,8 @@ class PickupEnv:
                 m.geom_group[vis] = 2 if used else 3
                 m.geom_contype[col], m.geom_conaffinity[col] = (2, 1) if used else (0, 0)
                 if not used:
+                    if self.park_reset:  # an unused leaf back as built too (it is not drawn and does not collide,
+                        self._unpark_leaf(name, j)  # but where it is still changes how contacts are found)
                     continue
                 R = base @ _rot("z", yaws[j]) @ _rot("y", rng.uniform(0.25, 0.5)) @ _rot("x", rng.uniform(-0.25, 0.25))
                 self._pose_leaf(vis, col, np.array([0.0, 0.0, tip - 0.001]), R)
@@ -1233,6 +1251,23 @@ class PickupEnv:
         for g in self.stub_geoms[name]:  # a tiny stub hidden inside the main stem
             self._set_capsule(g, [0, 0, STEM_BASE + 0.05], np.eye(3), 0.001)
         m.geom_group[self.stub_geoms[name][1]] = 3
+        if self.park_reset:
+            # Without this the parked outer part keeps the last episode's shape, centre of mass and leaves (whose
+            # collision boxes may still be live) on the floor, which changes the contacts and the solver a little, and
+            # the next episodes' physics drifts apart from what a fresh environment gives within a few hundred steps.
+            built = self._shoot_built[name]
+            for f, values in built["arrays"].items():
+                getattr(m, f)[built["geoms"]] = values
+            m.body_ipos[self.obj_body[name]] = built["ipos"]
+            m.eq_data[self.shoot_weld[name]] = built["eq"]
+
+    def _unpark_leaf(self, name, j):
+        """park_reset: leaf j of a shoot back to its pose as built."""
+        built = self._shoot_built[name]
+        for g in self.leaf_geoms[name][j]:
+            i = built["geoms"].index(g)
+            for f in ("geom_pos", "geom_quat"):
+                getattr(self.model, f)[g] = built["arrays"][f][i]
 
     def _set_capsule(self, g, centre, R, half):
         m = self.model

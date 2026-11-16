@@ -52,8 +52,9 @@ class Replayer:
 
     def __init__(self, info):
         self.task, self.leaf_fix = info["sim_task"], bool(info.get("leaf_fix"))
+        self.park_reset = bool(info.get("park_reset"))
         self.random_start = bool(info.get("random_start"))
-        self.env = PickupEnv(self.task, leaf_fix=self.leaf_fix)
+        self.env = PickupEnv(self.task, leaf_fix=self.leaf_fix, park_reset=self.park_reset)
         self.expert = ScriptedExpert(self.env, seed=0)  # for random_start's inverse kinematics only
         self.looks: dict[str, PickupEnv] = {}
 
@@ -88,7 +89,7 @@ class Replayer:
     def collect_chunk(self, worker_id, seeds, tail_steps):
         """Run the expert on `seeds` in order as one collect.py worker did (a fresh environment and expert per chunk);
         yields (seed, states, actions, frames) for every successful episode."""
-        env = self.env = PickupEnv(self.task, leaf_fix=self.leaf_fix)
+        env = self.env = PickupEnv(self.task, leaf_fix=self.leaf_fix, park_reset=self.park_reset)
         expert = ScriptedExpert(env, seed=worker_id)
         self.expert = expert
         budget = env.max_steps
@@ -117,7 +118,7 @@ class Replayer:
 
     def look_env(self, spec):
         if spec not in self.looks:
-            look = PickupEnv(self.task, scenario=spec, leaf_fix=self.leaf_fix)
+            look = PickupEnv(self.task, scenario=spec, leaf_fix=self.leaf_fix, park_reset=self.park_reset)
             src, dst = self.env.model, look.model  # (every PickupEnv of the task has the same model: same ids)
             # the same bodies, joints and geoms by name (a look's model has more of them, so indices differ)
             bodies = [(b, dst.body(src.body(b).name).id) for b in range(src.nbody)]

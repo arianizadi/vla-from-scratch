@@ -108,6 +108,21 @@ from its box (the pose was written without the offset MuJoCo's compiler gives a 
 collision boxes, and so the expert's actions and every outcome, are the same with and without it. Off by default, so
 that the existing policies are evaluated as they were trained.
 
+Paired re-rendering (`python -m sim.pickup.rerender`): the episodes of a dataset made by `collect.py` (without
+scenarios) played again and drawn in other looks, one look per copy for the whole episode, with the recorded states and
+actions unchanged (checked bit for bit). Each trajectory then appears under several looks with exactly the same
+actions. A dataset collected live with `--scenario` gives the expert's trajectories in each look instead, which drift
+apart from the plain ones: a policy trained on such data (2000 demonstrations, 73% of them varied) came out insensitive
+to the looks but less precise everywhere, and pruned 5/100 against 76/100 without the variation.
+
+Reproducible episodes: `PickupEnv(park_reset=True)` (`collect.py --park_reset`, `eval.py --park_reset`) puts a side shoot
+that an episode's plant does not use (and an unused leaf of a shoot in use) back as built at every reset. Without it the
+parked shoot keeps the last episode's shape and leaves on the floor; that changes how contacts are found a little, and
+an episode's physics then depends on the episodes the environment ran before it (in a dataset, on which seeds a
+collection worker ran earlier), drifting apart from a fresh environment's within a few hundred steps. Off by default so
+that existing datasets can be reproduced (`rerender.py` re-runs a collection in its own worker chunks for that); new
+datasets should use it.
+
 Not yet built: A2 (the tie facing away; the ties are there, the drawing of a hidden one is not), A6, A7 and every tier 2
 and 3 situation. The reasoning tasks (`reason_*`, roadmap Phase 7) have their own hidden-card kind; the A-situations
 here are scenario options the reasoning work can reuse, not reasoning tasks of their own.

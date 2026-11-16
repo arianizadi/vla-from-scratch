@@ -98,9 +98,10 @@ def _worker(args):
         tail_steps,
         scenario,
         leaf_fix,
+        park_reset,
         takeover,
     ) = args  # takeover: None, or this worker's policy server and the range the handover step K is drawn from
-    env = PickupEnv(task, scenario=scenario, leaf_fix=leaf_fix)
+    env = PickupEnv(task, scenario=scenario, leaf_fix=leaf_fix, park_reset=park_reset)
     expert = ScriptedExpert(env, seed=worker_id, reactive=disturb_prob > 0 or drift_prob > 0, side=side)
     writer = NoteWriter(env) if env.reason else None
     budget = env.max_steps
@@ -335,6 +336,12 @@ def main():
         "such data should be evaluated with eval.py --leaf_fix",
     )
     ap.add_argument(
+        "--park_reset",
+        action="store_true",
+        help="put an unused side shoot back as built at every reset (PickupEnv(park_reset=True)), so that an episode "
+        "does not depend on the ones a worker ran before it; for every new dataset",
+    )
+    ap.add_argument(
         "--include",
         nargs="+",
         default=[],
@@ -388,6 +395,7 @@ def main():
                 args.tail_steps,
                 args.scenario,
                 args.leaf_fix,
+                args.park_reset,
             )
             chunks = [
                 (args.task, jobs[i :: args.workers], str(out), i, *extra, _takeover(args, i))
@@ -469,6 +477,7 @@ def main():
         tail_steps=args.tail_steps,
         **({"scenario": args.scenario} if args.scenario else {}),
         **({"leaf_fix": True} if args.leaf_fix else {}),
+        **({"park_reset": True} if args.park_reset else {}),
         takeover=_takeover_summary(args, servers, attempted, kept[len(included) :], endings),
         included=[
             dict(dataset=Path(p).name, episodes=sum(e["source"] == Path(p).name for e in included))

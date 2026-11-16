@@ -518,11 +518,18 @@ def main():
         help="v2: the most recoveries per episode (a scripted move out of the plant); after them the slow level gives "
         "up. 0: none, and no limit on slowness but the episode's own",
     )
+    ap.add_argument(
+        "--park_reset",
+        action="store_true",
+        help="put an unused side shoot back as built at every reset (as in data from collect.py --park_reset)",
+    )
     args = ap.parse_args()
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    env = PickupEnv(args.task, max_steps=args.max_steps, scenario=args.scenario, leaf_fix=args.leaf_fix)
+    env = PickupEnv(
+        args.task, max_steps=args.max_steps, scenario=args.scenario, leaf_fix=args.leaf_fix, park_reset=args.park_reset
+    )
     if args.slow_level == "v2":  # checked before any server is reached
         assert env.plant_task, "--slow_level v2 reads a plant: it needs a plant task"
         assert not args.expert, "--slow_level v2 gives its sub-goals to a served policy: drop --expert"
@@ -892,6 +899,7 @@ def main():
         **(dict(named=_named_summary(episodes)) if env.named else {}),
         **(dict(scenario=_scenario_summary(env, episodes)) if env.scenarios else {}),
         **(dict(leaf_fix=True) if args.leaf_fix else {}),
+        **(dict(park_reset=True) if args.park_reset else {}),
         **(dict(aim=_aim_summary(episodes)) if getattr(env, "aim", None) else {}),
         **(
             dict(
