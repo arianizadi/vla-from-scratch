@@ -616,7 +616,7 @@ To see what the rule fires on, two runs of the 200 validation layouts were trace
 the rule was run over the traces. It would have fired in 55 and 46 episodes, and they hold 59 of the 72 episodes not
 solved:
 
-| Where the rule fires | Episodes of 400 | Solved unhelped | Solved with the reset (three runs of 200) |
+| Where the rule fires | Episodes of 400 | Solved unhelped | Solved with the reset as first built (three runs of 200) |
 |---|---|---|---|
 | the first move of a task of one cut (before step 60) | 40 | 10 | 58 of 66 |
 | later in a task of one cut, after a turn that ended short or went the long way round | 21 | 0 | 16 of 37 |
@@ -721,9 +721,10 @@ worse.
 | new combinations worked out wrongly (0 of 33) | plan | counting from an end is computed, not recalled | held-out ordinals in a new combination: 23 to 31 of 33 over the six runs with a written or the task's program |
 | hours per run for a reasoner that does not see | all | the eyes train at the small policy's rate; the language model is not trained at all | 35 to 44 minutes for the eyes |
 
-What it does not fix: the fast level's ceiling and its dependence on the seed, the sticky button (the fast level has
-no skill for pressing again), the changed views, and the eight held-out instructions in a hundred that the writer
-compiles to a program with another meaning.
+What it does not fix: the fast level's ceiling and its dependence on the seed (the reset, added later, takes back the
+wrong first move, about a third of what that ceiling loses), the sticky button (the fast level has no skill for
+pressing again), the changed views, and the eight held-out instructions in a hundred that the writer compiles to a
+program with another meaning.
 
 ## What it costs
 
