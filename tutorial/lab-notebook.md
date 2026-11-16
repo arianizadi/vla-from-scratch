@@ -1252,6 +1252,20 @@ What the pieces show:
   do not change episodes solved (589 and 621 of 800 against 604 and 628), so the first eyes stay.
 - **The stage-1 reasoner at 448 px** (`qwen_reasoner_hires_mix8k_600k_para500k`, continued 500k with paraphrases):
   141/200 and 100/200 held out with the seed-43 fast level, against 133 and 66 at 224 px, below v2 on both.
+- **A fast level told its aim** (`dp_vit_lang_reactive_aim_reason8k_20m_seed43`: the sub-goal also says whether the
+  shoot is in reach and which way to turn, `eval.py --aim`; trained on half the samples with the aim and half
+  without). With the expert's sub-goals it learns faster (76/100 at 4M samples against 26) but ends level (74-82
+  against 75-80). In v2 it fixes what it was built for (a button pressed in 99% of the starts that need one against
+  85-91%, the short way round in 86-93% against 59-70%, no wrong-shoot cut, no failure to turn) and loses as many
+  episodes a new way: 26-30 in 200 time out after turning the plate past the target and round again, or closing the
+  jaws beside the shoot (4-9 for the sub-goal fast level). All of v2, eyes, written program: 163/200 and 152/200 held
+  out (the sub-goal fast level without resets: 169 and 148); with resets 166 on validation layouts (173-179). The same
+  weights not told the aim fall to 112 and 86: one model does not learn both wordings well. Saying "in reach" as soon
+  as the shoot is within 25 degrees instead of when the plate rests gave 165-168 against 156-159, within noise. The
+  headline configuration stays the sub-goal fast level with resets.
+- **The 1 s memory fast level, second seed** (`dp_vit_lang_frames_1s_subgoal_reason8k_20m_seed43`): 135/200 on
+  validation layouts and 118 and 105 on evaluation layouts (simulator's scene), 141 with resets, below the seed-43
+  sub-goal fast level. A frame from a second earlier does not help a fast level that is strong without it.
 
 ## Throughput
 
