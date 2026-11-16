@@ -29,8 +29,10 @@ then the slow level's sub-goal. Its scene memory takes the simulator's truth (--
 eyes (--scene eyes), and it carries out the task's own program (--program gold) or the one a language model writes
 (--program writer); the eyes and the writer are served by slow_server.py on --slow_port. While a fact is missing it
 holds the arm still; with --recover N it hands the arm to a scripted move when nothing progresses, at most N times per
-episode; the episode ends once its verdict (complete or failed) has stood for a while. Each episode records what it
-decided (per_episode[i]["v2"]), and results.json counts its false completions apart from the successes.
+episode; when the fast level has gone for a shoot it cannot reach it takes the arm back to the start pose, at most
+--resets times per episode (2 unless told otherwise; none with --aim); the episode ends once its verdict (complete or
+failed) has stood for a while. Each episode records what it decided (per_episode[i]["v2"]), and results.json counts
+its false completions apart from the successes.
 
 --scenario applies test situations (scenarios.py: lighting, camera, wind, bump, sticky, nothing_to_do, order, ...) on
 top of the task; each episode records what its scenarios drew, and results.json counts the outcomes by variation.
@@ -551,10 +553,11 @@ def main():
     ap.add_argument(
         "--resets",
         type=int,
-        default=0,
+        default=None,
         help="v2: the most resets per episode: when the fast level has set its jaws to cut a shoot that is out of "
         "reach without turning the plant, the arm is taken back to the start pose and the fast level chooses again "
-        "(slow_level.Supervisor, rule e). 0: none",
+        "(slow_level.Supervisor, rule e). Default: 2 (slow_level.RESETS), or 0 with --aim. 0: none, as in the runs "
+        "made before that default",
     )
     ap.add_argument(
         "--slow_give_up",
@@ -599,14 +602,18 @@ def main():
             "--scene eyes and --program writer are served by slow_server.py: give its --slow_port"
         )
         assert args.recover >= 0 and args.patience >= 1, "--recover must be 0 or more and --patience 1 or more"
-        assert args.resets >= 0, "--resets must be 0 or more"
+        assert args.resets is None or args.resets >= 0, "--resets must be 0 or more"
         assert (args.slow_revoke is None or args.slow_revoke >= 0) and (
             args.slow_give_up is None or args.slow_give_up >= 0
         ), "--slow_revoke must be 0 or more and --slow_give_up 0 or more"
     else:
-        assert (args.scene, args.program, args.slow_port, args.recover, args.resets) == ("truth", "gold", None, 0, 0), (
-            "--scene, --program, --slow_port, --recover and --resets are for --slow_level v2"
-        )
+        assert (args.scene, args.program, args.slow_port, args.recover, args.resets) == (
+            "truth",
+            "gold",
+            None,
+            0,
+            None,
+        ), "--scene, --program, --slow_port, --recover and --resets are for --slow_level v2"
         assert (args.slow_unseen, args.slow_revoke, args.slow_give_up) == (None, None, None), (
             "--slow_unseen, --slow_revoke and --slow_give_up are for --slow_level v2"
         )

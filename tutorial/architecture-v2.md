@@ -380,13 +380,16 @@ The runner (`eval.py --slow_level v2`) hands the sub-goal to the fast level as i
 steps without progress, starts a recovery when asked to (`--recover N`, off by default), and ends the episode once
 `Complete` or `Failed` has stood for two seconds (four with the eyes). Two things were added for the fast level's
 first move ("First results"): with `--aim` the sub-goal says what its shoot needs ("cut the lowest shoot, press
-blue"), for a fast level trained to be told; and with `--resets N` the arm is taken back to the start pose when the
-jaws are set to cut a shoot that is more than 45 degrees out of reach and the plate is not turning, three looks in a
-row, so that the fast level chooses again (a target that follows another is given four looks first: the hand is still
-coming back from the shoot it cut). Each episode records the program, every change of outcome, the recoveries, whether
-a `Complete` was false, how the memory compared with the simulator at every look, and a ledger: one entry per attempt
-(the cut of one part, or showing the label) with what it was meant to bring about, closed only by what the memory then
-shows (confirmed, with the look that showed it; violated; superseded; given up) and open otherwise.
+blue"), for a fast level trained to be told; and the arm is taken back to the start pose when the jaws are set to cut
+a shoot that is more than 45 degrees out of reach and the plate is not turning, three looks in a row, so that the fast
+level chooses again (a target that follows another is given four looks first: the hand is still coming back from the
+shoot it cut). That reset may be asked for twice an episode unless `--resets N` says otherwise, and not at all with
+`--aim` until the fast levels told their aim are measured with it; `--resets 0` turns it off, which is how every run
+of this document was made that does not say it had resets. Each episode records the program, every change of outcome,
+the recoveries, whether a `Complete` was false, how the memory compared with the simulator at every look, and a
+ledger: one entry per attempt (the cut of one part, or showing the label) with what it was meant to bring about,
+closed only by what the memory then shows (confirmed, with the look that showed it; violated; superseded; given up)
+and open otherwise.
 
 **5. Fast level.** As it is: the small flow-matching policy that reads the sub-goal
 (`dp_vit_lang_reactive_subgoal.yaml`, or `dp_vit_lang_frames_1s_subgoal.yaml` once those runs are in).
@@ -607,10 +610,10 @@ about 8 more episodes in 100. The slow level knows the part's bearing, and the s
 first item of the fast-level track below.
 
 **A reset for a wrong first move (E11).** The jaws say which of the two the fast level has chosen: it shuts them to
-press a button and sets them to the cutting width on its way to a shoot. Rule e of the runner (`eval.py --resets N`,
-off by default): the jaws at the cutting width, the target more than 45 degrees from reach and the plate standing,
-three looks in a row, and the arm is taken back to the start pose with open jaws, where the fast level chooses again;
-at most N times an episode.
+press a button and sets them to the cutting width on its way to a shoot. Rule e of the runner (`eval.py --resets N`):
+the jaws at the cutting width, the target more than 45 degrees from reach and the plate standing, three looks in a
+row, and the arm is taken back to the start pose with open jaws, where the fast level chooses again; at most N times
+an episode.
 
 To see what the rule fires on, two runs of the 200 validation layouts were traced without it (162 and 166 solved) and
 the rule was run over the traces. It would have fired in 55 and 46 episodes, and they hold 59 of the 72 episodes not
@@ -681,6 +684,10 @@ by closing on one it can. What is left with the written program on held-out inst
 with a wrong shoot cut, the instructions it reads as "keep the middle" (a known limit of the writer, left as it is).
 With seed 44 the first eyes, which never saw that fast level's states, still end 7 and 8 episodes of 200 on a false
 `Complete` with training instructions.
+
+After these runs the reset became the default of v2: up to two an episode (`slow_level.RESETS`) for a fast level that
+is given the sub-goal alone, whatever the scene comes from. With `--aim` it stays off until the fast levels told their
+aim have been measured with and without it. `--resets 0` repeats every run above that had none.
 
 **Eyes trained on the fast level's own frames (E8).** `eval.py --record_scene` recorded 2000 rollouts of the fast
 level under v2 on the simulator's scene (new layouts; 178,840 frames) and 200 more for validation (18,052 frames),

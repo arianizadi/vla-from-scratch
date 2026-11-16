@@ -19,6 +19,9 @@
 # The slow level's own settings are eval.py's: --slow_stable, --slow_p_min, --slow_unseen, --slow_revoke, --slow_give_up,
 # --patience, --recover. With the eyes the memory's two options are on unless told otherwise (slow_level.DEFAULTS); the
 # runs made before that default: --no-slow_unseen --slow_revoke 0 --slow_give_up 40.
+# The reset (--resets N: the arm goes back to its start pose when the fast level has gone for a shoot it cannot reach)
+# is on with up to 2 an episode unless told otherwise, and off with --aim; the runs made before that default:
+# --resets 0.
 # Environment and GPU selection: see _common.sh (both servers run on the same GPU).
 set -euo pipefail
 fast=${1:?fast policy experiment dir}; task=${2:?task}; episodes=${3:-50}

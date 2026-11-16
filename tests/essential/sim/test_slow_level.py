@@ -923,6 +923,28 @@ def test_the_eyes_scene_has_the_memory_s_two_options_on_unless_told_otherwise_an
     # the eyes' settings before these defaults are still there for whoever names them
     old = L.SlowLevel(StubEnv(ORDINAL), scene="eyes", server=StubServer(info=info), give_up=40, unseen=False, revoke=0)
     assert (old.stable, old.give_up, old.unseen, old.revoke) == (3, 40, False, 0)
+
+
+def test_the_reset_is_on_with_two_an_episode_unless_told_otherwise_and_off_for_a_fast_level_told_its_aim():
+    info = dict(eyes=dict(keys=["front_t0"]), writer=None)
+    assert L.RESETS == 2
+    for slow in (
+        L.SlowLevel(StubEnv(ORDINAL), truth=_truth),
+        L.SlowLevel(StubEnv(ORDINAL), scene="eyes", server=StubServer(info=info)),
+    ):
+        assert slow.resets == 2 and slow.settings()["resets"] == 2  # whatever the percepts come from
+        slow.reset()
+        assert slow.supervisor.max_resets == 2  # and it reaches the rules
+    told = L.SlowLevel(StubEnv(ORDINAL), truth=_truth, aim=True)  # told what its shoot needs: not measured yet
+    assert told.resets == 0 and "resets" not in told.settings()
+    assert L.SlowLevel(StubEnv(ORDINAL), truth=_truth, aim=True, resets=2).resets == 2  # unless asked for
+    # the runs before this default had none, and whoever names 0 still has none, in the record too
+    off = L.SlowLevel(StubEnv(ORDINAL), truth=_truth, resets=0)
+    off.reset()
+    assert off.resets == 0 and off.supervisor.max_resets == 0 and "resets" not in off.settings()
+    _drive(off, off.env, 6)
+    assert "resets" not in off.record({"success": True})
+    assert L.SlowLevel(StubEnv(ORDINAL), truth=_truth, resets=3).resets == 3
     told = L.SlowLevel(StubEnv(ORDINAL), truth=_truth, stable=2, give_up=10, unseen=True, revoke=1)
     assert (told.stable, told.give_up, told.unseen, told.revoke) == (2, 10, True, 1)
 

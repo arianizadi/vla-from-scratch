@@ -85,6 +85,12 @@ DEFAULTS = dict(
     truth=dict(stable=1, give_up=40, unseen=False, revoke=0),
     eyes=dict(stable=3, give_up=80, unseen=True, revoke=3),
 )
+# The resets SlowLevel allows where none are given (rule e), whatever its percepts come from: a fast level that is
+# given the sub-goal alone goes for a shoot it cannot reach in about one episode in ten, and with up to two resets v2
+# solved 180 and 165 of 200 against 169 and 148 (tutorial/architecture-v2.md, "First results"). Not with `aim`: a fast
+# level told what its shoot needs is not expected to make that error, and whether it still gains from the rule is not
+# measured yet. The runs made before this default had resets=0
+RESETS = 2
 CHECKS = ("parts", "cut", "label", "flower")  # the memory against the simulator, at every look (memory_right)
 # The memory's errors that no lag explains (memory_false): more parts than the plant has, a cut the plant does not have
 FALSE_CHECKS = ("parts", "cut")
@@ -474,7 +480,8 @@ class SlowLevel:
     server          an open connection to a slow server (slow_server.py); needed for the eyes and for the writer
     stable, give_up, unseen, revoke: the Supervisor's; where one is None it is DEFAULTS[scene]'s (for the truth 1, 40,
                     off and 0; for the eyes 3, 80, on and 3)
-    p_min, patience, max_recoveries, aim, resets: the Supervisor's
+    p_min, patience, max_recoveries, aim: the Supervisor's
+    resets          the Supervisor's; None: RESETS (2), or 0 with `aim`. 0: the rule is off
     truth           what gives the simulator's truth (default scene.scene_truth); a stand-in for tests
 
     reset() after env.reset (and any random start); tick(obs, history) at every look; record(info) at the end of an
@@ -496,7 +503,7 @@ class SlowLevel:
         unseen: bool | None = None,
         revoke: int | None = None,
         aim: bool = False,
-        resets: int = 0,
+        resets: int | None = None,
         truth=None,
     ):
         assert scene in SCENES, f"scene {scene!r}: one of {SCENES}"
@@ -508,7 +515,7 @@ class SlowLevel:
         chosen = {name: DEFAULTS[scene][name] if value is None else value for name, value in given.items()}
         self.stable, self.give_up, self.unseen, self.revoke = (chosen[name] for name in given)
         self.p_min, self.patience, self.max_recoveries, self.aim = p_min, patience, max_recoveries, bool(aim)
-        self.resets = resets
+        self.resets = (0 if self.aim else RESETS) if resets is None else resets
         self.truth = scene_truth if truth is None else truth
         self.info: dict | None = None  # the slow server's
         if scene == "eyes" or program == "writer":
