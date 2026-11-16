@@ -1095,6 +1095,26 @@ third of the demonstrations at this budget stops the policy from learning the ta
 checkpoints), so it is not a way to robustness here; gentler variation or a longer budget would be the next try. The
 sticky button costs about 25 points: the policies do not notice a press that did nothing.
 
+**Paired re-rendering: no better.** `sim/pickup/rerender.py` replays the 2000 leaf-fixed demonstrations bit for bit
+and draws each again in other looks (lighting, camera, bench), with states and actions unchanged, so a look can only
+teach what does not matter: 6000 episodes, a third in the plain look. With the 1 s memory policy, 20M samples:
+
+| Policy | plain | lighting (/test) | camera (/test) | bench (/test) | distractors (/test) | wind | bump | sticky |
+|---|---|---|---|---|---|---|---|---|
+| Plain demonstrations, seed 42 (`dp_vit_lang_frames_1s_prune2k_leaffix_20m`) | 87 | 3 (0) | 2 (2) | 2 (0) | 72 (85) | 82 | 79 | 38 |
+| Plain demonstrations, seed 43 (`..._seed43`) | 80 | 2 (0) | 4 (2) | 0 (0) | 60 (79) | 78 | 76 | 38 |
+| Paired, seeds 42 and 43 (`..._leaffix_paired_20m`, `..._seed43`), stopped at checkpoint 9 of 11 | 2, 16 | - | - | - | - | - | - | - |
+
+The plain policies with memory are as brittle as the ones without (lighting, camera, bench: 0-4). The paired runs
+learn the plain look per frame as well as the plain runs do, and the new looks far better (with the expert driving,
+the predicted joints are off by 0.029 under changed lighting against 0.112 for the plain policy, and 0.025 against
+0.025 in the plain look), but driving themselves they fail (87-90% of episodes never make the first cut; they shuttle
+between the buttons and the stem and push the main stem in 16-23%). A check of the data found frames, actions,
+cameras, image format and statistics all identical to the source. One bug was found on the way: the distractors look
+was never drawn (a parked distractor resting on the floor counted as touching the trajectory), so those copies fell
+through to lighting; fixed, not re-run. Like the visual-variation run above, variation that the frames learn well
+still breaks the closed loop, so robustness needs another route than more looks in the demonstrations.
+
 **Aim drills.** Seven motor drills on the bare table (`tutorial/aim-range.md`: touch, touch along a pin, stop on,
 follow, flick between, press, pinch; the expert solves each at 499-500/500), as practice for the arm. Co-trained with
 pruning (75% pruning, 25% drills, `dp_vit_lang_reactive_prune2k_aim8k_co27m`): 22/100 on pruning (66 on the drills),
