@@ -574,6 +574,94 @@ def test_the_plan_binds_again_when_the_inventory_grows():
     assert plan.step(memory) == P.Failed("a shoot that was to stay is cut") and plan.rebinds == 1
 
 
+def test_a_corrected_flower_binds_a_conditional_plan_again():
+    memory = _memory(3, flower="red")
+    plan = P.Plan(P.parse("If(FlowerIs(red),Cut(Rank(1,bottom)),Cut(Rank(1,top)))"))
+    assert plan.step(memory) == P.Execute("cut the lowest shoot", 0) and plan.rebinds == 0
+    memory.flower = "orange"  # the memory corrects a first wrong reading
+    assert plan.step(memory) == P.Execute("cut the highest shoot", 2)
+    assert plan.targets == [2] and plan.rebinds == 1
+    assert plan.step(memory) == P.Execute("cut the highest shoot", 2) and plan.rebinds == 1  # nothing changed
+    # a colour that takes the same branch still differs from the one read: bound again, to the same shoot
+    memory.flower = "pink"
+    assert plan.step(memory) == P.Execute("cut the highest shoot", 2) and plan.rebinds == 2
+
+
+def test_a_cut_made_under_a_reading_since_corrected_fails():
+    memory = _memory(3, flower="red")
+    plan = P.Plan(P.parse("If(FlowerIs(red),Cut(Rank(1,bottom)),Cut(Rank(1,top)))"))
+    assert plan.step(memory) == P.Execute("cut the lowest shoot", 0)
+    memory.parts[0].cut = True
+    assert plan.step(memory) == P.Complete()
+    memory.flower = "orange"
+    assert plan.step(memory) == P.Failed("a shoot that was to stay is cut")
+    assert plan.targets == [2] and plan.rebinds == 1
+
+
+def test_a_corrected_label_binds_the_label_plan_again():
+    memory = _memory(3, label_read="white")
+    plan = P.Plan(P.parse("Cut(ReadLabel())"))
+    assert plan.step(memory) == P.Execute("cut the lowest shoot", 0) and plan.rebinds == 0
+    memory.label_read = "cyan"
+    assert plan.step(memory) == P.Execute("cut the highest shoot", 2)
+    assert plan.targets == [2] and plan.rebinds == 1
+
+
+def test_a_fact_the_evaluation_did_not_read_never_binds_the_plan_again():
+    memory = _memory(3, flower="red", label_read="white")
+    ordinal = P.Plan(P.parse("Cut(Rank(2,top))"))  # reads neither the flower nor the card
+    card = P.Plan(P.parse("Cut(ReadLabel())"))  # reads the card, not the flower
+    branch = P.Plan(P.parse("If(FlowerIs(red),Cut(Middle()),Cut(ReadLabel()))"))  # the card only if not red
+    assert ordinal.step(memory) == P.Execute("cut the middle shoot", 1)
+    assert card.step(memory) == P.Execute("cut the lowest shoot", 0)
+    assert branch.step(memory) == P.Execute("cut the middle shoot", 1)
+    memory.label_read = "cyan"
+    memory.parts[0].attributes["tie"] = "red"
+    assert ordinal.step(memory) == P.Execute("cut the middle shoot", 1) and ordinal.rebinds == 0
+    assert branch.step(memory) == P.Execute("cut the middle shoot", 1) and branch.rebinds == 0  # took the red branch
+    assert card.step(memory) == P.Execute("cut the highest shoot", 2) and card.rebinds == 1
+    memory.flower = "orange"
+    assert ordinal.step(memory) == P.Execute("cut the middle shoot", 1) and ordinal.rebinds == 0
+    assert card.step(memory) == P.Execute("cut the highest shoot", 2) and card.rebinds == 1
+    assert branch.step(memory) == P.Execute("cut the highest shoot", 2) and branch.rebinds == 1  # now reads the card
+    memory.label_read = "white"  # and from now on watches it
+    assert branch.step(memory) == P.Execute("cut the lowest shoot", 0) and branch.rebinds == 2
+    # the inventory is always read: a shoot found later binds the plan again, where a new flower colour did not
+    memory = _memory(2, flower="red")
+    ordinal = P.Plan(P.parse("Cut(Rank(2,top))"))
+    assert ordinal.step(memory) == P.Execute("cut the lowest shoot", 0)
+    memory.flower = "orange"
+    assert ordinal.step(memory) == P.Execute("cut the lowest shoot", 0) and ordinal.rebinds == 0
+    memory.discover(0.095)
+    assert ordinal.step(memory) == P.Execute("cut the middle shoot", 2) and ordinal.rebinds == 1
+
+
+def test_a_filter_binds_again_only_when_a_shoot_it_looked_at_changes():
+    memory = _memory(3)
+    for part, tie in zip(memory.parts, ("blue", "red", "red"), strict=True):
+        part.attributes["tie"] = tie
+    plan = P.Plan(P.parse("Cut(Filter(tie,red,Except(All(),Rank(1,bottom))))"))  # looks at the middle and the highest
+    assert plan.step(memory) == P.Execute("cut the middle shoot", 1) and plan.targets == [1, 2]
+    memory.parts[0].attributes["tie"] = "red"  # the lowest: not looked at
+    memory.parts[1].attributes["bud"] = "yes"  # another attribute: not read
+    assert plan.step(memory) == P.Execute("cut the middle shoot", 1) and plan.rebinds == 0
+    memory.parts[1].attributes["tie"] = "white"  # the middle one's tie was read wrong
+    assert plan.step(memory) == P.Execute("cut the highest shoot", 2)
+    assert plan.targets == [2] and plan.rebinds == 1
+
+
+def test_binding_again_that_needs_a_fact_holds_and_keeps_the_old_targets():
+    memory = _memory(3, flower="orange")
+    plan = P.Plan(P.parse("If(FlowerIs(red),Cut(ReadLabel()),Cut(Rank(1,top)))"))
+    assert plan.step(memory) == P.Execute("cut the highest shoot", 2)
+    memory.flower = "red"  # corrected: the card decides now, and it has not been read
+    assert plan.step(memory) == P.NeedObservation("label", "show the label")
+    assert plan.targets == [2] and plan.rebinds == 0
+    memory.label_read = "white"
+    assert plan.step(memory) == P.Execute("cut the lowest shoot", 0)
+    assert plan.targets == [0] and plan.rebinds == 1
+
+
 def test_an_unknown_flower_holds_a_conditional_plan():
     memory = _memory(3, flower=None)
     plan = P.Plan(P.parse("If(FlowerIs(red),Cut(Rank(1,bottom)),Cut(Rank(1,top)))"))

@@ -34,8 +34,10 @@ gives the same answer for the same facts; asking the model again would cost a fo
 Positions refer to the whole inventory. The scene memory keeps every side shoot it has seen, cut or not, lowest
 first, and a program counts over all of them, as the expert's notes do: on a plant with three shoots "the second from
 the top" is the middle one, and after the middle one is cut it is still the middle one, not the lower of the two that
-are left. A plan (`Plan`) binds the program's selection to the memory's part ids once, and binds it again only when
-the inventory grows.
+are left. A plan (`Plan`) binds the program's selection to the memory's part ids, and binds it again only when a fact
+that binding read has changed: the inventory has grown, or the memory has corrected a first wrong reading of the
+flower's colour, the card's colour or an attribute the program looked at. A fact the evaluation did not read cannot
+change what it selects, so it never makes a plan bind again.
 
 At each step a plan says one of four things:
 
@@ -52,7 +54,7 @@ import dataclasses
 import functools
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from . import reasoning
 
@@ -291,16 +293,18 @@ def from_task(task: reasoning.Task) -> Stmt:
 
 
 # ----------------------------------------------------------------------------------------------------------- evaluation
-@dataclass(frozen=True)
+@dataclass
 class _Plant:
     """What an evaluation reads: the number of shoots in the inventory, the facts known (None: not yet), and each
-    shoot's attributes, lowest first."""
+    shoot's attributes, lowest first. `read` collects the facts the evaluation did read, with the values it read:
+    "flower", "label", and (attribute, shoot index) for each shoot a Filter looked at. A plan watches those."""
 
     count: int
     flower: str | None
     label: str | None  # the card's colour, once read
     attributes: tuple[dict[str, str], ...]
     label_rule: dict[str, str]  # card colour -> the position it names
+    read: dict = field(default_factory=dict)
 
 
 def _shoots(program: Stmt, plant: _Plant) -> list[int]:
@@ -310,6 +314,7 @@ def _shoots(program: Stmt, plant: _Plant) -> list[int]:
     if isinstance(program, If):
         if plant.flower is None:
             raise NeedsObservation("flower")
+        plant.read["flower"] = plant.flower
         program = program.yes if plant.flower == program.cond.colour else program.no
     return sorted(_select(program.sel, plant))
 
@@ -332,10 +337,12 @@ def _select(sel: Sel, plant: _Plant) -> set[int]:
         chosen = _select(sel.sel, plant)
         if any(sel.attr not in plant.attributes[i] for i in chosen):
             raise NeedsObservation(sel.attr)
+        plant.read.update({(sel.attr, i): plant.attributes[i][sel.attr] for i in chosen})
         return {i for i in chosen if plant.attributes[i][sel.attr] == sel.value}
     # ReadLabel: the card names a position, which selects as the instruction's own words would
     if plant.label is None:
         raise NeedsObservation("label")
+    plant.read["label"] = plant.label
     if plant.label not in plant.label_rule:
         raise ProgramError(f"a {plant.label} label names no shoot")
     return _select(_NAMED[plant.label_rule[plant.label]], plant)
@@ -512,6 +519,14 @@ class Plan:
     `cut`, `bearing` and `attributes`), `settled`, `flower`, `label_read` and `position(id)`, as scene.py's
     SceneMemory has them. What was cut is what the memory saw cut, never what a sub-goal asked for.
 
+    When it binds. The first evaluation that succeeds binds the program's selection to part ids (`targets`), and the
+    plan keeps the facts that evaluation read, with the values it read: the inventory always, the flower's colour if
+    a FlowerIs was evaluated, the card's colour if a ReadLabel was, and the attribute of each shoot a Filter looked
+    at. It binds again, counted in `rebinds`, when any of them differs in the memory: the inventory grew, or the
+    memory corrected a first wrong reading. A shoot cut under the old reading that the new binding does not ask for
+    is a shoot that was to stay, and the plan says Failed. If binding again does not succeed (a fact is missing, or
+    the plant has no such shoot), the plan says so and keeps the old targets until it does.
+
     `label_rule`: card colour -> the position it names (default reasoning.LABEL_MEANS).
     """
 
@@ -521,18 +536,20 @@ class Plan:
         if not set(self.label_rule.values()) <= set(reasoning.POSITIONS):
             raise ValueError(f"a card names one of {reasoning.POSITIONS}: {self.label_rule}")
         self.targets: list[int] | None = None  # the part ids bound to the program's selection, lowest first
-        self.rebinds = 0  # how often the binding was made again because the inventory grew
-        self._bound_over: frozenset[int] = frozenset()  # the part ids that were in the inventory at the binding
+        self.rebinds = 0  # how often the binding was made again because a fact it read changed
+        # The facts the binding read, as the memory said them then: "inventory" (the part ids), "flower", "label",
+        # and (attribute, part id) for each shoot a Filter looked at.
+        self._read: dict = {}
 
     def step(self, memory) -> Execute | NeedObservation | Complete | Failed:
         # 1. Positions are named over the whole plant: until the inventory is believed complete, they are unknown.
         if not memory.settled:
             return NeedObservation("plant", None)
         parts = list(memory.parts)
-        ids = frozenset(part.id for part in parts)
-        # 2. Bind, or bind again over a grown inventory. The program is evaluated over every part, cut or not, and
-        #    the result is kept as part ids, so the binding never moves to other shoots as shoots are cut.
-        if self.targets is None or not ids <= self._bound_over:
+        # 2. Bind, or bind again when a fact the binding read has changed. The program is evaluated over every part,
+        #    cut or not, and the result is kept as part ids, so the binding never moves to other shoots as shoots are
+        #    cut. A fact the evaluation did not read cannot change its result, so it is not watched.
+        if self.targets is None or self._stale(memory, parts):
             attributes = tuple(part.attributes for part in parts)
             plant = _Plant(len(parts), memory.flower, memory.label_read, attributes, self.label_rule)
             try:
@@ -544,7 +561,11 @@ class Plan:
             if self.targets is not None:
                 self.rebinds += 1
             self.targets = [parts[i].id for i in chosen]
-            self._bound_over = ids
+            self._read = {"inventory": frozenset(part.id for part in parts)}
+            for fact, value in plant.read.items():
+                # a shoot's attribute is kept under the part's id: its index changes when a shoot is found below it
+                key = (fact[0], parts[fact[1]].id) if isinstance(fact, tuple) else fact
+                self._read[key] = value
         # 3. A cut the program did not ask for cannot be undone.
         if any(part.cut and part.id not in self.targets for part in parts):
             return Failed("a shoot that was to stay is cut")
@@ -557,3 +578,17 @@ class Plan:
         #    keeps the first of equals, the lowest.
         part = min(left, key=lambda part: math.pi if part.bearing is None else abs(part.bearing))
         return Execute(f"cut the {memory.position(part.id)} shoot", part.id)
+
+    def _stale(self, memory, parts) -> bool:
+        """True when a fact the binding read is no longer what the memory says."""
+        now = {"inventory": frozenset(part.id for part in parts), "flower": memory.flower, "label": memory.label_read}
+        attributes = {part.id: part.attributes for part in parts}
+        for fact, then in self._read.items():
+            if isinstance(fact, tuple):
+                attr, part_id = fact
+                value = attributes.get(part_id, {}).get(attr)
+            else:
+                value = now[fact]
+            if value != then:
+                return True
+        return False
