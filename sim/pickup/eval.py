@@ -24,6 +24,14 @@ reasoner (to evaluate a reasoner's checkpoints with eval.sh / eval_checkpoints.s
 correct note, what is on the stand, and lets it write the rest: how well it reasons when it sees correctly
 (tutorial/architecture-v2.md, experiment E0).
 
+--slow_level v2 puts the slow level of architecture v2 (slow_level.py) over the served policy, whose instruction is
+then the slow level's sub-goal. Its scene memory takes the simulator's truth (--scene truth) or the percepts of the
+eyes (--scene eyes), and it carries out the task's own program (--program gold) or the one a language model writes
+(--program writer); the eyes and the writer are served by slow_server.py on --slow_port. While a fact is missing it
+holds the arm still; with --recover N it hands the arm to a scripted move when nothing progresses, at most N times per
+episode; the episode ends once its verdict (complete or failed) has stood for a while. Each episode records what it
+decided (per_episode[i]["v2"]), and results.json counts its false completions apart from the successes.
+
 --scenario applies test situations (scenarios.py: lighting, camera, wind, bump, sticky, nothing_to_do, order, ...) on
 top of the task; each episode records what its scenarios drew, and results.json counts the outcomes by variation.
 Episodes of the same seeds with and without a scenario have the same layouts.
@@ -476,11 +484,59 @@ def main():
         action="store_true",
         help="draw the plant's leaves where their collision boxes are (as in data from collect.py --leaf_fix)",
     )
+    # Architecture v2 (see the module's docstring and slow_level.py)
+    ap.add_argument(
+        "--slow_level",
+        choices=["none", "v2"],
+        default="none",
+        help="v2: the slow level of architecture v2 gives the served policy its sub-goals as its instruction",
+    )
+    ap.add_argument(
+        "--scene",
+        choices=["truth", "eyes"],
+        default="truth",
+        help="v2: what its scene memory takes, the simulator's truth or the percepts of the eyes on --slow_port",
+    )
+    ap.add_argument(
+        "--program",
+        choices=["gold", "writer"],
+        default="gold",
+        help="v2: the task's own program, or the one the language model on --slow_port writes for the instruction",
+    )
+    ap.add_argument("--slow_port", type=int, default=None, help="v2: port of a slow_server.py (eyes, writer)")
+    ap.add_argument(
+        "--slow_stable", type=int, default=None, help="v2: the memory's rows (default 1 for the truth, 3 for the eyes)"
+    )
+    ap.add_argument("--slow_p_min", type=float, default=0.7, help="v2: the confidence a percept needs to count")
+    ap.add_argument(
+        "--patience", type=int, default=160, help="v2: control steps without progress before a recovery (--recover)"
+    )
+    ap.add_argument(
+        "--recover",
+        type=int,
+        default=0,
+        help="v2: the most recoveries per episode (a scripted move out of the plant); after them the slow level gives "
+        "up. 0: none, and no limit on slowness but the episode's own",
+    )
     args = ap.parse_args()
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     env = PickupEnv(args.task, max_steps=args.max_steps, scenario=args.scenario, leaf_fix=args.leaf_fix)
+    if args.slow_level == "v2":  # checked before any server is reached
+        assert env.plant_task, "--slow_level v2 reads a plant: it needs a plant task"
+        assert not args.expert, "--slow_level v2 gives its sub-goals to a served policy: drop --expert"
+        assert args.subgoals == "none", "--slow_level v2 is the slow level: it needs --subgoals none"
+        assert args.notes != "reasoner" and not args.reason_check, "--slow_level v2 is the slow level: no reasoner"
+        assert args.program == "writer" or env.reason, "--program gold is a reasoning task's own: use a reason_* task"
+        assert (args.scene, args.program) == ("truth", "gold") or args.slow_port is not None, (
+            "--scene eyes and --program writer are served by slow_server.py: give its --slow_port"
+        )
+        assert args.recover >= 0 and args.patience >= 1, "--recover must be 0 or more and --patience 1 or more"
+    else:
+        assert (args.scene, args.program, args.slow_port, args.recover) == ("truth", "gold", None, 0), (
+            "--scene, --program, --slow_port and --recover are for --slow_level v2"
+        )
     writer = None
     if env.reason:
         from .notes import NoteWriter
@@ -529,6 +585,21 @@ def main():
         from .expert import ScriptedExpert, random_start
 
         starter = ScriptedExpert(env, seed=0)  # for its inverse kinematics only
+    slow = recovery = None  # --slow_level v2: the slow level, and a recovery in progress (slow_level.Recovery)
+    if args.slow_level == "v2":
+        from . import slow_level
+
+        served = args.scene == "eyes" or args.program == "writer"
+        slow = slow_level.SlowLevel(
+            env,
+            scene=args.scene,
+            program=args.program,
+            server=connect(args.slow_port) if served else None,
+            stable=args.slow_stable,
+            p_min=args.slow_p_min,
+            patience=args.patience,
+            max_recoveries=args.recover,
+        )
 
     episodes, latencies = [], []
     per_target = defaultdict(lambda: [0, 0])
@@ -539,6 +610,9 @@ def main():
         if starter is not None:
             obs, start_yaw = random_start(env, starter, seed)
         history, queue, frames, trace = FrameHistory(obs, offsets), [], [], []
+        if slow is not None:  # v2: the episode's program and an empty memory; its own frames, for eyes that look back
+            slow.reset()
+            slow_history, recovery = FrameHistory(obs, slow.offsets), None
         wrong_object = False  # a non-target object was lifted at any point in the episode
         caught = False  # the named object was lifted (stems: held) at some step, if only briefly
         probe = GraspProbe(env)
@@ -588,10 +662,19 @@ def main():
                 held = reply["note"]
                 agreement.append(note_agreement(held, writer.note))
                 subgoal = reasoning.subgoal(held) or subgoal
+            if slow is not None and fresh and recovery is None:  # v2: it looks where the policy needs a new chunk
+                decision = slow.tick(obs, slow_history)
+                if decision.recover:  # nothing has progressed for long: a scripted move first, then the policy
+                    recovery = slow_level.Recovery(env)
+                elif decision.subgoal is None:  # hold the command the robot is under for one step, then look again
+                    queue = [env.last_action.copy()]
             if expert is not None:
                 queue = [expert.act()]
             elif pilot is not None and env.steps < args.expert_prefix:
                 queue = [pilot.act()]
+            elif recovery is not None:  # v2: a recovery's scripted move drives until it is over
+                queue = [recovery.act()]
+                recovery = None if recovery.done else recovery
             elif not queue:
                 prev_action = env.last_action
                 if first_query and args.first_prev_action == "expert":
@@ -607,6 +690,8 @@ def main():
                 elif rta and args.notes != "model":
                     correct = writer.note if args.notes == "expert" else writer.text(targets=[swap])
                     note_now = NOTE_SAME if correct == held else correct
+                if slow is not None:  # v2: the slow level's sub-goal, from the look just taken
+                    instruction = decision.subgoal
                 conn.send(
                     infer_request(
                         history.at(-1),
@@ -641,6 +726,9 @@ def main():
             cut_before = set(env.cut) if env.plant_task else None
             obs, done, info = env.step(action)
             history.push(obs)
+            if slow is not None:  # v2: its frames; and the episode ends once its verdict has stood (slow.done)
+                slow_history.push(obs)
+                done = done or slow.done
             if cut_before is not None:
                 cut_order += sorted(set(env.cut) - cut_before)
             if turn is not None:
@@ -727,6 +815,8 @@ def main():
                     if env.scenarios
                     else {}
                 ),
+                # architecture v2: what the slow level decided, and how its memory compared with the simulator
+                **(dict(v2=slow.record(info)) if slow is not None else {}),
             )
         )
         key = env.target_label or env.target  # named shoots: by position (shoot names follow height, not position)
@@ -814,6 +904,7 @@ def main():
             if env.reason
             else {}
         ),
+        **(dict(v2=dict(settings=slow.settings(), **slow_level.summary(episodes))) if slow is not None else {}),
         per_episode=episodes,
     )
     write_json(out / "results.json", results, indent=2)
@@ -839,6 +930,13 @@ def main():
             conn.send({"cmd": "shutdown"})
             conn.recv()
         conn.close()
+    if slow is not None:
+        slow.close()
+        if slow.server is not None:
+            if args.shutdown_server:
+                slow.server.send({"cmd": "shutdown"})
+                slow.server.recv()
+            slow.server.close()
     env.close()
 
 
