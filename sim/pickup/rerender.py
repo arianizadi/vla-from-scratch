@@ -168,15 +168,21 @@ class Replayer:
         mujoco.mj_forward(m, d)
 
     def touched(self, look):
-        """Does anything but the table touch one of the look's own objects?"""
+        """Does anything but the table or the floor touch one of the look's own objects? (The distractors a look does
+        not use are parked on the floor; counting that contact turned every placement down.)"""
         if not look._own:
             return False
         m, d = look.model, look.data
-        table = m.geom("table").id
+        ground = (m.geom("table").id, m.geom("floor").id)
         for i in range(d.ncon):
             g1, g2 = d.contact.geom1[i], d.contact.geom2[i]
             b1, b2 = m.geom_bodyid[g1], m.geom_bodyid[g2]
-            if (b1 in look._own) != (b2 in look._own) and table not in (g1, g2) and d.contact.dist[i] < 0:
+            if (
+                (b1 in look._own) != (b2 in look._own)
+                and g1 not in ground
+                and g2 not in ground
+                and d.contact.dist[i] < 0
+            ):
                 return True
         return False
 
