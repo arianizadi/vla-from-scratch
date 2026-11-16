@@ -435,6 +435,50 @@ def test_an_execute_says_what_its_shoot_needs_when_asked_to_and_a_changing_aim_s
     assert all(d.aim == "" and d.instruction == d.subgoal for d in plain.look(8))
 
 
+def _jaws(supervisor, plant, jaws, first=0) -> list[L.Decision]:
+    """One look per entry of `jaws` (the gripper's opening at that look), from control step `first`."""
+    return [supervisor.step(plant.percept(), first + k, jaws=j) for k, j in enumerate(jaws)]
+
+
+def test_jaws_set_to_cut_a_shoot_that_is_out_of_reach_ask_for_a_reset_as_often_as_allowed():
+    plant = Plant(bearings=[2.0, 0.1, -1.0])  # the lowest shoot faces away
+    sup = L.Supervisor("Cut(Rank(1,bottom))", resets=1)
+    decisions = _jaws(sup, plant, [1.0] * 6 + [0.6, 0.6, 0.6])  # open while it settles, then set to cut
+    assert [d.kind for d in decisions] == ["need_observation"] * 5 + ["execute"] * 4
+    assert [d.recover for d in decisions] == [False] * 8 + [True] and decisions[-1].detail == "reset"
+    assert decisions[-1].subgoal == "cut the lowest shoot"  # the sub-goal stands: the fast level is to choose again
+    assert (sup.resets, sup.reset_steps) == (1, [8])
+    more = _jaws(sup, plant, [0.6] * 6, first=9)  # the same again: no second reset was allowed
+    assert not any(d.recover for d in more) and sup.resets == 1
+    record = sup.record()
+    assert (record["resets"], record["reset_steps"]) == (1, [8])
+    assert [e["outcome"] for e in record["ledger"]] == ["open"]  # one attempt through it all
+
+    def asked(jaws, bearings=None, resets=2):
+        plant = Plant(bearings=[2.0, 0.1, -1.0])
+        sup = L.Supervisor("Cut(Rank(1,bottom))", resets=resets)
+        out = []
+        for k, j in enumerate(jaws):
+            if bearings is not None:
+                plant.bearings = [bearings[k], 0.1, -1.0]
+            out.append(sup.step(plant.percept(), k, jaws=j).recover)
+        return [k for k, r in enumerate(out) if r]
+
+    settle = [1.0] * 6
+    assert asked(settle + [0.6] * 9) == [8, 11]  # twice, three looks each, and no third
+    assert asked(settle + [0.0] * 9) == []  # shut to press a button: the right choice
+    assert asked(settle + [0.6, 0.6, 0.0, 0.6, 0.6, 1.0, 0.6, 0.6]) == []  # never three looks in a row
+    assert asked(settle + [None] * 9) == []  # the jaws are not known
+    assert asked(settle + [0.6] * 9, resets=0) == []  # the rule is off unless asked for
+    turning = [2.0] * 6 + [2.0, 1.8, 1.6, 1.4, 1.2, 1.0, 0.8, 0.6, 0.4]  # the plate turns: 11 degrees a look
+    assert asked(settle + [0.6] * 9, bearings=turning) == []
+    stopped = [2.0] * 6 + [2.0, 1.8, 1.6, 1.4, 1.2, 1.2, 1.2, 1.2, 1.2]  # and stops short, 69 degrees away
+    assert asked(settle + [0.6] * 9, bearings=stopped) == [12]
+    near = [0.7] * 15  # 40 degrees from facing the robot: not out of reach by this rule
+    assert asked(settle + [0.6] * 9, bearings=near) == []
+    assert "resets" not in L.Supervisor("Cut(Rank(1,bottom))").record()  # as records were before the rule
+
+
 def test_the_no_progress_rule_gives_up_the_attempt_with_its_recoveries_counted():
     run = _stuck(max_recoveries=2, patience=160)
     run.look(80)
@@ -911,6 +955,25 @@ def test_without_a_preamble_a_recovery_goes_home_in_a_straight_line_with_the_jaw
     assert np.allclose(path[-1, :7], home) and np.all(path[:, 7] == L.JAWS_OPEN)
 
 
+def test_a_reset_s_recovery_goes_on_to_the_home_pose_after_the_preamble():
+    env = SimpleNamespace(data=SimpleNamespace(qpos=np.array([1.0] * 7 + [0.02, 0.02])))
+    home = np.linspace(-1, 1, 7)
+    recovery = L.Recovery(env, StubExpert(3), home=home, then_home=True)
+    commands = []
+    while not recovery.done:
+        if len(commands) == 3:  # the preamble is made: the line starts from where it left the arm
+            env.data.qpos[:7] = 0.0
+        commands.append(recovery.act())
+    assert len(commands) == 3 + L.HOME_STEPS
+    assert all(np.all(c == 0.5) for c in commands[:3])  # the expert's three
+    path = np.array(commands[3:])
+    assert np.allclose(path[:, :7], [home * (k + 1) / 40 for k in range(40)], atol=1e-6)
+    assert np.allclose(path[-1, :7], home) and np.all(path[:, 7] == L.JAWS_OPEN)
+    # without a preamble it is the plain line home, as any recovery from such a pose
+    plain = L.Recovery(env, StubExpert(0), home=home, then_home=True)
+    assert plain.path is not None and len(plain.path) == L.HOME_STEPS
+
+
 # --------------------------------------------------------------------------------------------------- summary
 def test_the_summary_counts_false_completions_failures_meanings_recoveries_and_the_memory():
     def episode(success, env, slow, looks):
@@ -1222,6 +1285,8 @@ V2_ARGUMENTS = [
     (["--task", "reason_mix", "--scene", "eyes"], "are for --slow_level v2"),
     (["--task", "reason_mix", "--aim"], "it needs --subgoals or --slow_level v2"),
     (["--task", "reason_mix", "--recover", "2"], "are for --slow_level v2"),
+    (["--task", "reason_mix", "--resets", "2"], "are for --slow_level v2"),
+    (["--task", "reason_mix", "--slow_level", "v2", "--resets", "-1"], "--resets must be 0 or more"),
     (["--task", "reason_mix", "--slow_level", "v2", "--slow_revoke", "-1"], "--slow_revoke must be 0 or more"),
     (["--task", "reason_mix", "--slow_level", "v2", "--slow_give_up", "-1"], "--slow_give_up 0 or more"),
     (["--task", "reason_mix", "--slow_unseen"], "are for --slow_level v2"),

@@ -549,6 +549,14 @@ def main():
         "up. 0: none, and no limit on slowness but the episode's own",
     )
     ap.add_argument(
+        "--resets",
+        type=int,
+        default=0,
+        help="v2: the most resets per episode: when the fast level has set its jaws to cut a shoot that is out of "
+        "reach without turning the plant, the arm is taken back to the start pose and the fast level chooses again "
+        "(slow_level.Supervisor, rule e). 0: none",
+    )
+    ap.add_argument(
         "--slow_give_up",
         type=int,
         default=None,
@@ -591,12 +599,13 @@ def main():
             "--scene eyes and --program writer are served by slow_server.py: give its --slow_port"
         )
         assert args.recover >= 0 and args.patience >= 1, "--recover must be 0 or more and --patience 1 or more"
+        assert args.resets >= 0, "--resets must be 0 or more"
         assert (args.slow_revoke is None or args.slow_revoke >= 0) and (
             args.slow_give_up is None or args.slow_give_up >= 0
         ), "--slow_revoke must be 0 or more and --slow_give_up 0 or more"
     else:
-        assert (args.scene, args.program, args.slow_port, args.recover) == ("truth", "gold", None, 0), (
-            "--scene, --program, --slow_port and --recover are for --slow_level v2"
+        assert (args.scene, args.program, args.slow_port, args.recover, args.resets) == ("truth", "gold", None, 0, 0), (
+            "--scene, --program, --slow_port, --recover and --resets are for --slow_level v2"
         )
         assert (args.slow_unseen, args.slow_revoke, args.slow_give_up) == (None, None, None), (
             "--slow_unseen, --slow_revoke and --slow_give_up are for --slow_level v2"
@@ -685,6 +694,7 @@ def main():
             unseen=args.slow_unseen,
             revoke=args.slow_revoke,
             aim=args.aim,
+            resets=args.resets,
         )
     # --aim: a sub-goal goes to the served policy with what its shoot needs (the note's aim, or the scene memory's)
     goal_of = reasoning.aimed_subgoal if args.aim else reasoning.subgoal
@@ -758,7 +768,7 @@ def main():
             if slow is not None and fresh and recovery is None:  # v2: it looks where the policy needs a new chunk
                 decision = slow.tick(obs, slow_history)
                 if decision.recover:  # nothing has progressed for long: a scripted move first, then the policy
-                    recovery = slow_level.Recovery(env)
+                    recovery = slow_level.Recovery(env, then_home=decision.detail == "reset")
                 elif decision.subgoal is None:  # hold the command the robot is under for one step, then look again
                     queue = [env.last_action.copy()]
             if expert is not None:

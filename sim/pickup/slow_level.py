@@ -63,6 +63,12 @@ SHOW = "show the label"  # the sub-goal of the card not read yet
 STAYED = "a shoot that was to stay is cut"  # program.Plan's reason for a cut the program did not ask for
 OUTCOMES = ("open", "confirmed", "violated", "superseded", "gave_up")  # of an attempt in the ledger
 TURN = math.radians(10)  # the target's bearing moving by more than this is progress: the plant is being turned
+# The reset (Supervisor, rule e). The fast level opens its jaws to the cutting width on its way to a shoot and shuts
+# them to press a button, so the jaws say which of the two it has chosen. Given a shoot that faces away, it sometimes
+# goes for the shoot without turning the plant, and stands there (tutorial/architecture-v2.md, the first move)
+FAR = math.radians(45)  # a shoot further than this from facing the robot cannot be cut where it is
+JAWS_CUT = (0.45, 0.75)  # the jaws' opening (1 open, 0 shut) while they are set to cut
+RESET_LOOKS = 3  # looks in a row with the jaws set to cut, the target that far and the plate still
 # What SlowLevel takes where nothing is given, by where its percepts come from. The simulator's truth is exact: one look
 # counts, nothing is unseen and no cut needs taking back. The eyes err (tutorial/architecture-v2.md, "First results"):
 # three looks in a row, a part they are sure of counts although they judge no camera to show it, a cut is unmarked
@@ -129,6 +135,11 @@ class Supervisor:
     patience        control steps a sub-goal may stand with nothing progressing before a recovery is asked for
     max_recoveries  how many recoveries may be asked for; then Failed ("no progress"). 0: no such rule at all
     give_up         control steps a Complete or a Failed must stand before `done`
+    resets          how many resets may be asked for (rule e). When the target of an Execute is further than FAR
+                    from facing the robot, the plate has not turned and the jaws are set to cut (JAWS_CUT; `jaws`
+                    of step) for RESET_LOOKS looks in a row, the fast level has gone for a shoot it cannot reach:
+                    the decision asks for a recovery that ends at the start pose (detail "reset"), where the fast
+                    level chooses again. 0: no such rule
     aim             an Execute also says what its shoot needs, from the part's remembered bearing (Decision.aim:
                     "in reach", "press blue", "press orange"), for a fast level trained to be told
                     (dp_vit_lang_reactive_aim.yaml). Off by default: the fast level decides by itself
@@ -159,12 +170,18 @@ class Supervisor:
         unseen=False,
         revoke=0,
         aim=False,
+        resets=0,
     ):
         assert patience >= 1 and max_recoveries >= 0 and give_up >= 0, (patience, max_recoveries, give_up)
+        assert resets >= 0, resets
         self.memory = SceneMemory(stable=stable, p_min=p_min, unseen=unseen, revoke=revoke)
         self.text, self.plan = _compile(program)
         self.patience, self.max_recoveries, self.give_up = patience, max_recoveries, give_up
         self.aim = bool(aim)
+        self.max_resets, self.resets = resets, 0
+        self.reset_steps: list[int] = []
+        self._cut_row = 0  # rule e: looks in a row with the jaws set to cut and the target out of reach
+        self._cut_from: tuple | None = None  # the target of that row and its bearing when the row began
         self.decision: Decision | None = None  # the last one
         self.outcomes: list[list] = []  # [step, kind, sub-goal or detail], whenever that changes
         self.looks = 0
@@ -188,8 +205,9 @@ class Supervisor:
         self._attempt: dict | None = None  # the open one, an entry of the ledger
         self._label_step: int | None = None  # the look at which the memory's label_read took its value
 
-    def step(self, percept: Scene, step: int) -> Decision:
-        """Take one look at control step `step`: the memory takes the percept, the plan is stepped, the rules apply."""
+    def step(self, percept: Scene, step: int, jaws: float | None = None) -> Decision:
+        """Take one look at control step `step`: the memory takes the percept, the plan is stepped, the rules apply.
+        `jaws`: how far the gripper is open now (1 open, 0 shut), for rule e; None where that is not known."""
         step = int(step)
         self.looks += 1
         self._step = step
@@ -201,6 +219,7 @@ class Supervisor:
             self._progress_at, self._resume = step, False
         decision, target = self._decide(step)
         decision = self._watch(decision, target, step)
+        decision = self._reset(decision, target, jaws, step)
         self._keep(decision, step)
         self._account(decision, target, step)
         self.decision = decision
@@ -253,6 +272,32 @@ class Supervisor:
             return replace(decision, recover=True, detail="no progress")
         self._given_up = True
         return Decision("failed", STOP, detail="no progress")
+
+    def _reset(self, decision: Decision, target: int | None, jaws: float | None, step: int) -> Decision:
+        """Rule e: the jaws are set to cut a shoot that is out of reach, and the plate is not turning."""
+        part = next((p for p in self.memory.parts if p.id == target), None)
+        bearing = None if part is None else part.bearing
+        wrong = (
+            decision.kind == "execute"
+            and not decision.recover
+            and jaws is not None
+            and JAWS_CUT[0] <= jaws <= JAWS_CUT[1]
+            and bearing is not None
+            and abs(bearing) > FAR
+        )
+        if self.max_resets == 0 or not wrong:
+            self._cut_row, self._cut_from = 0, None
+            return decision
+        if self._cut_from is None or self._cut_from[0] != target or abs(_wrap(bearing - self._cut_from[1])) > TURN:
+            self._cut_row, self._cut_from = 0, (target, bearing)  # another target, or the plate is turning after all
+        self._cut_row += 1
+        if self._cut_row < RESET_LOOKS or self.resets >= self.max_resets:
+            return decision
+        self.resets += 1
+        self.reset_steps.append(step)
+        self._cut_row, self._cut_from = 0, None
+        self._progress_at, self._resume = step, True  # as after a recovery: rule d's clock starts again
+        return replace(decision, recover=True, detail="reset")
 
     def _keep(self, decision: Decision, step: int):
         """The counters, the outcome changes and the clock of `done`."""
@@ -353,6 +398,7 @@ class Supervisor:
             inventory_hold_steps=self.inventory_hold_steps,
             recoveries=self.recoveries,
             recovery_steps=list(self.recovery_steps),
+            **(dict(resets=self.resets, reset_steps=list(self.reset_steps)) if self.max_resets else {}),
             rebinds=0 if self.plan is None else int(self.plan.rebinds),
             revocations=sum(int(part.revocations) for part in self.memory.parts),
             ledger=[
@@ -402,7 +448,7 @@ class SlowLevel:
     server          an open connection to a slow server (slow_server.py); needed for the eyes and for the writer
     stable, give_up, unseen, revoke: the Supervisor's; where one is None it is DEFAULTS[scene]'s (for the truth 1, 40,
                     off and 0; for the eyes 3, 80, on and 3)
-    p_min, patience, max_recoveries, aim: the Supervisor's
+    p_min, patience, max_recoveries, aim, resets: the Supervisor's
     truth           what gives the simulator's truth (default scene.scene_truth); a stand-in for tests
 
     reset() after env.reset (and any random start); tick(obs, history) at every look; record(info) at the end of an
@@ -424,6 +470,7 @@ class SlowLevel:
         unseen: bool | None = None,
         revoke: int | None = None,
         aim: bool = False,
+        resets: int = 0,
         truth=None,
     ):
         assert scene in SCENES, f"scene {scene!r}: one of {SCENES}"
@@ -435,6 +482,7 @@ class SlowLevel:
         chosen = {name: DEFAULTS[scene][name] if value is None else value for name, value in given.items()}
         self.stable, self.give_up, self.unseen, self.revoke = (chosen[name] for name in given)
         self.p_min, self.patience, self.max_recoveries, self.aim = p_min, patience, max_recoveries, bool(aim)
+        self.resets = resets
         self.truth = scene_truth if truth is None else truth
         self.info: dict | None = None  # the slow server's
         if scene == "eyes" or program == "writer":
@@ -500,6 +548,7 @@ class SlowLevel:
             unseen=self.unseen,
             revoke=self.revoke,
             aim=self.aim,
+            resets=self.resets,
         )
         plan = self.supervisor.plan
         self.meaning = None if self.gold is None else plan is not None and equivalent(plan.program, self.gold)
@@ -513,7 +562,8 @@ class SlowLevel:
         look at earlier ones). Returns the decision, and compares the memory with the simulator for the record."""
         assert self.supervisor is not None, "reset() the slow level after env.reset, before the first look"
         percept = self.truth(self.env) if self.scene == "truth" else self._see(obs, history)
-        decision = self.supervisor.step(percept, int(self.env.steps))
+        state = None if obs is None else obs.get("state")  # the robot's own: seven joints and the jaws' opening
+        decision = self.supervisor.step(percept, int(self.env.steps), jaws=None if state is None else float(state[7]))
         self._compare()
         return decision
 
@@ -595,6 +645,7 @@ class SlowLevel:
             max_recoveries=self.max_recoveries,
             give_up=self.give_up,
             **(dict(aim=True) if self.aim else {}),  # absent where it is off, as it was before there was one
+            **(dict(resets=self.resets) if self.resets else {}),
             server=self.info,
         )
 
@@ -614,37 +665,53 @@ class Recovery:
     again. From a pose that needs no preamble the joints go to the home pose instead, in a straight line in joint space
     over `steps` control steps with the jaws open: the pose every episode starts from.
 
+    `then_home` (a reset: Supervisor, rule e): after a preamble the joints go on to the home pose as well, so that the
+    move always ends where an episode starts, jaws open.
+
     act() gives the next command (8 numbers: 7 joint targets and the gripper); done says the move is over. `expert`
     and `home` are for tests (by default a new ScriptedExpert(env, seed=0) and env.HOME_Q).
     """
 
-    def __init__(self, env, expert=None, home=None, steps: int = HOME_STEPS):
+    def __init__(self, env, expert=None, home=None, steps: int = HOME_STEPS, then_home: bool = False):
         if expert is None:
             from .expert import ScriptedExpert  # the simulator: imported only when a recovery is made
 
             expert = ScriptedExpert(env, seed=0)
         expert.take_over()
-        self.expert, self.made, self.path = expert, 0, None
+        self.env, self.expert, self.made, self.path = env, expert, 0, None
+        self._home, self._steps, self._line_from, self.then_home = home, steps, 0, then_home
         if not expert.preamble:
-            if home is None:
-                from .env import HOME_Q
+            self._line()
 
-                home = HOME_Q
-            start, home = np.asarray(env.data.qpos[:7], dtype=float), np.asarray(home, dtype=float)
-            self.path = [
-                np.append(start + (home - start) * (k + 1) / steps, JAWS_OPEN).astype(np.float32) for k in range(steps)
-            ]
+    def _line(self):
+        """The straight line in joint space from where the arm is to the home pose, jaws open."""
+        home = self._home
+        if home is None:
+            from .env import HOME_Q
+
+            home = HOME_Q
+        start, home = np.asarray(self.env.data.qpos[:7], dtype=float), np.asarray(home, dtype=float)
+        steps = self._steps
+        self.path = [
+            np.append(start + (home - start) * (k + 1) / steps, JAWS_OPEN).astype(np.float32) for k in range(steps)
+        ]
+        self._line_from = self.made
+
+    def _preamble_over(self) -> bool:
+        return not self.expert.preamble or self.made >= PREAMBLE_LIMIT
 
     @property
     def done(self) -> bool:
         if self.path is not None:
-            return self.made >= len(self.path)
-        return not self.expert.preamble or self.made >= PREAMBLE_LIMIT
+            return self.made - self._line_from >= len(self.path)
+        return self._preamble_over() and not self.then_home  # then_home: the line to the home pose is still to come
 
     def act(self) -> np.ndarray:
         assert not self.done, "the recovery is over"
+        if self.path is None and self._preamble_over():  # then_home: the preamble is made, now home
+            self._line()
         self.made += 1
-        return self.expert.act() if self.path is None else self.path[self.made - 1]
+        return self.expert.act() if self.path is None else self.path[self.made - self._line_from - 1]
 
 
 # ------------------------------------------------------------------------------------------------------ summary
@@ -669,6 +736,7 @@ def summary(episodes: list[dict]) -> dict:
     targeted = [Counter(entry["part"] for entry in r.get("ledger", []) if entry["part"] is not None) for _, r in rows]
     compared = [r["program_meaning"] for _, r in rows if r["program_meaning"] is not None]
     rescued = [ok for ok, r in rows if r["recoveries"]]
+    reset = [(ok, r) for ok, r in rows if r.get("resets")]  # rule e, in runs that have it
     failures = Counter(r["failure"] for _, r in rows if r["failure"] is not None)
     see = [r["see_ms"] for _, r in rows if r["see_ms"] is not None]
     write = [r["write_ms"] for _, r in rows if r["write_ms"] is not None]
@@ -683,6 +751,15 @@ def summary(episodes: list[dict]) -> dict:
         programs_right_meaning=sum(compared),
         programs_compared=len(compared),
         recoveries=dict(asked=sum(r["recoveries"] for _, r in rows), episodes=len(rescued), successes=sum(rescued)),
+        **(
+            dict(
+                resets=dict(
+                    asked=sum(r["resets"] for _, r in reset), episodes=len(reset), successes=sum(ok for ok, _ in reset)
+                )
+            )
+            if any("resets" in r for _, r in rows)
+            else {}
+        ),
         mean_hold_steps=_mean(r["hold_steps"] for _, r in rows),
         mean_inventory_hold_steps=_mean(r["inventory_hold_steps"] for _, r in rows),
         memory_right={name: _mean(r["memory_right"][name]["share"] for _, r in rows) for name in CHECKS},
