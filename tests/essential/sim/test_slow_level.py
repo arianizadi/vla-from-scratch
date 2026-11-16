@@ -949,3 +949,18 @@ def test_the_v2_arguments_are_checked_before_any_server_is_reached(argv, message
     monkeypatch.setattr(sys, "argv", ["eval.py", "--out", str(tmp_path), *argv])
     with pytest.raises(AssertionError, match=re.escape(message)):
         E.main()
+
+
+def test_a_reasoning_task_with_a_test_situation_on_top_is_evaluated_and_recorded(tmp_path, monkeypatch):
+    """A reasoning task and a scenario both record the cuts in order: an episode's record holds them once. The scripted
+    expert drives, so no server is needed."""
+    _env("reason_mix").close()  # skipped without MuJoCo, the Franka model or a GL context
+    from sim.pickup import eval as E
+
+    argv = ["--task", "reason_mix", "--scenario", "bump", "--expert", "--episodes", "1", "--videos", "0"]
+    monkeypatch.setattr(sys, "argv", ["eval.py", "--out", str(tmp_path), *argv])
+    E.main()
+    results = json.loads((tmp_path / "results.json").read_text())
+    (episode,) = results["per_episode"]
+    assert results["scenario"]["spec"] == "bump" and episode["scenario"]["bump"]["applied"]
+    assert episode["kind"] and isinstance(episode["cut_order"], list) and "notes_correct" in episode

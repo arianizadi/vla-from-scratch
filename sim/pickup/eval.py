@@ -802,11 +802,12 @@ def main():
                     if env.reason
                     else {}
                 ),
-                # scenarios: what each drew this episode, the cuts in order, and the outcome details they add
+                # scenarios: what each drew this episode, the cuts in order (a reasoning task has them above), and the
+                # outcome details they add
                 **(
                     dict(
                         scenario=env.scenario_info,
-                        cut_order=cut_order,
+                        **({} if env.reason else dict(cut_order=cut_order)),
                         **{
                             k: info[k]
                             for k in (
