@@ -1236,6 +1236,12 @@ What the pieces show:
 - **The fast level is now the limit:** the v2 slow level on the eyes is within noise of the simulator's scene, and
   with a perfect slow level the fast level times out in 22/200, 5-8 of them with a correct sub-goal and an arm that
   never moves. On the weaker fast-level seed v2 solves 99/200 (simulator scene) against 74 for the stage-1 notes.
+- **Another fast-level seed.** With the seed-44 fast level (`dp_vit_lang_reactive_subgoal_reason8k_20m_seed44`, 83/100
+  with the expert's sub-goals) v2 on the eyes solves 169/200 and 145/200 held out (170 and 171 on the simulator's
+  scene): the result does not hang on one fast level. With the 1 s memory fast level (seed 42) and the simulator's
+  scene, 151/200 on evaluation layouts.
+- **The stage-1 reasoner at 448 px** (`qwen_reasoner_hires_mix8k_600k_para500k`, continued 500k with paraphrases):
+  141/200 and 100/200 held out with the seed-43 fast level, against 133 and 66 at 224 px, below v2 on both.
 
 ## Throughput
 
