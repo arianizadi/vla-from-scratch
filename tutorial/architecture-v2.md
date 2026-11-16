@@ -735,7 +735,23 @@ episodes out of time against 37 and 39. That is inside the spread of such runs, 
 So the fast level told its aim is level with the sub-goal fast level without resets and below it with them (173 to 179
 on the validation layouts; 180 and 165 for all of v2). v2 stays on the sub-goal fast level with the reset. What the
 aim shows is where the rest of the fast level's losses are: with the choice made for it, it still loses one episode in
-five, to its own hand. The second fast level told its aim has a memory of one second and is still in training.
+five, to its own hand.
+
+The second fast level told its aim has a memory of one second (`dp_vit_lang_frames_1s_aim_reason8k_20m`, seed 42). Its
+training was stopped at 19M of its 20M samples, when the GPUs were needed for other work, and it has not been run
+under v2. With the expert's sub-goals, 100 episodes after every 2M samples up to 18M:
+
+| | Solved of 100, checkpoint by checkpoint |
+|---|---|
+| a memory of one second, told its aim | 58, 80, 79, 88, 86, 85, 85, 90, 82 |
+| the same weights, not told | 21, 38, 44, 50, 50, 67, 71, 71, 65 |
+| a memory of one second, the sub-goal alone (seed 42) | 23, 29, 36, 49, 63, 61, 73, 72, 77 |
+| no memory, told its aim (above) | 59, 76, 74, 78, 82, 77, 80, 74, 74 |
+
+From 8M samples on it solves 82 to 90 of 100 (86 on average over those six checkpoints), where the last checkpoints of
+the other fast levels lie between 67 and 78. Whether that holds under v2, where the fast level without a memory lost
+its episodes to a plate turned past the target, is the measurement that was not made: the run resumes from its last
+checkpoint, and its evaluations are the ones made for the first.
 
 **Eyes trained on the fast level's own frames (E8).** `eval.py --record_scene` recorded 2000 rollouts of the fast
 level under v2 on the simulator's scene (new layouts; 178,840 frames) and 200 more for validation (18,052 frames),
@@ -817,7 +833,7 @@ those validation layouts, and one setting, fixed before any run with it, was run
 | E6 | The three slow levels under perturbation: the plate turned mid-task, a button that sticks | does an explicit memory hold up when the scene changes under the policy? | done: the plate turned 111, 126, 146 (notes, eyes, simulator); the button 83, 101, 110 |
 | E7 | v2 over the weak seed of the fast level; the bounded recovery (`--recover 2`) on validation layouts | how much of v2 is the fast level; does a retry turn time-outs into successes? | done: the weak seed 99 and 88, 72 and 91; the recovery 171 without, 159 and 157 with: it stays off |
 | E8 | Three seeds of the eyes; frames from the fast level's own rollouts added to their training data | how much the eyes vary; the cure at the source for the cut that did not happen | three seeds: done (97.2%, 97.6%, 98.1%; with the crop 98.9%, 99.0%, 98.5%); the policy's frames: done (`eyes_vit_fwp_pol_2m`: the cut that did not happen 0.79% to 0.11% of parts in view on those frames; episodes solved unchanged) |
-| E11 | The fast level's first move: traces and a probe of its first chunk; a reset to the start pose; the aim in the sub-goal (two fast levels, each served with and without it) | where the fast level loses with a correct sub-goal, and what telling it the aim buys | the traces, the probe and the reset: done (validation layouts: 161 to 171 without the reset, 173 to 179 with); the aim: the first fast level done (156 to 168 told its aim), the second in training |
+| E11 | The fast level's first move: traces and a probe of its first chunk; a reset to the start pose; the aim in the sub-goal (two fast levels, each served with and without it) | where the fast level loses with a correct sub-goal, and what telling it the aim buys | the traces, the probe and the reset: done (validation layouts: 161 to 171 without the reset, 173 to 179 with); the aim: the first fast level done (156 to 168 told its aim), the second stopped before its evaluation under v2 |
 | E12 | v2 over the other fast levels (a third seed; two with a memory of one second) | which fast level carries v2 best; how much the seed matters under a slow level without errors | done: seed 44 170 on the validation layouts against 161 to 171; with a memory of one second 157 and 135 |
 | E9 | Kinds no policy was trained on, with the fast level's existing skills only: "cut from the top down" (the `order` situation), "leave exactly one shoot" | does the reasoning carry to new kinds without new demonstrations? | later |
 | E10 | Optional, for the fast level: its vision transformer started from the eyes' weights, three seeds | do all seeds start to look early, and does the spread between seeds shrink? | later |
@@ -840,17 +856,17 @@ item 4 is built as a record.
 **Adopted, in this order:**
 
 1. **The aim in the sub-goal** (built; measured for the first of its two fast levels: it cures the wrong first move
-   and does not raise the episodes solved ("First results"); the second, with a memory of one second, is in training).
-   The fast level's most frequent error with a correct sub-goal is its first move ("First results", the first move):
-   told "cut the lowest shoot", it has to judge by itself whether the shoot is in reach or the plant must be turned
-   first, and which way. The plan knows the part's bearing, and the expert's notes carry the same fact in their `aim`
-   field, which the sub-goal fast level was never shown. So the sub-goal now can carry it: "cut the lowest shoot, in
-   reach", "cut the lowest shoot, press blue". The instruction type `aim` writes that text from the note in each
-   frame's metadata, so the demonstrations and their preprocessed shards are used as they are;
-   `dp_vit_lang_reactive_aim.yaml` trains on the sub-goal with the aim and without it, half each, so that one set of
-   weights can be served both ways (`eval.py --aim`) and what the aim buys is measured without a second seed in the
-   way. The plan says "in reach" within 25 degrees of facing the robot (the expert's own sector) and names the button
-   of the shorter way otherwise.
+   and does not raise the episodes solved ("First results"); the second, with a memory of one second, was stopped at
+   19M of its 20M samples and has not been run under v2). The fast level's most frequent error with a correct sub-goal
+   is its first move ("First results", the first move): told "cut the lowest shoot", it has to judge by itself whether
+   the shoot is in reach or the plant must be turned first, and which way. The plan knows the part's bearing, and the
+   expert's notes carry the same fact in their `aim` field, which the sub-goal fast level was never shown. So the
+   sub-goal now can carry it: "cut the lowest shoot, in reach", "cut the lowest shoot, press blue". The instruction
+   type `aim` writes that text from the note in each frame's metadata, so the demonstrations and their preprocessed
+   shards are used as they are; `dp_vit_lang_reactive_aim.yaml` trains on the sub-goal with the aim and without it,
+   half each, so that one set of weights can be served both ways (`eval.py --aim`) and what the aim buys is measured
+   without a second seed in the way. The plan says "in reach" within 25 degrees of facing the robot (the expert's own
+   sector) and names the button of the shorter way otherwise.
 2. **Numbers beside the words.** The same for the part's height, and for the phase (turn, approach, cut, retreat), as
    numbers the fast level reads beside its instruction, with one target kept active until its check passes (the plan
    already does). After the aim, and only if it leaves something: the wrong shoots cut under a correct sub-goal (7 and
@@ -907,7 +923,8 @@ says the simulator is the limit.
 - **Eyes trained on the expert's states, used on the policy's.** The expert closes its jaws on a shoot and the shoot
   comes off; the fast level closes them beside it. The cure at the source is to add frames from the fast level's own
   rollouts, which is cheap because the labels come from the simulator (E8). `eval.py --record_scene` records them, and
-  eyes trained on them as well (`eyes_vit_fwp_pol_2m`) are in training as this is written; the result is not in.
+  eyes trained on them as well (`eyes_vit_fwp_pol_2m`) report a whole part as cut seven times less often on the fast
+  level's frames; the episodes solved do not change ("First results").
 - **An inventory that never completes** (measured: 4 to 6 of 200). Not foreseen: holding still was the answer to a
   missing fact, and it cannot bring a fact that the picture does not hold. `unseen` takes the eyes' word that the part
   exists. A hold that asks for a view to change (turn the plate) would be the general answer, and the fast level has
