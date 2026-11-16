@@ -1240,6 +1240,16 @@ What the pieces show:
   with the expert's sub-goals) v2 on the eyes solves 169/200 and 145/200 held out (170 and 171 on the simulator's
   scene): the result does not hang on one fast level. With the 1 s memory fast level (seed 42) and the simulator's
   scene, 151/200 on evaluation layouts.
+- **A reset for the fast level's wrong first move** (`eval.py --resets 2`). About 20 episodes in 200 start for a
+  shoot that faces away, jaws set to cut, without turning the plant; three in four of those are lost, and the
+  wrong-shoot cuts come from the same error (an arm that went for a shoot it cannot reach closes on one it can). The
+  rule sends the arm back to its start pose when the jaws are set to cut a shoot more than 45 degrees out of reach and
+  the plate stands, with a grace of four looks after each cut. All of v2 on the eyes, written program: **180/200 and
+  165/200 held out** with the seed-43 fast level (169 and 148 without), 175 and 157 with seed 44 (169 and 145); with
+  the task's own program 178 and 183, 171 and 174. Wrong-shoot cuts fall from 6-8 per run to 0-1. Single runs of
+  200, with the thresholds tuned on seed 43's validation layouts. It does not help the 1 s memory fast level.
+- **Eyes trained on the fast level's own frames** cut false "cut" reports from 0.79% to 0.11% of parts in view but
+  do not change episodes solved (589 and 621 of 800 against 604 and 628), so the first eyes stay.
 - **The stage-1 reasoner at 448 px** (`qwen_reasoner_hires_mix8k_600k_para500k`, continued 500k with paraphrases):
   141/200 and 100/200 held out with the seed-43 fast level, against 133 and 66 at 224 px, below v2 on both.
 
