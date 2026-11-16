@@ -2,13 +2,19 @@
 from the expert's note in a frame's metadata, in the words a served policy is given (sim/pickup/reasoning.py)."""
 
 import random
+import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
 
-from sim.pickup import reasoning as R
-from vla_foundry.data.pipelines.robotics import aim_instruction, extract_robotics_fields
-from vla_foundry.params.data_params import RoboticsDataParams
+REPOSITORY = Path(__file__).resolve().parents[3]
+if str(REPOSITORY) not in sys.path:  # sim/ is not an installed package
+    sys.path.insert(0, str(REPOSITORY))
+
+from sim.pickup import reasoning as R  # noqa: E402
+from vla_foundry.data.pipelines.robotics import aim_instruction, extract_robotics_fields  # noqa: E402
+from vla_foundry.params.data_params import RoboticsDataParams  # noqa: E402
 
 NOTE = "see: 3 shoots, pink flower | ask: second from the top | so: of 3, second from the top is the middle"
 
