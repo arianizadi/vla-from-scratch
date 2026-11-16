@@ -313,6 +313,104 @@ def test_the_record_is_plain_data_and_holds_the_outcome_changes():
     assert record["memory"]["text"] == "3 shoots, red flower; cut: the middle"
 
 
+# ------------------------------------------------------------------------------------------------------ the ledger
+SEEN_CUT = dict(p=0.95, p_cut=0.97, cut=True)  # what Plant.percept says of a cut part
+
+
+def _ledger(run: Run) -> list[dict]:
+    ledger = run.supervisor.record()["ledger"]
+    assert json.loads(json.dumps(ledger)) == ledger
+    return ledger
+
+
+def _entry(sub_goal, part, opened, closed, outcome, evidence=None, recoveries=0) -> dict:
+    position = R.subgoal_target(sub_goal)
+    expected = "the label read" if position is None else f"the {position} shoot cut, no other shoot cut"
+    return dict(
+        sub_goal=sub_goal,
+        part=part,
+        position=position,
+        expected=expected,
+        opened=opened,
+        closed=closed,
+        outcome=outcome,
+        evidence=evidence,
+        recoveries=recoveries,
+    )
+
+
+def test_the_ledger_of_one_cut_holds_one_attempt_confirmed_by_the_sighting_that_showed_the_cut():
+    run = Run("Cut(Rank(2,top))", Plant())
+    run.look(12)
+    # asked for at step 5, cut at once, seen cut at steps 6, 7 and 8: the third sighting is the evidence
+    evidence = dict(step=8, **SEEN_CUT)
+    assert _ledger(run) == [_entry("cut the middle shoot", 1, 5, 8, "confirmed", evidence)]
+    assert run.supervisor.memory.parts[1].cut_evidence == evidence
+
+
+def test_the_ledger_of_a_label_task_confirms_the_card_read_then_the_cut():
+    plant = Plant(card="cyan")
+    run = Run("Cut(ReadLabel())", plant)
+    run.look(9)
+    plant.facing = True
+    run.look(10)
+    assert _ledger(run) == [
+        _entry("show the label", None, 5, 11, "confirmed", dict(step=11, label="cyan")),
+        _entry("cut the highest shoot", 2, 11, 14, "confirmed", dict(step=14, **SEEN_CUT)),
+    ]
+
+
+def test_the_ledger_of_two_targets_holds_an_attempt_for_each_in_turn():
+    run = Run("Cut(Except(All(),Rank(1,top)))", Plant(bearings=[1.0, -0.3, 0.2]))
+    run.look(15)
+    assert _ledger(run) == [
+        _entry("cut the middle shoot", 1, 5, 8, "confirmed", dict(step=8, **SEEN_CUT)),
+        _entry("cut the lowest shoot", 0, 8, 11, "confirmed", dict(step=11, **SEEN_CUT)),
+    ]
+
+
+def test_a_cut_that_is_commanded_but_never_seen_stays_open_and_is_not_confirmed():
+    plant = Plant()
+    run = Run("Cut(Rank(1,top))", plant, obey=False)
+    run.look(6)
+    plant.cut.add(2)  # the fast level cut the highest, out of every camera's view
+    plant.hidden.add(2)
+    run.look(30)
+    assert _ledger(run) == [_entry("cut the highest shoot", 2, 5, None, "open")]
+    assert run.decisions[-1] == L.Decision("execute", "cut the highest shoot")
+    assert run.supervisor.declared_complete is None
+
+
+def test_a_shoot_that_was_to_stay_seen_cut_violates_the_attempt():
+    plant = Plant()
+    run = Run("Cut(Rank(1,top))", plant, obey=False)
+    run.look(6)
+    plant.cut.update({0, 2})  # the highest, as asked, and the lowest too
+    run.look(4)
+    # seen at steps 6, 7 and 8: both count at step 8, and the cut not asked for makes it a violation
+    evidence = dict(step=8, **SEEN_CUT, part=0)
+    assert _ledger(run) == [_entry("cut the highest shoot", 2, 5, 8, "violated", evidence)]
+
+
+def test_a_rebinding_supersedes_the_attempt():
+    plant = Plant(hidden={1})  # the middle shoot is out of view at first: "second from the top" of two is the lowest
+    run = Run("Cut(Rank(2,top))", plant, obey=False)
+    run.look(8)
+    plant.hidden.clear()  # it comes into view (step 8), is added (step 10) and the plant settles again (step 13)
+    run.look(8)
+    assert _ledger(run) == [
+        _entry("cut the lowest shoot", 0, 5, 13, "superseded"),
+        _entry("cut the middle shoot", 2, 13, None, "open"),  # the shoot found later has the next id
+    ]
+    assert run.supervisor.plan.rebinds == 1
+
+
+def test_the_no_progress_rule_gives_up_the_attempt_with_its_recoveries_counted():
+    run = _stuck(max_recoveries=2, patience=160)
+    run.look(80)
+    assert _ledger(run) == [_entry("cut the middle shoot", 1, 40, 536, "gave_up", recoveries=2)]
+
+
 # ------------------------------------------------------------------------------------ the slow level, stand-ins
 class StubEnv:
     """What the slow level reads of a PickupEnv: a plant task, its shoots (lowest first) and those cut, the flower and
@@ -610,6 +708,37 @@ def test_the_summary_counts_false_completions_failures_meanings_recoveries_and_t
     assert out["memory_right"]["cut"] == pytest.approx(0.8) and out["memory_right"]["parts"] == 1.0
     assert out["mean_hold_steps"] == pytest.approx((1 + 1 + 0 + 1 + 1) / 5) and out["write_ms"] == 2000.0
     assert L.summary([])["episodes"] == 0 and L.summary([])["mean_hold_steps"] is None
+
+
+def test_the_summary_sums_the_ledgers_and_counts_the_episodes_that_aimed_at_one_part_twice():
+    env = StubEnv(ORDINAL)
+    slow = L.SlowLevel(env, truth=_truth)
+    slow.reset()
+    _drive(slow, env, 4)
+    confirmed = slow.record({"success": True})  # the SlowLevel's record carries the Supervisor's ledger
+    assert [entry["outcome"] for entry in confirmed["ledger"]] == ["confirmed"]
+
+    plant = Plant(bearings=[0.5, 0.2, 0.0])  # every shoot but the highest: the middle first, it needs less turning
+    turning = Run("Cut(Except(All(),Rank(1,top)))", plant, obey=False)
+    turning.look(6)
+    plant.bearings = [0.1, 0.4, 0.0]  # the plant turns: now the lowest needs less
+    turning.look(2)
+    plant.bearings = [0.5, 0.2, 0.0]  # and back: the middle again, in a second attempt
+    turning.look(2)
+    assert [(e["part"], e["outcome"]) for e in _ledger(turning)] == [(1, "superseded"), (0, "superseded"), (1, "open")]
+
+    stuck = _stuck(max_recoveries=1, patience=160)
+    stuck.look(80)
+    wrong = Run("Cut(Rank(1,top))", Plant(), obey=False)
+    wrong.look(6)
+    wrong.plant.cut.add(0)
+    wrong.look(4)
+    episodes = [dict(success=True, v2=confirmed), dict(success=False, v2=dict(confirmed, ledger=[]))]
+    episodes += [dict(success=False, v2=dict(confirmed, ledger=_ledger(run))) for run in (turning, stuck, wrong)]
+    out = L.summary(episodes)
+    assert out["ledger"] == dict(attempts=6, open=1, confirmed=1, violated=1, superseded=2, gave_up=1)
+    assert out["repeated_targets"] == 1
+    assert L.summary([])["ledger"] == dict(attempts=0, open=0, confirmed=0, violated=0, superseded=0, gave_up=0)
 
 
 # -------------------------------------------------------------------------------------------- the slow server

@@ -26,6 +26,11 @@ and adds what the loop needs and no single part has:
   meant are cut. A Complete the simulator does not confirm is a false completion and is counted apart from successes.
   An end. Once Complete or Failed has stood for `give_up` control steps nothing more will happen, and the episode can
   end.
+  A ledger of attempts. Each sub-goal the fast level is given (the cut of one part, or showing the label) is an
+  attempt, with what it is meant to bring about, and only what the memory shows closes it: confirmed (the part seen
+  cut, the card read, with the sighting that shows it), violated (a shoot that was to stay seen cut), superseded (the
+  plan moved on without the effect seen) or given up (the no-progress rule). An attempt still open at the end was
+  never seen to work, whatever the fast level was told.
 
 Supervisor holds these rules without a simulator, so that they can be tested with scripted percepts. SlowLevel is what
 eval.py --slow_level v2 drives: it takes the percepts from the simulator or from the slow server (slow_server.py), and
@@ -45,12 +50,16 @@ import numpy as np
 
 from .program import Complete, Execute, NeedObservation, Plan, ProgramError, equivalent, from_task, parse
 from .program import text as program_text
+from .reasoning import subgoal_target
 from .scene import PlantCrop, Scene, SceneMemory, _position_name, scene_truth
 
 KINDS = ("execute", "need_observation", "complete", "failed")  # what a decision can be
 SCENES = ("truth", "eyes")  # where the percepts come from
 PROGRAMS = ("gold", "writer")  # where the program comes from: the task's own, or the language model's
 STOP = "stop"  # the sub-goal of Complete and Failed
+SHOW = "show the label"  # the sub-goal of the card not read yet
+STAYED = "a shoot that was to stay is cut"  # program.Plan's reason for a cut the program did not ask for
+OUTCOMES = ("open", "confirmed", "violated", "superseded", "gave_up")  # of an attempt in the ledger
 TURN = math.radians(10)  # the target's bearing moving by more than this is progress: the plant is being turned
 CHECKS = ("parts", "cut", "label", "flower")  # the memory against the simulator, at every look (memory_right)
 CAMERAS = ("front", "wrist", "plant")  # what the eyes can ask for: the two cameras and the plant crop
@@ -100,6 +109,14 @@ class Supervisor:
 
     `step(percept, step)` takes one look; `step` is the control step, and every clock above counts control steps. The
     runner holds the arm for one control step per hold, so `hold_steps` counts those steps.
+
+    `ledger`: one entry per attempt (see the module's docstring), plain data: {"sub_goal", "part" (the target's id, None
+    for the label), "position", "expected" (what the sub-goal is meant to bring about, in words), "opened", "closed"
+    (control steps; closed None while open), "outcome" (OUTCOMES), "evidence", "recoveries" (asked for during it)}.
+    An attempt opens when a decision first gives a sub-goal other than "stop" that differs from the open attempt's, or
+    names another part. A hold leaves it open. The evidence of a confirmed cut is the part's cut_evidence
+    (scene.Remembered), of the card {"step", "label"}: the look at which the memory read it; of a violation, the
+    cut_evidence of the shoot that was to stay, with its id ("part").
     """
 
     def __init__(self, program, stable=3, p_min=0.7, patience=160, max_recoveries=0, give_up=40):
@@ -125,18 +142,25 @@ class Supervisor:
         # The verdict (Complete or Failed, with its detail) that stands now, and since which step
         self._verdict: tuple | None = None
         self._verdict_since = 0
+        self.ledger: list[dict] = []
+        self._attempt: dict | None = None  # the open one, an entry of the ledger
+        self._label_step: int | None = None  # the look at which the memory's label_read took its value
 
     def step(self, percept: Scene, step: int) -> Decision:
         """Take one look at control step `step`: the memory takes the percept, the plan is stepped, the rules apply."""
         step = int(step)
         self.looks += 1
         self._step = step
+        read = self.memory.label_read
         self.memory.update(percept, step)
+        if self.memory.label_read != read:
+            self._label_step = step
         if self._resume:  # the first look after a recovery: the arm is the fast level's again, from now on
             self._progress_at, self._resume = step, False
         decision, target = self._decide(step)
         decision = self._watch(decision, target, step)
         self._keep(decision, step)
+        self._account(decision, target, step)
         self.decision = decision
         return decision
 
@@ -196,6 +220,69 @@ class Supervisor:
         if verdict != self._verdict:  # a verdict that changes, or goes, starts the clock again
             self._verdict, self._verdict_since = verdict, step
 
+    def _account(self, decision: Decision, target: int | None, step: int):
+        """The ledger: the open attempt is closed by what the memory shows, by the plan moving on or by rule d, and a
+        new one opens when the decision gives the fast level a new sub-goal. Recording only: no decision reads it."""
+        memory, attempt = self.memory, self._attempt
+        violated = decision.kind == "failed" and decision.detail == STAYED
+        if attempt is not None and attempt["part"] is not None:
+            # A cut is meant to leave its part cut and no other: a shoot that was to stay seen cut at the same look
+            # makes it a violation, even with its own part cut
+            part = next((p for p in memory.parts if p.id == attempt["part"]), None)
+            if violated:
+                self._close("violated", step, self._stayed())
+            elif part is not None and part.cut:
+                self._close("confirmed", step, dict(part.cut_evidence))
+        elif attempt is not None and attempt["sub_goal"] == SHOW and memory.label_read is not None:
+            self._close("confirmed", step, dict(step=self._label_step, label=memory.label_read))
+        elif attempt is not None and violated:
+            self._close("violated", step, self._stayed())
+        if self._attempt is not None and decision.kind == "failed" and decision.detail == "no progress":
+            self._close("gave_up", step, None)
+        subgoal = decision.subgoal
+        if subgoal is None:  # a hold: the attempt goes on
+            return
+        if subgoal == STOP:  # Complete or Failed with the open attempt's effect not seen: the plan has moved on
+            if self._attempt is not None:
+                self._close("superseded", step, None)
+            return
+        attempt = self._attempt
+        if attempt is not None and (attempt["sub_goal"], attempt["part"]) == (subgoal, target):
+            attempt["recoveries"] += int(decision.recover)
+            return
+        if attempt is not None:
+            self._close("superseded", step, None)
+        position = subgoal_target(subgoal)
+        if position is not None:
+            expected = f"the {position} shoot cut, no other shoot cut"
+        else:
+            expected = "the label read" if subgoal == SHOW else subgoal
+        self._attempt = dict(
+            sub_goal=subgoal,
+            part=target,
+            position=position,
+            expected=expected,
+            opened=step,
+            closed=None,
+            outcome="open",
+            evidence=None,
+            recoveries=int(decision.recover),
+        )
+        self.ledger.append(self._attempt)
+
+    def _close(self, outcome: str, step: int, evidence: dict | None):
+        self._attempt.update(outcome=outcome, closed=step, evidence=evidence)
+        self._attempt = None
+
+    def _stayed(self) -> dict | None:
+        """The cut_evidence of the shoot that was to stay and was seen cut (the last such), with its id."""
+        meant = set(self.plan.targets or ()) if self.plan is not None else set()
+        stayed = [p for p in self.memory.parts if p.cut and p.id not in meant and p.cut_evidence is not None]
+        if not stayed:
+            return None
+        part = max(stayed, key=lambda p: p.cut_evidence["step"])
+        return dict(part.cut_evidence, part=int(part.id))
+
     @property
     def done(self) -> bool:
         """Complete or Failed has stood for `give_up` control steps in a row: nothing more will happen."""
@@ -203,7 +290,8 @@ class Supervisor:
 
     def record(self) -> dict:
         """Plain types, for the episode's record: the program run, the last decision's kind and its failure (if it
-        failed), the step of the first Complete, the outcome changes, the counters and the memory's snapshot."""
+        failed), the step of the first Complete, the outcome changes, the counters, the ledger (an attempt still
+        unresolved is "open") and the memory's snapshot."""
         last = self.decision
         return dict(
             program=self.text,
@@ -217,6 +305,10 @@ class Supervisor:
             recoveries=self.recoveries,
             recovery_steps=list(self.recovery_steps),
             rebinds=0 if self.plan is None else int(self.plan.rebinds),
+            ledger=[
+                dict(entry, evidence=None if entry["evidence"] is None else dict(entry["evidence"]))
+                for entry in self.ledger
+            ],
             memory=self.memory.snapshot(),
         )
 
@@ -486,8 +578,11 @@ def summary(episodes: list[dict]) -> dict:
     the last decision; programs with the right meaning (of those that have a task's program to compare with);
     recoveries (asked for, episodes with one, successes among those); the mean hold steps; per check of the memory
     against the simulator, the mean of its share of looks right and the number of episodes in which it was ever wrong;
-    the median latencies of the server's see and write."""
+    the median latencies of the server's see and write; the ledgers' attempts by outcome, summed over the episodes, and
+    repeated_targets, the episodes in which one part was the target of more than one attempt."""
     rows = [(bool(e["success"]), e["v2"]) for e in episodes if e.get("v2") is not None]
+    attempts = [entry for _, r in rows for entry in r.get("ledger", [])]
+    targeted = [Counter(entry["part"] for entry in r.get("ledger", []) if entry["part"] is not None) for _, r in rows]
     compared = [r["program_meaning"] for _, r in rows if r["program_meaning"] is not None]
     rescued = [ok for ok, r in rows if r["recoveries"]]
     failures = Counter(r["failure"] for _, r in rows if r["failure"] is not None)
@@ -508,4 +603,8 @@ def summary(episodes: list[dict]) -> dict:
         memory_ever_wrong={name: sum(r["memory_right"][name]["ever_wrong"] for _, r in rows) for name in CHECKS},
         see_ms=float(np.median(see)) if see else None,
         write_ms=float(np.median(write)) if write else None,
+        ledger=dict(
+            attempts=len(attempts), **{outcome: sum(e["outcome"] == outcome for e in attempts) for outcome in OUTCOMES}
+        ),
+        repeated_targets=sum(any(n > 1 for n in parts.values()) for parts in targeted),
     )

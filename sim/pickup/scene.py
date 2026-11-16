@@ -308,6 +308,16 @@ class Remembered:
     sightings: int = 0
     seen_step: int = -1
     attributes: dict[str, str] = field(default_factory=dict)
+    # What the memory holds about the part rests on a look: its last counted sighting, and the sighting at which it was
+    # marked cut (kept from then on), each {"step", "p", "p_cut", "cut"} as that percept said them
+    evidence: dict | None = None
+    cut_evidence: dict | None = None
+
+
+def _sighting(sighting: Part, step: int) -> dict:
+    """A counted sighting as plain data: the look's control step, and what the percept said of the part."""
+    p_cut = None if sighting.p_cut is None else _r(sighting.p_cut)
+    return dict(step=int(step), p=_r(sighting.p), p_cut=p_cut, cut=bool(sighting.cut))
 
 
 def _position_name(index: int, count: int) -> str:
@@ -431,9 +441,12 @@ class SceneMemory:
         n = part.sightings
         part.height = (part.height * n + sighting.height) / (n + 1)
         part.sightings, part.bearing, part.seen_step = n + 1, float(sighting.bearing), step
+        part.evidence = _sighting(sighting, step)
         says_cut = sighting.cut and (sighting.p_cut is None or sighting.p_cut >= self.p_min)
         self._cut_rows[part.id] = self._cut_rows.get(part.id, 0) + 1 if says_cut else 0
         if self._cut_rows[part.id] >= self.stable:
+            if not part.cut:
+                part.cut_evidence = dict(part.evidence)  # the sighting that made it count
             part.cut = True  # and never back
         for key, value in sighting.attributes.items():
             row = self._row(self._attribute_rows.get((part.id, key), (None, 0)), value)
@@ -479,7 +492,8 @@ class SceneMemory:
         return self.see_text() + (f"; cut: {reasoning._join(cut)}" if cut else "")
 
     def snapshot(self) -> dict:
-        """Plain types, for logs."""
+        """Plain types, for logs. The evidence of each part (Remembered.evidence, cut_evidence) is listed apart, by id,
+        in the inventory's order."""
         return dict(
             parts=[
                 dict(
@@ -500,4 +514,12 @@ class SceneMemory:
             settled=self.settled,
             updates=self.updates,
             text=self.text(),
+            evidence=[
+                dict(
+                    id=int(r.id),
+                    evidence=None if r.evidence is None else dict(r.evidence),
+                    cut_evidence=None if r.cut_evidence is None else dict(r.cut_evidence),
+                )
+                for r in self.parts
+            ],
         )

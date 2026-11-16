@@ -333,6 +333,25 @@ def test_the_snapshot_is_plain_data():
     assert snap["text"] == "2 shoots, red flower, label cyan; cut: the lowest" and snap["settled"] is False
 
 
+def test_each_part_keeps_the_sighting_its_state_rests_on_and_the_one_that_marked_it_cut():
+    memory = S.SceneMemory(stable=2, p_min=0.7)
+    _feed(memory, _scene(_part(0.10, p=np.float64(0.912345))), 2)  # added at its second sighting, step 1
+    (part,) = memory.parts
+    assert part.evidence == dict(step=1, p=0.9123, p_cut=None, cut=False) and part.cut_evidence is None
+    memory.update(_scene(_part(0.10, cut=True, p=0.8, p_cut=0.75)), 2)
+    assert not part.cut and part.evidence == dict(step=2, p=0.8, p_cut=0.75, cut=True)
+    memory.update(_scene(_part(0.10, cut=True, p=0.85, p_cut=0.9)), 3)  # the second in a row: it counts
+    assert part.cut and part.cut_evidence == dict(step=3, p=0.85, p_cut=0.9, cut=True)
+    memory.update(_scene(_part(0.10, cut=True, p=0.99, p_cut=0.95)), 4)
+    memory.update(_scene(_part(0.10, vis=False)), 5)  # not counted: the evidence stays what it was
+    assert part.evidence == dict(step=4, p=0.99, p_cut=0.95, cut=True)
+    assert part.cut_evidence == dict(step=3, p=0.85, p_cut=0.9, cut=True)  # never overwritten
+    snap = json.loads(json.dumps(memory.snapshot()))
+    assert snap == memory.snapshot()
+    assert snap["evidence"] == [dict(id=0, evidence=part.evidence, cut_evidence=part.cut_evidence)]
+    assert "evidence" not in snap["parts"][0]  # each part's own entry is as it was
+
+
 # ------------------------------------------------------------------------------------------------ simulator tests
 def _env(task):
     pytest.importorskip("mujoco")
