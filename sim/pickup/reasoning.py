@@ -26,6 +26,7 @@ side is in env.py (the tasks) and notes.py (when a note is written).
 """
 
 import itertools
+import math
 from dataclasses import dataclass, field
 
 POSITIONS = ("lowest", "middle", "highest")
@@ -34,6 +35,9 @@ FLOWERS = ("red", "orange", "pink", "purple")  # env.FLOWER_COLOURS, in that ord
 # The card in the pot names a shoot by its colour. A fixed convention, like a sign: the demonstrations teach it.
 LABEL_MEANS = {"white": "lowest", "yellow": "middle", "cyan": "highest"}
 BUTTON_NAMES = {+1: "blue", -1: "orange"}  # the button that turns the plate counter-clockwise (+1) or clockwise (-1)
+# A shoot within this angle of facing the robot is cut without turning the plant (expert.PRUNE_SECTOR, which a
+# simulator test holds this to): the line between a sub-goal's aims "in reach" and "press <button>"
+AIM_SECTOR = math.radians(25)
 # Episode length limit per kind (control steps at 20 Hz). The expert needs about 250 steps for one cut with a turn,
 # a look adds about 150, and exclusion cuts up to two shoots.
 MAX_STEPS = {"ordinal": 450, "conditional": 450, "exclusion": 900, "hidden": 700}
@@ -303,6 +307,38 @@ def subgoal_target(goal: str) -> str | None:
     """The position a sub-goal "cut the <position> shoot" names, else None."""
     words = goal.split()
     return words[2] if len(words) == 4 and words[0] == "cut" and words[2] in POSITIONS else None
+
+
+# ------------------------------------------------------------------------------------------------ a sub-goal's aim
+# A fast level given "cut the lowest shoot" has to decide by itself whether that shoot is in reach or the plant must be
+# turned first, and which way: where the shoot faces away it starts for the plant without turning it in about one
+# start in seven, and waits there (tutorial/architecture-v2.md). The expert's notes say it in their `aim` field, and a
+# slow level that knows the shoot's bearing can say it too. The sub-goal with its aim is the instruction type "aim" of
+# the demonstrations (vla_foundry/data/pipelines/robotics.py, aim_instruction, which writes the same text from a
+# note): "cut the lowest shoot, in reach", "cut the lowest shoot, press blue". "show the label" and "stop" have none.
+def aim_of(bearing: float | None) -> str:
+    """What a sub-goal's shoot needs, from its bearing (scene.Part.bearing: the turn of the plate that brings it to
+    face the robot, + counter-clockwise): "in reach" within AIM_SECTOR, else "press <button>" for the button that
+    turns it there the shorter way; "" when the bearing is not known."""
+    if bearing is None:
+        return ""
+    if abs(bearing) <= AIM_SECTOR:
+        return "in reach"
+    return f"press {BUTTON_NAMES[1 if bearing >= 0 else -1]}"
+
+
+def aimed(goal: str, aim: str) -> str:
+    """A sub-goal with its aim after a comma; only the cut of a shoot takes one."""
+    return f"{goal}, {aim}" if aim and subgoal_target(goal) is not None else goal
+
+
+def aimed_subgoal(text: str) -> str:
+    """A note's sub-goal with the aim the note gives it ("the lowest, faces me": in reach; "the lowest, faces away,
+    press blue": press blue), or "" if the note has no sub-goal."""
+    fields = note_fields(text)
+    aim = fields.get("aim", "")
+    said = "in reach" if aim.endswith("faces me") else f"press {aim.rsplit('press ', 1)[1]}" if "press " in aim else ""
+    return aimed(fields.get("next", ""), said)
 
 
 # ------------------------------------------------------------------------------------------------- what a lookup gets

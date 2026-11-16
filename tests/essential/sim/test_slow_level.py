@@ -405,6 +405,36 @@ def test_a_rebinding_supersedes_the_attempt():
     assert run.supervisor.plan.rebinds == 1
 
 
+def test_an_execute_says_what_its_shoot_needs_when_asked_to_and_a_changing_aim_starts_no_new_attempt():
+    # the middle shoot needs most of half a turn counter-clockwise: press blue until it is within 25 degrees
+    plant = Plant(bearings=[0.1, 2.0, -1.0])
+    run = Run("Cut(Rank(2,top))", plant, obey=False, aim=True)
+    first = run.look(8)[-1]
+    assert (first.kind, first.subgoal, first.aim) == ("execute", "cut the middle shoot", "press blue")
+    assert first.instruction == "cut the middle shoot, press blue"
+    plant.bearings = [-1.4, 0.5, -2.5]  # being turned: still out of the sector
+    assert run.look()[-1].instruction == "cut the middle shoot, press blue"
+    plant.bearings = [-1.7, 0.2, -2.8]
+    assert run.look()[-1].instruction == "cut the middle shoot, in reach"
+    plant.bearings = [-2.4, -0.5, 2.9]  # turned too far: back the other way
+    assert run.look()[-1].instruction == "cut the middle shoot, press orange"
+    # one attempt and one outcome through all of it: the sub-goal is the same, only what is said with it changed
+    assert _ledger(run) == [_entry("cut the middle shoot", 1, 5, None, "open")]
+    assert [o[1:] for o in run.supervisor.outcomes] == [
+        ["need_observation", "plant"],
+        ["execute", "cut the middle shoot"],
+    ]
+    # holds, the card and the end say nothing more than they did
+    assert run.decisions[0].instruction is None and run.decisions[0].aim == ""
+    label = Run("Cut(ReadLabel())", Plant(card="cyan"), aim=True)
+    assert label.look(8)[-1].instruction == "show the label"
+    done = Run("Cut(Rank(1,top))", Plant(), aim=True)
+    assert [d.instruction for d in done.look(12)][-1] == "stop"
+    # and without the option nothing is said: the fast level decides by itself, as before
+    plain = Run("Cut(Rank(2,top))", Plant(bearings=[0.1, 2.0, -1.0]), obey=False)
+    assert all(d.aim == "" and d.instruction == d.subgoal for d in plain.look(8))
+
+
 def test_the_no_progress_rule_gives_up_the_attempt_with_its_recoveries_counted():
     run = _stuck(max_recoveries=2, patience=160)
     run.look(80)
@@ -1151,6 +1181,35 @@ def test_on_the_truth_the_slow_level_follows_the_expert_through_whole_episodes(t
         env.close()
 
 
+def test_the_aim_the_slow_level_says_is_the_aim_of_the_expert_s_first_note():
+    """On the simulator's scene, the sub-goal with its aim that the slow level hands the fast level at the start of an
+    episode is the one the expert's note gives (the text the fast level was trained on), for every aim there is."""
+    env = _env("reason_mix")
+    from sim.pickup.expert import PRUNE_SECTOR
+    from sim.pickup.notes import NoteWriter
+
+    assert pytest.approx(float(PRUNE_SECTOR)) == R.AIM_SECTOR
+    slow, writer, said = L.SlowLevel(env, aim=True), NoteWriter(env), set()
+    assert slow.settings()["aim"] is True and "aim" not in L.SlowLevel(env).settings()
+    try:
+        for seed in range(1_000_000, 1_000_060):
+            obs = env.reset(seed=seed)
+            if env.reason_kind == "hidden":  # the card first: its sub-goal has no aim
+                continue
+            writer.reset()
+            writer.update()
+            slow.reset()
+            decision = slow.tick(obs)
+            while decision.subgoal is None:
+                obs, _, _ = env.step(env.last_action.copy())
+                decision = slow.tick(obs)
+            assert decision.instruction == R.aimed_subgoal(writer.note), (seed, writer.note)
+            said.add(decision.aim)
+        assert said == {"in reach", "press blue", "press orange"}
+    finally:
+        env.close()
+
+
 V2_ARGUMENTS = [
     (["--task", "pick_cube", "--slow_level", "v2"], "it needs a plant task"),
     (["--task", "reason_mix", "--slow_level", "v2", "--expert"], "drop --expert"),
@@ -1161,6 +1220,7 @@ V2_ARGUMENTS = [
     (["--task", "reason_mix", "--slow_level", "v2", "--program", "writer"], "give its --slow_port"),
     (["--task", "reason_mix", "--slow_level", "v2", "--recover", "-1"], "--recover must be 0 or more"),
     (["--task", "reason_mix", "--scene", "eyes"], "are for --slow_level v2"),
+    (["--task", "reason_mix", "--aim"], "it needs --subgoals or --slow_level v2"),
     (["--task", "reason_mix", "--recover", "2"], "are for --slow_level v2"),
     (["--task", "reason_mix", "--slow_level", "v2", "--slow_revoke", "-1"], "--slow_revoke must be 0 or more"),
     (["--task", "reason_mix", "--slow_level", "v2", "--slow_give_up", "-1"], "--slow_give_up 0 or more"),

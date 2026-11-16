@@ -52,7 +52,7 @@ import numpy as np
 
 from .program import Complete, Execute, NeedObservation, Plan, ProgramError, equivalent, from_task, parse
 from .program import text as program_text
-from .reasoning import subgoal_target
+from .reasoning import aim_of, aimed, subgoal_target
 from .scene import PlantCrop, Scene, SceneMemory, _position_name, scene_truth
 
 KINDS = ("execute", "need_observation", "complete", "failed")  # what a decision can be
@@ -91,6 +91,14 @@ class Decision:
     subgoal: str | None  # the fast level's instruction from now on; None: hold still for this step and look again
     recover: bool = False  # first hand the arm to a scripted recovery (Recovery): nothing has progressed for long
     detail: str = ""  # need_observation: what is missing; failed: why; with a recovery: "no progress"
+    aim: str = ""  # execute, where the slow level says it (Supervisor aim): what the shoot needs, reasoning.aim_of
+
+    @property
+    def instruction(self) -> str | None:
+        """What the fast level is told: the sub-goal, with its aim where there is one ("cut the lowest shoot, press
+        blue"). The sub-goal itself stays as it is, so that an aim that changes while a shoot is turned into reach
+        starts no new attempt."""
+        return self.subgoal if self.subgoal is None else aimed(self.subgoal, self.aim)
 
 
 def _wrap(angle: float) -> float:
@@ -121,6 +129,9 @@ class Supervisor:
     patience        control steps a sub-goal may stand with nothing progressing before a recovery is asked for
     max_recoveries  how many recoveries may be asked for; then Failed ("no progress"). 0: no such rule at all
     give_up         control steps a Complete or a Failed must stand before `done`
+    aim             an Execute also says what its shoot needs, from the part's remembered bearing (Decision.aim:
+                    "in reach", "press blue", "press orange"), for a fast level trained to be told
+                    (dp_vit_lang_reactive_aim.yaml). Off by default: the fast level decides by itself
 
     `step(percept, step)` takes one look; `step` is the control step, and every clock above counts control steps. The
     runner holds the arm for one control step per hold, so `hold_steps` counts those steps. `withdrawn` counts the
@@ -138,12 +149,22 @@ class Supervisor:
     """
 
     def __init__(
-        self, program, stable=3, p_min=0.7, patience=160, max_recoveries=0, give_up=40, unseen=False, revoke=0
+        self,
+        program,
+        stable=3,
+        p_min=0.7,
+        patience=160,
+        max_recoveries=0,
+        give_up=40,
+        unseen=False,
+        revoke=0,
+        aim=False,
     ):
         assert patience >= 1 and max_recoveries >= 0 and give_up >= 0, (patience, max_recoveries, give_up)
         self.memory = SceneMemory(stable=stable, p_min=p_min, unseen=unseen, revoke=revoke)
         self.text, self.plan = _compile(program)
         self.patience, self.max_recoveries, self.give_up = patience, max_recoveries, give_up
+        self.aim = bool(aim)
         self.decision: Decision | None = None  # the last one
         self.outcomes: list[list] = []  # [step, kind, sub-goal or detail], whenever that changes
         self.looks = 0
@@ -199,7 +220,10 @@ class Supervisor:
             return Decision("need_observation", None, detail="plant"), None
         outcome = self.plan.step(memory)
         if isinstance(outcome, Execute):
-            return Decision("execute", outcome.subgoal), outcome.part
+            aim = ""
+            if self.aim:  # what the shoot needs, from where the memory last saw it point
+                aim = aim_of(next((part.bearing for part in memory.parts if part.id == outcome.part), None))
+            return Decision("execute", outcome.subgoal, aim=aim), outcome.part
         if isinstance(outcome, NeedObservation):  # "show the label" for the card, else hold
             return Decision("need_observation", outcome.subgoal, detail=outcome.what), None
         if isinstance(outcome, Complete):  # every shoot meant was seen cut: the memory's rows say so, not a sub-goal
@@ -378,7 +402,7 @@ class SlowLevel:
     server          an open connection to a slow server (slow_server.py); needed for the eyes and for the writer
     stable, give_up, unseen, revoke: the Supervisor's; where one is None it is DEFAULTS[scene]'s (for the truth 1, 40,
                     off and 0; for the eyes 3, 80, on and 3)
-    p_min, patience, max_recoveries: the Supervisor's
+    p_min, patience, max_recoveries, aim: the Supervisor's
     truth           what gives the simulator's truth (default scene.scene_truth); a stand-in for tests
 
     reset() after env.reset (and any random start); tick(obs, history) at every look; record(info) at the end of an
@@ -399,6 +423,7 @@ class SlowLevel:
         give_up: int | None = None,
         unseen: bool | None = None,
         revoke: int | None = None,
+        aim: bool = False,
         truth=None,
     ):
         assert scene in SCENES, f"scene {scene!r}: one of {SCENES}"
@@ -409,7 +434,7 @@ class SlowLevel:
         given = dict(stable=stable, give_up=give_up, unseen=unseen, revoke=revoke)
         chosen = {name: DEFAULTS[scene][name] if value is None else value for name, value in given.items()}
         self.stable, self.give_up, self.unseen, self.revoke = (chosen[name] for name in given)
-        self.p_min, self.patience, self.max_recoveries = p_min, patience, max_recoveries
+        self.p_min, self.patience, self.max_recoveries, self.aim = p_min, patience, max_recoveries, bool(aim)
         self.truth = scene_truth if truth is None else truth
         self.info: dict | None = None  # the slow server's
         if scene == "eyes" or program == "writer":
@@ -474,6 +499,7 @@ class SlowLevel:
             self.give_up,
             unseen=self.unseen,
             revoke=self.revoke,
+            aim=self.aim,
         )
         plan = self.supervisor.plan
         self.meaning = None if self.gold is None else plan is not None and equivalent(plan.program, self.gold)
@@ -568,6 +594,7 @@ class SlowLevel:
             patience=self.patience,
             max_recoveries=self.max_recoveries,
             give_up=self.give_up,
+            **(dict(aim=True) if self.aim else {}),  # absent where it is off, as it was before there was one
             server=self.info,
         )
 

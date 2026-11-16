@@ -37,6 +37,29 @@ def select_language_instruction(language_instructions, instruction_types):
     return random.choice(available_instructions) if available_instructions else ""
 
 
+def aim_instruction(note: str) -> str:
+    """The instruction of type "aim" for a frame whose metadata carries the expert's note (sim/pickup/notes.py): the
+    note's sub-goal (its `next` field) and, where that is the cut of a shoot, what the note's `aim` field says the
+    shoot needs: "cut the lowest shoot, in reach" (aim "the lowest, faces me"), "cut the lowest shoot, press blue"
+    (aim "the lowest, faces away, press blue"). Other sub-goals ("show the label", "stop") are given as they are.
+    The same text as sim/pickup/reasoning.py's aimed_subgoal writes, which a served policy is given (a test holds the
+    two together); written here so that the training pipeline needs nothing of the simulator."""
+    fields = {}
+    for part in note.split("|"):
+        name, sep, value = part.strip().partition(":")
+        if sep:
+            fields[name.strip()] = value.strip()
+    goal, aim = fields.get("next", ""), fields.get("aim", "")
+    words = goal.split()
+    if not (len(words) == 4 and words[0] == "cut" and words[2] in ("lowest", "middle", "highest")):
+        return goal
+    if aim.endswith("faces me"):
+        return f"{goal}, in reach"
+    if "press " in aim:
+        return f"{goal}, press {aim.rsplit('press ', 1)[1]}"
+    return goal
+
+
 def extract_robotics_fields(
     sample,
     language_instruction_types=None,
@@ -85,7 +108,13 @@ def extract_robotics_fields(
                 if key.endswith(suffix):
                     data[suffix] = value
 
-    instruction = select_language_instruction(data.get("language_instructions.json"), language_instruction_types)
+    language_instructions = data.get("language_instructions.json")
+    if language_instruction_types and "aim" in language_instruction_types:
+        # derived from the frame's note, so that datasets preprocessed before this type existed offer it too
+        note = (data.get("metadata.json") or {}).get("note")
+        if note:
+            language_instructions = {**(language_instructions or {}), "aim": aim_instruction(note)}
+    instruction = select_language_instruction(language_instructions, language_instruction_types)
 
     lowdim_data = data.get("lowdim.npz")
     metadata = data.get("metadata.json", {})

@@ -156,7 +156,9 @@ class RoboticsDataParams(DataParams):
         # Validate language instruction types
         # "subgoal": a per-frame instruction (a column instruction_subgoal in a LeRobot dataset, e.g. the sub-goal of
         # the expert's notes in sim/pickup), for the fast level of a two-level policy
-        valid_types = {"original", "randomized", "verbose", "alternative", "subgoal"}
+        # "aim": that sub-goal with what its shoot needs ("..., in reach", "..., press blue"), from the note in each
+        # frame's metadata (vla_foundry/data/pipelines/robotics.py, aim_instruction)
+        valid_types = {"original", "randomized", "verbose", "alternative", "subgoal", "aim"}
         invalid_types = set(self.language_instruction_types) - valid_types
         if invalid_types:
             raise ValueError(f"Invalid language instruction types: {invalid_types}. Valid types are: {valid_types}")

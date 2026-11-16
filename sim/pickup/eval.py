@@ -470,6 +470,14 @@ def main():
         help="who fills the `see` field of the notes (what is on the stand): the model that writes them, or the "
         "correct note (expert), after which the model writes the rest of each note",
     )
+    ap.add_argument(
+        "--aim",
+        action="store_true",
+        help="with --subgoals or --slow_level v2: the sub-goal the served policy is given carries its aim, what the "
+        'shoot it names needs ("cut the lowest shoot, in reach", "..., press blue": reasoning.aimed_subgoal), for a '
+        "fast level trained on the instruction type aim (dp_vit_lang_reactive_aim.yaml). From the note's aim field "
+        "with --subgoals, from the scene memory's bearing of the part with v2",
+    )
     ap.add_argument("--reasoner_port", type=int, default=None, help="port of a policy_server.py serving a reasoner")
     ap.add_argument(
         "--expect_reasoner_run", default=None, help="stop unless the reasoner serves a checkpoint of this run"
@@ -622,6 +630,9 @@ def main():
         check_server(reasoner_info, args.reasoner_port, args.expect_reasoner_run, None, None)
         assert reasoner_info.get("reasons"), "the server on --reasoner_port does not write notes"
     assert args.subgoals == "none" or env.reason, "--subgoals needs a reasoning task"
+    assert not args.aim or args.subgoals != "none" or args.slow_level == "v2", (
+        "--aim is the aim of a sub-goal: it needs --subgoals or --slow_level v2"
+    )
     expert = conn = None
     if args.expert:
         from .expert import ScriptedExpert
@@ -673,7 +684,10 @@ def main():
             give_up=args.slow_give_up,
             unseen=args.slow_unseen,
             revoke=args.slow_revoke,
+            aim=args.aim,
         )
+    # --aim: a sub-goal goes to the served policy with what its shoot needs (the note's aim, or the scene memory's)
+    goal_of = reasoning.aimed_subgoal if args.aim else reasoning.subgoal
 
     episodes, latencies = [], []
     per_target = defaultdict(lambda: [0, 0])
@@ -740,7 +754,7 @@ def main():
                     written.append([env.steps, reply["note_now"]])
                 held = reply["note"]
                 agreement.append(note_agreement(held, writer.note))
-                subgoal = reasoning.subgoal(held) or subgoal
+                subgoal = goal_of(held) or subgoal
             if slow is not None and fresh and recovery is None:  # v2: it looks where the policy needs a new chunk
                 decision = slow.tick(obs, slow_history)
                 if decision.recover:  # nothing has progressed for long: a scripted move first, then the policy
@@ -761,7 +775,7 @@ def main():
                 first_query = False
                 instruction, note_now, rta_held = env.instruction, None, held
                 if args.subgoals in ("expert", "swap"):
-                    subgoal = reasoning.subgoal(writer.note if swap is None else writer.text(targets=[swap]))
+                    subgoal = goal_of(writer.note if swap is None else writer.text(targets=[swap]))
                 if args.subgoals != "none":
                     instruction = subgoal or "stop"
                 elif rta and args.notes == "reasoner":
@@ -770,7 +784,7 @@ def main():
                     correct = writer.note if args.notes == "expert" else writer.text(targets=[swap])
                     note_now = NOTE_SAME if correct == held else correct
                 if slow is not None:  # v2: the slow level's sub-goal, from the look just taken
-                    instruction = decision.subgoal
+                    instruction = decision.instruction
                 conn.send(
                     infer_request(
                         history.at(-1),
@@ -1007,6 +1021,7 @@ def main():
                 reasoning=_reason_summary(episodes),
                 notes=args.notes if rta else None,
                 subgoals=args.subgoals,
+                **(dict(aim=True) if args.aim else {}),
                 see=args.see,
                 reasoner=reasoner_info,
             )
