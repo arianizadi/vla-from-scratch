@@ -1,9 +1,9 @@
 """Scene records, the simulator's truth for them, the plant crop, the scene memory and the perception dataset
-(sim/pickup/scene.py, sim/pickup/collect_scene.py; architecture v2).
+(sim/pickup/scene.py, sim/pickup/collect_scene.py, eval.py --record_scene; architecture v2).
 
 The record and memory tests need nothing but numpy: hand-made scenes stand in for what the eyes would report. The
-others need MuJoCo, a GL context for the cameras and the Franka model (sim/pickup/scripts/fetch_assets.sh), and are
-skipped where any of them is missing.
+others need MuJoCo, a GL context for the cameras and the Franka model (sim/pickup/scripts/fetch_assets.sh), the
+dataset's also pyarrow (and torch, for the eyes' reader), and are skipped where any of them is missing.
 """
 
 import io
@@ -751,3 +751,89 @@ def test_the_collector_writes_the_perception_dataset(tmp_path):
         for camera in ("front", "wrist", "plant"):
             img = np.asarray(Image.open(io.BytesIO(table.column(camera)[0].as_py())))
             assert img.shape == (224, 224, 3), (camera, img.shape)
+
+
+def test_an_evaluation_records_the_perception_dataset_of_its_rollouts(tmp_path, monkeypatch):
+    """eval.py --record_scene writes the collector's layout from closed-loop rollouts (the scripted expert drives, so no
+    server is needed): the eyes' reader takes every frame; an episode's frames are its first step, every stride-th from
+    its offset and its last; results.json is as without the option but for one key; a second run into it is refused."""
+    pq = pytest.importorskip("pyarrow.parquet")
+    pytest.importorskip("torch")  # the eyes' reader
+    _env("reason_mix").close()  # skipped where the simulator or a GL context is missing
+    from sim.pickup import collect_scene as C
+    from sim.pickup import eval as E
+    from sim.pickup.eyes import EyesConfig
+    from sim.pickup.eyes_data import SceneFrames
+
+    data = tmp_path / "data"
+
+    def evaluate(out, *more):
+        argv = ["--task", "reason_mix", "--expert", "--episodes", "2", "--videos", "0", *more]
+        monkeypatch.setattr(sys, "argv", ["eval.py", "--out", str(out), *argv])
+        E.main()
+        return json.loads((out / "results.json").read_text())
+
+    def timeless(results):
+        return json.dumps({k: v for k, v in results.items() if k != "wall_time_s"}, sort_keys=True)
+
+    plain = evaluate(tmp_path / "plain")
+    results = evaluate(tmp_path / "recorded", "--record_scene", str(data))
+    assert sorted(p.name for p in (tmp_path / "plain").iterdir()) == ["results.json"] and "record_scene" not in plain
+    summary = results.pop("record_scene")
+    assert timeless(results) == timeless(plain)  # the rollouts are those of an evaluation that records nothing
+
+    meta = json.loads((data / "meta.json").read_text())
+    episodes = [json.loads(line) for line in (data / "episodes.jsonl").read_text().splitlines()]
+    assert summary == dict(dir=str(data), episodes=2, frames=meta["frames"])
+    expected = dict(task="reason_mix", episodes=2, stride=4, cameras=["front", "wrist", "plant"], image_size=224)
+    expected.update(source="eval", driver="expert", policy=plain["server"], slow_level=None, seed=1_000_000)
+    assert {k: meta[k] for k in expected} == expected and meta["frames"] == sum(e["frames"] for e in episodes)
+    runs = [(r["seed"], r["success"], r["steps"]) for r in plain["per_episode"]]
+    assert [(e["seed"], e["success"], e["steps"]) for e in episodes] == runs
+    assert any(e["success"] for e in episodes), "the expert succeeded in neither episode"
+    frames = []  # (file, step) of every frame, in the listing's order
+    for e in episodes:
+        table = pq.read_table(data / e["file"])
+        assert table.column_names == ["step", "front", "wrist", "plant", "scene"] and table.num_rows == e["frames"]
+        steps = table.column("step").to_pylist()
+        offset = C.stride_offset(e["seed"], 4)
+        assert steps == sorted({0, e["steps"], *(t for t in range(e["steps"]) if t % 4 == offset)}), (e, steps)
+        scenes = [S.Scene.from_json(cell) for cell in table.column("scene").to_pylist()]
+        assert all(len(s.parts) == e["shoots"] and all(len(p.views) == 2 for p in s.parts) for s in scenes)
+        assert not any(p.cut for p in scenes[0].parts)
+        if e["success"]:  # the last frame shows the cut that ended the episode
+            assert any(p.cut for p in scenes[-1].parts), e
+        frames += [(str(data / e["file"]), step) for step in steps]
+
+    reader = SceneFrames(data, EyesConfig(cameras=["front", "wrist", "plant"]), train=False)
+    samples = list(reader)
+    assert reader.frames == len(samples) == meta["frames"]
+    assert [(s["episode"], s["step"]) for s in samples] == frames
+    assert all(tuple(s["images"].shape) == (3, 3, 224, 224) for s in samples)
+
+    listing = (data / "episodes.jsonl").read_text()
+    with pytest.raises(AssertionError, match="already holds a perception dataset"):
+        evaluate(tmp_path / "again", "--record_scene", str(data))
+    assert (data / "episodes.jsonl").read_text() == listing
+
+
+RECORD_ARGUMENTS = [
+    (["--task", "pick_cube", "--record_scene", "new"], "it needs a plant task"),
+    (["--task", "reason_mix", "--record_scene", "new", "--record_stride", "0"], "--record_stride must be 1 or more"),
+    (["--task", "reason_mix", "--record_stride", "2"], "--record_stride is for --record_scene"),
+    (["--task", "reason_mix", "--record_scene", "stopped"], "already holds a perception dataset"),
+]
+
+
+@pytest.mark.parametrize("argv, message", RECORD_ARGUMENTS)
+def test_the_recording_arguments_are_checked_before_any_server_is_reached(argv, message, tmp_path, monkeypatch):
+    """`stopped`: what a run that did not finish leaves, an episode's file without the listing, is a dataset too."""
+    _env("reason_mix").close()  # skipped without MuJoCo, the Franka model or a GL context
+    from sim.pickup import eval as E
+
+    (tmp_path / "stopped" / "episodes").mkdir(parents=True)
+    (tmp_path / "stopped" / "episodes" / "ep_1000000.parquet").write_bytes(b"")
+    argv = [str(tmp_path / a) if a in ("new", "stopped") else a for a in argv]
+    monkeypatch.setattr(sys, "argv", ["eval.py", "--out", str(tmp_path / "out"), *argv])
+    with pytest.raises(AssertionError, match=message):
+        E.main()

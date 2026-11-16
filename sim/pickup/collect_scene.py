@@ -19,6 +19,10 @@ Layout:
                                224 x 224), plant (the plant crop, with --crop) and scene (the truth, Scene.to_json)
 
 Only plant tasks have a scene. Held-out tasks are allowed: the labels do not depend on the instruction.
+
+SceneRecorder writes this layout whoever drives. The expert never shows the eyes some states a policy reaches (jaws
+shut beside a shoot they did not cut), so eval.py --record_scene records the rollouts of a closed-loop evaluation with
+it, each frame labelled by the simulator; that dataset's meta.json says "source": "eval" and how they were driven.
 """
 
 import argparse
@@ -52,60 +56,137 @@ def episode_file(seed: int) -> str:
     return f"episodes/ep_{seed:07d}.parquet"
 
 
-def _ending(info) -> str:
-    """How an episode ended: 'success', what was damaged, 'wrong shoot' or 'time'."""
+def stride_offset(seed: int, stride: int) -> int:
+    """The step of each stride that episode `seed` records (0 to stride - 1), from a stream of its own: the layout of
+    `seed` is unchanged."""
+    return int(np.random.default_rng([seed, 59]).integers(stride))
+
+
+def _ending(info, stopped=False) -> str:
+    """How an episode ended: 'success', what was damaged, 'wrong shoot', 'time', or 'stopped' (whoever drove ended it
+    before its time was up: eval.py's slow level, once its verdict has stood)."""
     if info.get("success"):
         return "success"
-    return info.get("damaged") or ("wrong shoot" if info.get("wrong_object") else "time")
-
-
-def run_episode(env, expert, seed, stride=4, tail_steps=10, start_anywhere=True, crop=None) -> tuple[dict, dict]:
-    """One episode of `seed` with `expert` driving. Returns (columns, record): the recorded frames as lists, by column,
-    and the episode's line for episodes.jsonl."""
-    obs, yaw = env.reset(seed=seed), 0.0
-    if start_anywhere:
-        obs, yaw = random_start(env, expert, seed)
-    expert.reset(yaw=yaw)
-    # the first recorded step, from a stream of its own: the layout of `seed` is unchanged
-    offset = int(np.random.default_rng([seed, 59]).integers(stride))
-    columns = {"step": [], **{c: [] for c in CAMERAS}, **({"plant": []} if crop is not None else {}), "scene": []}
-
-    def record(obs):
-        columns["step"].append(env.steps)
-        for c in CAMERAS:
-            columns[c].append(jpeg(obs[c]))
-        if crop is not None:
-            columns["plant"].append(jpeg(crop.render()))
-        columns["scene"].append(scene_truth(env).to_json())
-
-    done, info = False, {}
-    while not done:
-        if env.steps % stride == offset:
-            record(obs)
-        obs, done, info = env.step(expert.act())
-    steps = env.steps
-    if info["success"]:
-        for _ in range(tail_steps):  # the robot holds its last command (for a cut, the jaws stay shut)
-            record(obs)
-            obs, _, _ = env.step(env.last_action.copy())
-    entry = dict(
-        file=episode_file(seed),
-        seed=seed,
-        task=env.task,
-        frames=len(columns["step"]),
-        steps=steps,
-        success=bool(info["success"]),
-        shoots=len(env.active),
-        ending=_ending(info),
-        **({"kind": env.reason_kind} if env.reason else {}),
-        **({"scenario": env.scenario_info} if env.scenarios else {}),
-    )
-    return columns, entry
+    return info.get("damaged") or ("wrong shoot" if info.get("wrong_object") else "stopped" if stopped else "time")
 
 
 def _table(columns: dict) -> pa.Table:
     types = {"step": pa.int32(), "front": pa.binary(), "wrist": pa.binary(), "plant": pa.binary(), "scene": pa.string()}
     return pa.table({k: pa.array(v, type=types[k]) for k, v in columns.items()})
+
+
+class SceneRecorder:
+    """Records the episodes of `env` (a PickupEnv of a plant task) into the dataset at `out`, whoever drives.
+
+    start(seed) after env.reset and any random start; due() says whether env's control step now is one to record, every
+    `stride`-th from the episode's offset (stride_offset); frame(obs) records the scene now: `obs` (env's newest
+    observation), the plant crop if `crop`, and the simulator's truth; end(info, steps) writes the episode's file and
+    returns its line for episodes.jsonl, also kept in `records` (`steps`: the episode's control steps); close() releases
+    the crop's renderer. episodes.jsonl and meta.json are written apart, once every episode is (write_listing).
+
+    keep_streams: rendering the crop puts the scenarios' random streams back as it found them. A knocked camera draws
+    its noise from one (scenarios.Camera), and the crop is that camera's view: every crop would otherwise change the
+    noise of the images that follow. eval.py's policy looks at those; the expert here does not, and the datasets
+    collected here were made without keep_streams."""
+
+    def __init__(self, out, env, crop: bool = True, stride: int = 4, keep_streams: bool = False):
+        assert env.image_size == IMAGE_SIZE, f"the dataset's images are {IMAGE_SIZE} pixels, not {env.image_size}"
+        self.out, self.env, self.stride, self.keep_streams = Path(out), env, stride, keep_streams
+        self.crop = PlantCrop(env, size=IMAGE_SIZE, zoom=CROP_ZOOM) if crop else None
+        self.records: list[dict] = []
+        (self.out / "episodes").mkdir(parents=True, exist_ok=True)
+
+    def start(self, seed: int):
+        self.seed, self.offset = seed, stride_offset(seed, self.stride)
+        plant = {"plant": []} if self.crop is not None else {}
+        self.columns = {"step": [], **{c: [] for c in CAMERAS}, **plant, "scene": []}
+
+    def due(self) -> bool:
+        return self.env.steps % self.stride == self.offset
+
+    def frame(self, obs):
+        env, columns = self.env, self.columns
+        columns["step"].append(env.steps)
+        for c in CAMERAS:
+            columns[c].append(jpeg(obs[c]))
+        if self.crop is not None:
+            columns["plant"].append(jpeg(self._crop()))
+        columns["scene"].append(scene_truth(env).to_json())
+
+    def _crop(self):
+        if not self.keep_streams:
+            return self.crop.render()
+        streams = [s.rng for s in self.env.scenarios if getattr(s, "rng", None) is not None]
+        states = [rng.bit_generator.state for rng in streams]
+        image = self.crop.render()
+        for rng, state in zip(streams, states, strict=True):
+            rng.bit_generator.state = state
+        return image
+
+    def end(self, info: dict, steps: int) -> dict:
+        env = self.env
+        entry = dict(
+            file=episode_file(self.seed),
+            seed=self.seed,
+            task=env.task,
+            frames=len(self.columns["step"]),
+            steps=steps,
+            success=bool(info["success"]),
+            shoots=len(env.active),
+            ending=_ending(info, stopped=steps < env.max_steps),
+            **({"kind": env.reason_kind} if env.reason else {}),
+            **({"scenario": env.scenario_info} if env.scenarios else {}),
+        )
+        pq.write_table(_table(self.columns), self.out / entry["file"])
+        self.records.append(entry)
+        return entry
+
+    def close(self):
+        if self.crop is not None:
+            self.crop.close()
+            self.crop = None
+
+
+def write_listing(out, records: list[dict], task: str, stride: int, crop: bool, **settings) -> dict:
+    """Write episodes.jsonl (`records`, the episodes' lines, by seed) and meta.json: the task, the counts, the stride,
+    the cameras, then `settings` in their order. Returns the meta."""
+    out, records = Path(out), sorted(records, key=lambda r: r["seed"])
+    with open(out / "episodes.jsonl", "w") as f:
+        f.writelines(json.dumps(r) + "\n" for r in records)
+    meta = dict(
+        task=task,
+        episodes=len(records),
+        frames=sum(r["frames"] for r in records),
+        stride=stride,
+        cameras=[*CAMERAS, *(["plant"] if crop else [])],
+        image_size=IMAGE_SIZE,
+        crop_zoom=CROP_ZOOM if crop else None,
+        **settings,
+        successes=sum(r["success"] for r in records),
+    )
+    (out / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
+    return meta
+
+
+def run_episode(env, expert, recorder: SceneRecorder, seed, tail_steps=10, start_anywhere=True) -> dict:
+    """One episode of `seed` with `expert` driving, recorded by `recorder`: every stride-th step, and after a success
+    `tail_steps` more, every one. Returns the episode's line for episodes.jsonl (its file is written)."""
+    obs, yaw = env.reset(seed=seed), 0.0
+    if start_anywhere:
+        obs, yaw = random_start(env, expert, seed)
+    expert.reset(yaw=yaw)
+    recorder.start(seed)
+    done, info = False, {}
+    while not done:
+        if recorder.due():
+            recorder.frame(obs)
+        obs, done, info = env.step(expert.act())
+    steps = env.steps
+    if info["success"]:
+        for _ in range(tail_steps):  # the robot holds its last command (for a cut, the jaws stay shut)
+            recorder.frame(obs)
+            obs, _, _ = env.step(env.last_action.copy())
+    return recorder.end(info, steps)
 
 
 def _worker(args):
@@ -118,26 +199,16 @@ def _worker(args):
         leaf_fix=options["leaf_fix"],
     )
     expert = ScriptedExpert(env, seed=worker_id)
-    crop = PlantCrop(env, size=IMAGE_SIZE, zoom=CROP_ZOOM) if options["crop"] else None
-    records = []
+    recorder = SceneRecorder(out_dir, env, crop=options["crop"], stride=options["stride"])
     try:
         for seed in seeds:
-            columns, entry = run_episode(
-                env,
-                expert,
-                seed,
-                stride=options["stride"],
-                tail_steps=options["tail_steps"],
-                start_anywhere=options["random_start"],
-                crop=crop,
+            run_episode(
+                env, expert, recorder, seed, tail_steps=options["tail_steps"], start_anywhere=options["random_start"]
             )
-            pq.write_table(_table(columns), Path(out_dir) / entry["file"])
-            records.append(entry)
     finally:
-        if crop is not None:
-            crop.close()
+        recorder.close()
         env.close()
-    return records
+    return recorder.records
 
 
 def main(argv=None):
@@ -189,20 +260,14 @@ def main(argv=None):
     workers = min(args.workers, len(seeds))
     chunks = [(args.task, seeds[i::workers], str(out), i, options) for i in range(workers)]
     with mp.get_context("spawn").Pool(workers) as pool:
-        records = sorted((r for rs in pool.map(_worker, chunks) for r in rs), key=lambda r: r["seed"])
+        records = [r for rs in pool.map(_worker, chunks) for r in rs]
 
-    with open(out / "episodes.jsonl", "w") as f:
-        f.writelines(json.dumps(r) + "\n" for r in records)
-    frames = sum(r["frames"] for r in records)
-    successes = sum(r["success"] for r in records)
-    meta = dict(
-        task=args.task,
-        episodes=len(records),
-        frames=frames,
-        stride=args.stride,
-        cameras=[*CAMERAS, *(["plant"] if args.crop else [])],
-        image_size=IMAGE_SIZE,
-        crop_zoom=CROP_ZOOM if args.crop else None,
+    meta = write_listing(
+        out,
+        records,
+        args.task,
+        args.stride,
+        args.crop,
         driver="expert",
         random_start=not args.no_random_start,
         scenario=args.scenario,
@@ -210,12 +275,9 @@ def main(argv=None):
         tail_steps=args.tail_steps,
         leaf_fix=args.leaf_fix,
         max_steps=args.max_steps,
-        successes=successes,
     )
-    (out / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
-    print(
-        f"wrote {len(records)} episodes ({successes} successes) / {frames} frames to {out} in {time.time() - t0:.0f}s"
-    )
+    episodes, successes, frames = meta["episodes"], meta["successes"], meta["frames"]
+    print(f"wrote {episodes} episodes ({successes} successes) / {frames} frames to {out} in {time.time() - t0:.0f}s")
 
 
 if __name__ == "__main__":

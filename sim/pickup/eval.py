@@ -36,6 +36,13 @@ decided (per_episode[i]["v2"]), and results.json counts its false completions ap
 top of the task; each episode records what its scenarios drew, and results.json counts the outcomes by variation.
 Episodes of the same seeds with and without a scenario have the same layouts.
 
+--record_scene DIR records a perception dataset of the rollouts as collect_scene.py writes one (the cameras, the plant
+crop and the simulator's truth; eyes_data.py reads it), so that the eyes learn the states a policy reaches and the
+expert never does, such as jaws shut beside a shoot they did not cut: every --record_stride-th control step of every
+episode, from an offset drawn per episode as collect_scene.py draws it, and the first and the last observation, whoever
+drives (the expert, a served policy, the slow level of v2 and its recoveries). Plant tasks only; results.json names the
+dataset (record_scene) and is otherwise as without it.
+
 The aim range's drills (aim_*, aim.py) are reported per drill: success, wrong targets, the steps of successful episodes
 and how close the gripper came (aim_each takes the drills in turn, for equal numbers of each).
 """
@@ -542,6 +549,19 @@ def main():
         action="store_true",
         help="put an unused side shoot back as built at every reset (as in data from collect.py --park_reset)",
     )
+    ap.add_argument(
+        "--record_scene",
+        default=None,
+        help="record a perception dataset of the rollouts into this new directory, as collect_scene.py writes one "
+        "(the cameras, the plant crop and the simulator's truth), to train the eyes on; plant tasks only",
+    )
+    ap.add_argument(
+        "--record_stride",
+        type=int,
+        default=4,
+        help="with --record_scene: every stride-th control step is recorded (from an offset drawn per episode), and "
+        "the first and the last of each episode",
+    )
     args = ap.parse_args()
 
     out = Path(args.out)
@@ -569,6 +589,21 @@ def main():
         assert (args.slow_unseen, args.slow_revoke, args.slow_give_up) == (False, 0, 40), (
             "--slow_unseen, --slow_revoke and --slow_give_up are for --slow_level v2"
         )
+    recorder = None  # --record_scene: the perception dataset of the rollouts (collect_scene.SceneRecorder)
+    if args.record_scene is not None:  # also checked before any server is reached
+        dataset = Path(args.record_scene)
+        assert env.plant_task, "--record_scene records the scene of a plant: it needs a plant task"
+        assert args.record_stride >= 1, "--record_stride must be 1 or more"
+        held = [dataset / "meta.json", dataset / "episodes.jsonl", *dataset.glob("episodes/*.parquet")]
+        assert not any(path.exists() for path in held), (
+            f"{dataset} already holds a perception dataset: record into a new directory rather than mix runs"
+        )
+        from .collect_scene import SceneRecorder, write_listing  # pyarrow: imported only when a dataset is recorded
+
+        # keep_streams: the plant crop does not change the noise of a knocked camera's images that the policy is shown
+        recorder = SceneRecorder(dataset, env, crop=True, stride=args.record_stride, keep_streams=True)
+    else:
+        assert args.record_stride == 4, "--record_stride is for --record_scene"
     writer = None
     if env.reason:
         from .notes import NoteWriter
@@ -648,6 +683,8 @@ def main():
         if slow is not None:  # v2: the episode's program and an empty memory; its own frames, for eyes that look back
             slow.reset()
             slow_history, recovery = FrameHistory(obs, slow.offsets), None
+        if recorder is not None:
+            recorder.start(seed)
         wrong_object = False  # a non-target object was lifted at any point in the episode
         caught = False  # the named object was lifted (stems: held) at some step, if only briefly
         probe = GraspProbe(env)
@@ -682,6 +719,9 @@ def main():
             if "swap" in (args.notes, args.subgoals):
                 swap = swap_shoot(env, seed)
         while not done:
+            # --record_scene: what the cameras show and the simulator's truth, at the first step and every stride-th
+            if recorder is not None and (env.steps == 0 or recorder.due()):
+                recorder.frame(obs)
             if writer is not None:
                 writer.update()
             # --see expert: what the correct note says is on the stand, for whoever writes the notes
@@ -775,6 +815,9 @@ def main():
                     turn["first_press"] = BUTTONS[down[0]][1] if down else None
             wrong_object = wrong_object or bool(info["wrong_object"])
             caught = caught or env.target in info["lifted"]
+        if recorder is not None:  # the last observation, and the episode's file
+            recorder.frame(obs)
+            recorder.end(info, env.steps)
         episodes.append(
             dict(
                 seed=seed,
@@ -882,6 +925,31 @@ def main():
             flush=True,
         )
 
+    recorded = None  # --record_scene: the dataset as results.json names it
+    if recorder is not None:
+        recorder.close()
+        meta = write_listing(
+            args.record_scene,
+            recorder.records,
+            args.task,
+            args.record_stride,
+            True,
+            source="eval",  # a closed-loop evaluation's rollouts, not collect_scene.py's expert
+            driver="expert" if args.expert else "policy",
+            policy=server_info,
+            slow_level=slow.settings() if slow is not None else None,
+            random_start=args.random_start,
+            scenario=args.scenario,
+            seed=args.seed_start,
+            first_and_last=True,  # besides every stride-th step, each episode's first and last
+            tail_steps=0,
+            leaf_fix=args.leaf_fix,
+            park_reset=args.park_reset,
+            max_steps=args.max_steps,
+        )
+        recorded = dict(dir=args.record_scene, episodes=meta["episodes"], frames=meta["frames"])
+        print(f"[eval] recorded {meta['frames']} frames of {meta['episodes']} episodes -> {args.record_scene}")
+
     n = len(episodes)
     k = sum(e["success"] for e in episodes)
     p = k / n
@@ -942,6 +1010,7 @@ def main():
             else {}
         ),
         **(dict(v2=dict(settings=slow.settings(), **slow_level.summary(episodes))) if slow is not None else {}),
+        **(dict(record_scene=recorded) if recorded is not None else {}),
         per_episode=episodes,
     )
     write_json(out / "results.json", results, indent=2)
