@@ -1197,6 +1197,46 @@ More training alone raises both (153/200 is the best two-level result so far). P
 successes and cost 24 on the training instructions; held-out instructions stay well below training ones either way,
 and wrong cuts on them stay at 36-38%.
 
+## Architecture v2: eyes, a written program, and memory (Phase 7, stage 2)
+
+Design, diagnosis and every number in detail: `tutorial/architecture-v2.md`. The slow level of stage 1 is split in
+three: **eyes** (a small ViT trained on the simulator's labels to output one record per part: position, height
+order, colour, visible, cut), a **scene memory** that keeps those records across the episode (stable identities
+through rotation, the label once read, which shoots are cut), and the **language model as downloaded** (Qwen3-VL-2B,
+frozen) writing the instruction as a short typed program (`If`, `Rank`, `Middle`, `Except`, `ReadLabel`, `Cut`) under a
+grammar constraint; code runs the program on the memory and hands the fast level the same sub-goal as before. The fast
+level is unchanged (`dp_vit_lang_reactive_subgoal_reason8k_20m_seed43`, final averaged weights). 200 layouts per
+split; differences under about 15 are within noise.
+
+| Slow level | Training instructions | Held out |
+|---|---|---|
+| Stage 1: Qwen reasoner writes notes from pixels | 133/200 | 66/200 |
+| Stage 1 reasoner given the true scene facts (`--see expert`) | 159/200 | 96/200 |
+| v2, the simulator's scene, written program | 166/200 | 138/200 |
+| v2, the eyes' scene, written program | 160/200 | 135/200 |
+| **v2, the eyes' scene, written program, memory options on** (`--slow_unseen --slow_revoke 3 --slow_give_up 80`) | **169/200** | **148/200** |
+| v2, the simulator's scene, the task's own program (ceiling of this fast level) | 169/200 | 154/200 |
+
+What the pieces show:
+
+- **Counting was the stage-1 failure, and the features had it.** The stage-1 reasoner wrote "2 shoots" for 105 of 108
+  three-shoot plants. A small typed head on the frozen tower's own 49 tokens reads the three-shoot count in 91% of
+  frames; the eyes read the count right in 97-98% of frames over three seeds (98.5-99% with a crop of the plant),
+  after 35-44 minutes of training. A loss on what is seen, not on note text, is what was missing.
+- **Fine-tuning hurt the language model's language.** As downloaded it writes a program with the right meaning for
+  100/100 training and 92/100 held-out instructions; with the stage-1 reasoner's fine-tuned weights, 71 and 60. The
+  remaining misses are mostly "leave only the middle shoot and cut the rest".
+- **Closed-loop errors that frame accuracy did not show:** an inventory that never completes (a shoot the eyes are
+  sure exists but never see: 4-6/200) and a cut seen that did not happen (the eyes were trained on expert frames,
+  where shut jaws at a shoot always mean a cut: 3-12/200). The memory options (hold an unseen part, revoke a belief
+  after 3 contradicting looks, give up after 80 steps) take v2 on the eyes from 143 to 162 on validation layouts.
+- **Under perturbation** (notes / eyes / simulator scene): plate turned mid-task 111 / 126 / 146 of 200, a button
+  whose first presses do nothing 83 / 101 / 110. Bounded recovery (retrying a step with no effect) did not help (171
+  without, 157-159 with) and stays off.
+- **The fast level is now the limit:** the v2 slow level on the eyes is within noise of the simulator's scene, and
+  with a perfect slow level the fast level times out in 22/200, 5-8 of them with a correct sub-goal and an arm that
+  never moves. On the weaker fast-level seed v2 solves 99/200 (simulator scene) against 74 for the stage-1 notes.
+
 ## Throughput
 
 | Model | Machine A (RTX 4090) | Machine B (L40S) |

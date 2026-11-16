@@ -159,6 +159,10 @@ names the shoot, a small policy acts on the sub-goal) solves 133/200 against 21/
 the instruction alone, and 26/33 against 1/11 when a label it read is out of view at the cut. Swapping the note for
 another shoot's makes it cut that shoot, so the text drives the action. Held-out instructions are the weak point (66/200).
 
+**Stage 2 result (architecture v2, `tutorial/architecture-v2.md`).** Trained eyes read the plant into a part-level scene
+memory, the frozen language model writes the instruction as a typed program, and code runs it: 169/200 on training
+instructions and 148/200 held out, against 133 and 66 for stage 1. The fast level is now the limit.
+
 The policies here go from pixels and joint angles to joint targets in one pass. They do not reason
 in words, and the instruction has one job: to say which object. Two kinds of work would open them up.
 
