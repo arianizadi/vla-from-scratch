@@ -384,12 +384,11 @@ blue"), for a fast level trained to be told; and the arm is taken back to the st
 a shoot that is more than 45 degrees out of reach and the plate is not turning, three looks in a row, so that the fast
 level chooses again (a target that follows another is given four looks first: the hand is still coming back from the
 shoot it cut). That reset may be asked for twice an episode unless `--resets N` says otherwise, and not at all with
-`--aim` until the fast levels told their aim are measured with it; `--resets 0` turns it off, which is how every run
-of this document was made that does not say it had resets. Each episode records the program, every change of outcome,
-the recoveries, whether a `Complete` was false, how the memory compared with the simulator at every look, and a
-ledger: one entry per attempt (the cut of one part, or showing the label) with what it was meant to bring about,
-closed only by what the memory then shows (confirmed, with the look that showed it; violated; superseded; given up)
-and open otherwise.
+`--aim`, where it found nothing to repair; `--resets 0` turns it off, which is how every run of this document was made
+that does not say it had resets. Each episode records the program, every change of outcome, the recoveries, whether a
+`Complete` was false, how the memory compared with the simulator at every look, and a ledger: one entry per attempt
+(the cut of one part, or showing the label) with what it was meant to bring about, closed only by what the memory then
+shows (confirmed, with the look that showed it; violated; superseded; given up) and open otherwise.
 
 **5. Fast level.** As it is: the small flow-matching policy that reads the sub-goal
 (`dp_vit_lang_reactive_subgoal.yaml`, or `dp_vit_lang_frames_1s_subgoal.yaml` once those runs are in).
@@ -649,6 +648,7 @@ evaluation layouts is in that number, and nothing of the eyes. Episodes solved o
 | the sub-goal fast level, seed 43 (the one used above) | 171, 161, 162, 166 | 173, 179 | 174 | 169, 154 | 160, 151 | 169, 148 |
 | the same, seed 44 | 170 | 182 (no grace) | 180 (no grace) | 170, 171 | 167, 155 | 169, 145 |
 | with a memory of one second, seed 42 | 157 | 157 | 164 | 151, 143 | 136, 137 | 147, 131 |
+| with a memory of one second, seed 43 | 135 | 141 | 146 | 118, 105 | 117, 116 | 111, 107 |
 | the sub-goal fast level, seed 42 (the weak one) | | | | 99, 72 | | |
 
 Two seeds of the sub-goal fast level carry v2 equally, on the validation layouts and on the evaluation's; the third is
@@ -656,11 +656,13 @@ the weak one of "The fast level is the ceiling". A memory of one second lifts th
 under a slow level without errors, and it stays below the two strong seeds that have no memory, with more wrong shoots
 cut (10 to 16 episodes in 200 against 2 to 7). The reset does not help it: 157 with and without. It is asked for later
 in a task of one cut far more often than with seed 43 (43 episodes of 200 against 11 and 12, 14 of them solved); wrong
-shoots fall from 10 to 1 and episodes out of time rise from 29 to 40. Whether a memory helps a seed that is already
-strong is the second run with one, still in training. Between seeds 43 and 44 the validation layouts do not decide
-(165 on average over four runs against 170 in one; 176 against 182 with resets), so v2 stays on seed 43, which every
-other measurement here was made with, and seed 44 is its repetition: the seed of the fast level moves the result more
-than anything the slow level still gets wrong.
+shoots fall from 10 to 1 and episodes out of time rise from 29 to 40. A seed that is strong without a memory is not
+helped by one: seed 43 with a memory solves 135 on the validation layouts and 118 and 105 on the evaluation's under a
+slow level without errors, against 165 and 169 and 154 without. With two seeds each, what a memory of one second does
+cannot be told from the spread between seeds (99 to 170 without it, 118 to 151 with it, training instructions).
+Between seeds 43 and 44 the validation layouts do not decide (165 on average over four runs against 170 in one; 176
+against 182 with resets), so v2 stays on seed 43, which every other measurement here was made with, and seed 44 is its
+repetition: the seed of the fast level moves the result more than anything the slow level still gets wrong.
 
 **With the reset, once on the evaluation layouts.** The memory's two options, the reset and its grace, the eyes and
 the fast level were all settled on the validation layouts. All of v2 with the first eyes, both options and up to two
@@ -686,8 +688,54 @@ With seed 44 the first eyes, which never saw that fast level's states, still end
 `Complete` with training instructions.
 
 After these runs the reset became the default of v2: up to two an episode (`slow_level.RESETS`) for a fast level that
-is given the sub-goal alone, whatever the scene comes from. With `--aim` it stays off until the fast levels told their
-aim have been measured with and without it. `--resets 0` repeats every run above that had none.
+is given the sub-goal alone, whatever the scene comes from. With `--aim` it stays off: for the first fast level told
+its aim the rule asked for one reset in 200 episodes (below). `--resets 0` repeats every run above that had none.
+
+**The aim in the sub-goal (E11).** `dp_vit_lang_reactive_aim_reason8k_20m_seed43` has the config, the demonstrations
+and the seed of the fast level used above, and was trained on the sub-goal with its aim ("cut the lowest shoot, press
+blue") for half of the samples and on the sub-goal alone for the other half, so that one set of weights is served told
+its aim (`--aim`) and not told. With the expert's sub-goals, 100 episodes after every 2M samples:
+
+| | Solved of 100, checkpoint by checkpoint |
+|---|---|
+| told its aim | 59, 76, 74, 78, 82, 77, 80, 74, 74, 78, 77 |
+| the same weights, not told | 15, 26, 22, 43, 54, 41, 51, 45, 42, 53, 51 |
+| the sub-goal fast level, seed 43 | 10, 26, 51, 60, 72, 71, 85, 83, 75, 77, 75 |
+
+Told its aim, the fast level has after 4M samples what the other has after 10M to 14M, and it ends where the other
+ends. Under v2 with no resets, episodes of 200:
+
+| Fast level | Validation layouts, the simulator's scene | Evaluation layouts, the simulator's scene: training instructions, held out | All of v2, the task's program | the written program |
+|---|---|---|---|---|
+| told its aim | 159, 156 | 156, 158 | 161, 161 | 163, 152 |
+| the same weights, not told | 111 | 98, 99 | 97, 102 | 112, 86 |
+| the sub-goal fast level, seed 43 | 171, 161, 162, 166 | 169, 154 | 160, 151 | 169, 148 |
+
+The aim cures what it was built for. On the simulator's scene (validation layouts, then the evaluation's two sets) the
+fast level told its aim presses a button in 99% of the episodes whose shoot starts out of reach (90%, 91% and 85% for
+the sub-goal fast level), the button of the shorter way in 93%, 88% and 86% (70%, 67%, 59%); it cuts no wrong shoot
+(2, 7 and 6 episodes before), and no episode ends with the plate never turned (7 to 12 before). With up to two resets
+it solves 166 of 200 validation layouts and a reset is asked for in 1 episode: the rule has nothing left to repair,
+and stays off with `--aim`.
+
+The episodes solved do not rise, because as many are lost in another place. 26 to 30 of 200 run out of time with the
+target in reach at the end (4 to 9 for the sub-goal fast level): the plate was turned past the target and round again
+(by 281 degrees more than needed, at the median of those episodes on the validation layouts), or the jaws were closed
+again and again beside the shoot without cutting it. Both are errors of the hand, not of the choice, and told its aim
+the fast level makes more of them than the sub-goal fast level does. The weights not told are far below the sub-goal
+fast level (111 against 161 to 171; 123 with resets): half of the samples for each wording does not make one model
+good at both.
+
+One thing about the slow level was tried with the same weights. The expert's note changes from "press" to "faces me"
+only when the plate has come to rest, so v2 as built keeps saying "press" while the plate turns. Saying "in reach" as
+soon as the shoot is within 25 degrees, plate turning or not, gave 166 and 165 of 200 on the validation layouts, and
+168 when "in reach" is then kept while the shoot stays within 40 degrees, against 159 and 156 as built: 30, 30 and 30
+episodes out of time against 37 and 39. That is inside the spread of such runs, and the rule is left as built.
+
+So the fast level told its aim is level with the sub-goal fast level without resets and below it with them (173 to 179
+on the validation layouts; 180 and 165 for all of v2). v2 stays on the sub-goal fast level with the reset. What the
+aim shows is where the rest of the fast level's losses are: with the choice made for it, it still loses one episode in
+five, to its own hand. The second fast level told its aim has a memory of one second and is still in training.
 
 **Eyes trained on the fast level's own frames (E8).** `eval.py --record_scene` recorded 2000 rollouts of the fast
 level under v2 on the simulator's scene (new layouts; 178,840 frames) and 200 more for validation (18,052 frames),
@@ -769,8 +817,8 @@ those validation layouts, and one setting, fixed before any run with it, was run
 | E6 | The three slow levels under perturbation: the plate turned mid-task, a button that sticks | does an explicit memory hold up when the scene changes under the policy? | done: the plate turned 111, 126, 146 (notes, eyes, simulator); the button 83, 101, 110 |
 | E7 | v2 over the weak seed of the fast level; the bounded recovery (`--recover 2`) on validation layouts | how much of v2 is the fast level; does a retry turn time-outs into successes? | done: the weak seed 99 and 88, 72 and 91; the recovery 171 without, 159 and 157 with: it stays off |
 | E8 | Three seeds of the eyes; frames from the fast level's own rollouts added to their training data | how much the eyes vary; the cure at the source for the cut that did not happen | three seeds: done (97.2%, 97.6%, 98.1%; with the crop 98.9%, 99.0%, 98.5%); the policy's frames: done (`eyes_vit_fwp_pol_2m`: the cut that did not happen 0.79% to 0.11% of parts in view on those frames; episodes solved unchanged) |
-| E11 | The fast level's first move: traces and a probe of its first chunk; a reset to the start pose; the aim in the sub-goal (two fast levels, each served with and without it) | where the fast level loses with a correct sub-goal, and what telling it the aim buys | the traces, the probe and the reset: done (validation layouts: 161 to 171 without the reset, 173 to 179 with); the aim: two fast levels in training |
-| E12 | v2 over the other fast levels (a third seed; two with a memory of one second) | which fast level carries v2 best; how much the seed matters under a slow level without errors | done for seed 44 (170 on the validation layouts against 161 to 171) and for the first with a memory (157); the second with a memory is in training |
+| E11 | The fast level's first move: traces and a probe of its first chunk; a reset to the start pose; the aim in the sub-goal (two fast levels, each served with and without it) | where the fast level loses with a correct sub-goal, and what telling it the aim buys | the traces, the probe and the reset: done (validation layouts: 161 to 171 without the reset, 173 to 179 with); the aim: the first fast level done (156 to 168 told its aim), the second in training |
+| E12 | v2 over the other fast levels (a third seed; two with a memory of one second) | which fast level carries v2 best; how much the seed matters under a slow level without errors | done: seed 44 170 on the validation layouts against 161 to 171; with a memory of one second 157 and 135 |
 | E9 | Kinds no policy was trained on, with the fast level's existing skills only: "cut from the top down" (the `order` situation), "leave exactly one shoot" | does the reasoning carry to new kinds without new demonstrations? | later |
 | E10 | Optional, for the fast level: its vision transformer started from the eyes' weights, three seeds | do all seeds start to look early, and does the spread between seeds shrink? | later |
 
@@ -786,23 +834,23 @@ a correct sub-goal still leaves to the fast level's own judgment costs most: whe
 and which way ("First results", the first move). Four reviews of recent work on control (model-based training of
 whole-body controllers, video world-action models, memory for long tasks) were read for what they offer this arm. None
 is a drop-in: their controllers read numerical state, not images, and none cuts anything. What is taken from them is a
-set of experiments for after the slow level. The aim of item 1 is built and its fast levels are in training; the
-ledger of item 4 is built as a record.
+set of experiments for after the slow level. The aim of item 1 is built and measured for one fast level; the ledger of
+item 4 is built as a record.
 
 **Adopted, in this order:**
 
-1. **The aim in the sub-goal** (built; its two fast levels are in training:
-   `dp_vit_lang_reactive_aim_reason8k_20m_seed43` and, with a memory of one second,
-   `dp_vit_lang_frames_1s_aim_reason8k_20m`). The fast level's most frequent error with a correct sub-goal is its
-   first move ("First results", the first move): told "cut the lowest shoot", it has to judge by itself whether the
-   shoot is in reach or the plant must be turned first, and which way. The plan knows the part's bearing, and the
-   expert's notes carry the same fact in their `aim` field, which the sub-goal fast level was never shown. So the
-   sub-goal now can carry it: "cut the lowest shoot, in reach", "cut the lowest shoot, press blue". The instruction
-   type `aim` writes that text from the note in each frame's metadata, so the demonstrations and their preprocessed
-   shards are used as they are; `dp_vit_lang_reactive_aim.yaml` trains on the sub-goal with the aim and without it,
-   half each, so that one set of weights can be served both ways (`eval.py --aim`) and what the aim buys is measured
-   without a second seed in the way. The plan says "in reach" within 25 degrees of facing the robot (the expert's own
-   sector) and names the button of the shorter way otherwise.
+1. **The aim in the sub-goal** (built; measured for the first of its two fast levels: it cures the wrong first move
+   and does not raise the episodes solved ("First results"); the second, with a memory of one second, is in training).
+   The fast level's most frequent error with a correct sub-goal is its first move ("First results", the first move):
+   told "cut the lowest shoot", it has to judge by itself whether the shoot is in reach or the plant must be turned
+   first, and which way. The plan knows the part's bearing, and the expert's notes carry the same fact in their `aim`
+   field, which the sub-goal fast level was never shown. So the sub-goal now can carry it: "cut the lowest shoot, in
+   reach", "cut the lowest shoot, press blue". The instruction type `aim` writes that text from the note in each
+   frame's metadata, so the demonstrations and their preprocessed shards are used as they are;
+   `dp_vit_lang_reactive_aim.yaml` trains on the sub-goal with the aim and without it, half each, so that one set of
+   weights can be served both ways (`eval.py --aim`) and what the aim buys is measured without a second seed in the
+   way. The plan says "in reach" within 25 degrees of facing the robot (the expert's own sector) and names the button
+   of the shorter way otherwise.
 2. **Numbers beside the words.** The same for the part's height, and for the phase (turn, approach, cut, retreat), as
    numbers the fast level reads beside its instruction, with one target kept active until its check passes (the plan
    already does). After the aim, and only if it leaves something: the wrong shoots cut under a correct sub-goal (7 and

@@ -88,8 +88,8 @@ DEFAULTS = dict(
 # The resets SlowLevel allows where none are given (rule e), whatever its percepts come from: a fast level that is
 # given the sub-goal alone goes for a shoot it cannot reach in about one episode in ten, and with up to two resets v2
 # solved 180 and 165 of 200 against 169 and 148 (tutorial/architecture-v2.md, "First results"). Not with `aim`: a fast
-# level told what its shoot needs is not expected to make that error, and whether it still gains from the rule is not
-# measured yet. The runs made before this default had resets=0
+# level told what its shoot needs does not make that error (one reset asked for in 200 episodes, 166 solved against
+# 159 and 156 without the rule). The runs made before this default had resets=0
 RESETS = 2
 CHECKS = ("parts", "cut", "label", "flower")  # the memory against the simulator, at every look (memory_right)
 # The memory's errors that no lag explains (memory_false): more parts than the plant has, a cut the plant does not have
