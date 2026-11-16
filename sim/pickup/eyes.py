@@ -29,6 +29,11 @@ own vision transformer (vla_foundry/models/vit.py, as in the small policies), tr
 else. A pretrained vision model from Hugging Face can take its place for comparison (backbone "hf"), frozen or with its
 last layers trained.
 
+The tower probe (backbone "tower") is a diagnostic, not a design: the decoder and heads of the eyes on the frozen
+vision tower of the first design's reasoner (Qwen3-VL), trained on the same labels and data. Whether they read the
+count from the tower's patch features, and whether still after the merger that packs four patches into each token the
+language model is given, says where the frozen model loses it (_TowerBackbone).
+
 Hidden parts. A part is trained on whether a camera shows it or not: the arm, a leaf or the stem hides a shoot for a
 while, and the eyes learn what is probably there. `visible` says when they see the part rather than guess it, and the
 memory counts only parts that are visible and confident.
@@ -41,6 +46,7 @@ percept.
 The dataset reader is eyes_data.py, the trainer train_eyes.py.
 """
 
+import contextlib
 import dataclasses
 import inspect
 import io
@@ -72,6 +78,7 @@ CAMERA_VIEWS = {"front": 0, "wrist": 1, "plant": 0}
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 CONFIG_FILE = "eyes_config.json"
+TOWER_TOKENS = ("patches", "merged")  # the tower probe: before the tower's merger, or after it
 
 
 def _r(x) -> float:
@@ -88,14 +95,19 @@ class EyesConfig:
     frames: list[int] = field(default_factory=lambda: [0])  # offsets in control steps: [-20, 0] adds 1 s earlier
     image_size: int = 224
     slots: int = 3  # part slots: the most side shoots a plant has
-    backbone: str = "vit"  # "vit": the repository's ViT, trained from scratch; "hf": a Hugging Face vision model
+    # "vit": the repository's ViT, trained from scratch; "hf": a Hugging Face vision model; "tower": the vision tower of
+    # a vision-language model of the Qwen-VL kind (the probe of _TowerBackbone)
+    backbone: str = "vit"
     patch_size: int = 16  # vit
     n_layers: int = 6  # vit
-    hidden_dim: int = 256  # the width of the tokens: the ViT's and the decoder's (an hf model's are projected to it)
+    hidden_dim: int = 256  # the width of the tokens: the ViT's and the decoder's (hf and tower tokens are projected)
     inter_dim: int = 1024  # the width of the MLPs, in the ViT and in the decoder
     n_heads: int = 4  # attention heads, in the ViT and in the decoder
     hf_name: str | None = None  # hf: a model name on the Hugging Face hub or a local directory
     hf_trainable_layers: int = 0  # hf: 0 = frozen; n = its last n encoder layers and its final norm are trained
+    tower_name: str | None = None  # tower: a vision-language model's name on the hub or a local directory
+    tower_tokens: str = "patches"  # tower: "patches", its last block's output, normalised; "merged", its merger's
+    tower_trainable_layers: int = 0  # tower: 0 = frozen; n = its last n blocks are trained, and its merger if "merged"
     decoder_layers: int = 2
     height_range: tuple[float, float] = (0.05, 0.18)  # metres; heights are learned as 0..1 over this range
     loss_weights: dict[str, float] = field(default_factory=lambda: dict(LOSS_WEIGHTS))
@@ -112,12 +124,16 @@ class EyesConfig:
             raise ValueError(f"cameras {self.cameras}: at least one, each once")
         if not self.frames or len(set(self.frames)) != len(self.frames) or max(self.frames) > 0:
             raise ValueError(f"frames {self.frames}: offsets of 0 or less (the past), at least one, each once")
-        if self.backbone not in ("vit", "hf"):
-            raise ValueError(f"backbone {self.backbone!r}: 'vit' or 'hf'")
+        if self.backbone not in ("vit", "hf", "tower"):
+            raise ValueError(f"backbone {self.backbone!r}: 'vit', 'hf' or 'tower'")
         if self.backbone == "hf" and not self.hf_name:
             raise ValueError("the hf backbone needs hf_name (a model name or a local directory)")
-        if self.hf_trainable_layers < 0 or self.slots < 1 or self.decoder_layers < 1:
-            raise ValueError("hf_trainable_layers must be 0 or more, slots and decoder_layers 1 or more")
+        if self.backbone == "tower" and not self.tower_name:
+            raise ValueError("the tower backbone needs tower_name (a model name or a local directory)")
+        if self.tower_tokens not in TOWER_TOKENS:
+            raise ValueError(f"tower_tokens {self.tower_tokens!r}: one of {TOWER_TOKENS}")
+        if min(self.hf_trainable_layers, self.tower_trainable_layers) < 0 or self.slots < 1 or self.decoder_layers < 1:
+            raise ValueError("hf_ and tower_trainable_layers must be 0 or more, slots and decoder_layers 1 or more")
         if not self.height_range[0] < self.height_range[1]:
             raise ValueError(f"height_range {self.height_range}: low, high")
 
@@ -295,16 +311,209 @@ class _HFBackbone(nn.Module):
         return self.proj(tokens)
 
 
+def _vision_tower(model: nn.Module) -> nn.Module | None:
+    """The vision tower of a vision-language model of the Qwen-VL kind, or None for another kind: a module `visual`
+    whose transformer `blocks` are followed by a `merger` that normalises each patch (`merger.norm`, a LayerNorm) and
+    packs spatial_merge_size x spatial_merge_size neighbouring patches into one token for the language model, with a
+    configuration that gives its patch sizes and its widths before the merger (hidden_size) and after it
+    (out_hidden_size)."""
+    tower = getattr(model, "visual", None)
+    if tower is None:
+        tower = getattr(getattr(model, "model", None), "visual", None)
+    hf, merger = getattr(tower, "config", None), getattr(tower, "merger", None)
+    sizes = ("patch_size", "temporal_patch_size", "spatial_merge_size", "hidden_size", "out_hidden_size")
+    fits = (
+        isinstance(tower, nn.Module)
+        and isinstance(getattr(tower, "blocks", None), nn.ModuleList)
+        and isinstance(getattr(merger, "norm", None), nn.LayerNorm)
+        and not getattr(merger, "use_postshuffle_norm", False)  # the norm is over each patch, before the packing
+        and all(isinstance(getattr(hf, size, None), int) for size in sizes)
+    )
+    return tower if fits else None
+
+
+def _without_frozen(module: nn.Module, state_dict: dict, prefix: str, local_metadata: dict) -> None:
+    """The tower backbone's state_dict post-hook: the weights it keeps frozen (module.frozen) are left out. A plain
+    function of the module rather than a bound method, so that a copy of the eyes (the running average) keeps it."""
+    for key in module.frozen:
+        state_dict.pop(prefix + key, None)
+
+
+class _TowerBackbone(nn.Module):
+    """The vision tower of a vision-language model of the Qwen-VL kind, frozen: [N, 3, S, S] in 0..1 to [N, P, D],
+    projected linearly to the eyes' width. With Qwen3-VL-2B it is the tower the first design's reasoner looks through.
+
+    What it is for. That reasoner writes "2 shoots" for 105 of 108 plants with three (architecture-v2.md, section 1).
+    Its tower is frozen: either its patch features do not carry the count, or the merger that packs each 2 x 2 group of
+    patches into one token for the language model loses it, or the language model does not read it. The eyes' decoder
+    and heads, trained on the frozen tower's tokens with the eyes' labels and data, tell the first two apart:
+
+      tower_tokens "patches": the tower's last block's output as the merger reads it, each patch normalised by the
+                              merger's own LayerNorm, before the merger packs each 2 x 2 group into one token: one
+                              token per patch of 16 pixels (196 per 224-pixel image);
+      tower_tokens "merged":  the merger's output, the tokens the language model is given in the place of the image (49
+                              per 224-pixel image; the model's own get_image_features). Qwen3-VL also adds features of
+                              three earlier blocks, merged by mergers of their own ("deepstack"), to the hidden states
+                              of its first language-model layers; those are not among them.
+
+    So the two differ by the packing alone. The last block's output itself is not what the merger reads: in
+    Qwen3-VL-2B two of its 1024 channels reach about 2000 and vary from patch to patch (token norms from about 70 to
+    2900; normalised, 5 to 46; the merged tokens' at most 60). Projected as it is, a few tokens would take all of the
+    decoder's attention at the start of training, a handicap the merged tokens do not have.
+
+    The model is loaded whole (AutoModelForImageTextToText) and only its tower is kept: the language model goes. The
+    images are prepared here, on their device, as the model's image processor prepares them (pixel_values): its mean
+    and std; the image repeated over the tower's temporal patch (to the tower an image is a video of one frame, twice);
+    the patches in its order, each 2 x 2 group of neighbouring patches one after the other (which lets the merger pack
+    them by a reshape), and each patch flattened as (channel, frame, row, column); grid_thw (1, S / 16, S / 16) per
+    image. The image is not resized: the reasoner was given its 224-pixel images whole (qwen_reasoner.yaml bounds the
+    processor's pixel count at 224 x 224), where Qwen3-VL's own bounds would scale them up to 256 pixels.
+
+    The patch tokens are taken by a forward hook on the merger's norm, for the length of the tower's own forward: the
+    patch embedding, the position embeddings and the attention within each image are the model's code, not a copy of
+    it. The decoder does not care about the order of the tokens; they stay in the tower's.
+
+    Frozen (tower_trainable_layers 0), the tower runs under torch.no_grad(). With n, its last n blocks are trained,
+    and its merger with "merged"; the blocks before them hold no weight that needs a gradient, so autograd records
+    nothing there. The tower stays in eval mode whatever the eyes' mode: it is read as it was trained.
+
+    A checkpoint holds what is trained, the projection and any blocks (and merger) trained, not the frozen weights:
+    whenever the eyes are built, also by load_eyes, the tower is loaded from tower_name, and loading a state dict
+    keeps those weights where it does not carry them."""
+
+    def __init__(self, config: EyesConfig):
+        super().__init__()
+        from transformers import AutoImageProcessor, AutoModelForImageTextToText
+
+        name = config.tower_name
+        local = Path(name).is_dir()  # a local directory is read as it is, never looked up on the hub
+        try:
+            # the weights in the type they were saved in (Qwen3-VL: bfloat16): the language model is let go below, and
+            # the tower turned into float32, exactly
+            model = AutoModelForImageTextToText.from_pretrained(name, local_files_only=local, dtype="auto")
+        except ValueError as error:  # a model of no vision-language class: the message lists every class it knows
+            reason = str(error).split("Model type should be")[0].strip()
+            raise ValueError(f"tower: {name} does not load as a vision-language model ({reason})") from error
+        tower = _vision_tower(model)
+        if tower is None:
+            raise ValueError(
+                f"tower: {name} ({type(model).__name__}) has no vision tower of the Qwen-VL kind: a module `visual` "
+                "with transformer `blocks` and a `merger` that normalises each patch (`merger.norm`) and packs "
+                "neighbouring patches into the language model's tokens, and patch_size, temporal_patch_size, "
+                "spatial_merge_size, hidden_size and out_hidden_size in its configuration"
+            )
+        del model  # the language model is not kept
+        self.tower = tower.float().eval()
+        hf = tower.config
+        self.patch, self.temporal, self.merge = hf.patch_size, hf.temporal_patch_size, hf.spatial_merge_size
+        self.merged = config.tower_tokens == "merged"
+        if config.image_size % (self.patch * self.merge):
+            raise ValueError(
+                f"tower: images of {config.image_size} pixels are not whole {self.merge} x {self.merge} groups of "
+                f"patches of {self.patch} pixels: use a multiple of {self.patch * self.merge}"
+            )
+        side = config.image_size // self.patch
+        self.count = side * side // (self.merge**2 if self.merged else 1)  # tokens per image
+
+        # the image processor's numbers: its mean and std, and the patch sizes it cuts images into for this tower
+        processor = AutoImageProcessor.from_pretrained(name, local_files_only=local)
+        cut = tuple(getattr(processor, k, None) for k in ("patch_size", "temporal_patch_size", "merge_size"))
+        if cut != (self.patch, self.temporal, self.merge):
+            raise ValueError(
+                f"tower: the image processor of {name} cuts patches (size, frames, merge) {cut}, its tower takes "
+                f"{(self.patch, self.temporal, self.merge)}"
+            )
+        if not (processor.do_rescale and processor.do_normalize and math.isclose(processor.rescale_factor, 1 / 255)):
+            raise ValueError(f"tower: the image processor of {name} does not scale pixels by 1/255 and normalise them")
+        # not in a checkpoint: they come from tower_name, as the frozen weights do
+        for buffer, value in (("mean", processor.image_mean), ("std", processor.image_std)):
+            value = np.broadcast_to(np.asarray(value, dtype=np.float32), 3)
+            self.register_buffer(buffer, torch.tensor(value).view(1, 3, 1, 1), persistent=False)
+
+        self.tower.requires_grad_(False)
+        self.frozen_all = config.tower_trainable_layers == 0
+        n = config.tower_trainable_layers
+        if n > len(self.tower.blocks):
+            raise ValueError(f"tower_trainable_layers {n}: the tower of {name} has {len(self.tower.blocks)} blocks")
+        trained = list(self.tower.blocks)[-n:] if n else []
+        if n and self.merged:
+            trained.append(self.tower.merger)
+        for module in trained:
+            module.requires_grad_(True)
+        # Fixed here, not read from requires_grad when saving: the running average has requires_grad off everywhere
+        names = {key for key, p in self.tower.named_parameters() if p.requires_grad}
+        self.frozen = [f"tower.{key}" for key in self.tower.state_dict() if key not in names]
+        self.register_state_dict_post_hook(_without_frozen)
+        self.proj = nn.Linear(hf.out_hidden_size if self.merged else hf.hidden_size, config.hidden_dim)
+
+    def train(self, mode: bool = True) -> "_TowerBackbone":
+        super().train(mode)
+        self.tower.eval()
+        return self
+
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        # A checkpoint leaves out the frozen weights (_without_frozen): they stay the ones loaded from tower_name. They
+        # are put in where missing, before the tower's own modules read the state dict.
+        tower = self.tower.state_dict(keep_vars=True)
+        for key in self.frozen:
+            state_dict.setdefault(prefix + key, tower[key.removeprefix("tower.")])
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
+
+    def pixel_values(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Images [N, 3, S, S] in 0..1 as the model's image processor writes them: pixel_values [N * (S / p)^2,
+        3 * t * p * p] (p pixels a patch, t frames) and grid_thw [N, 3], on the CPU as the processor gives it (the
+        tower reads it with Python loops)."""
+        n, channels, size = x.shape[0], x.shape[1], x.shape[-1]
+        p, t, m = self.patch, self.temporal, self.merge
+        side = size // p
+        x = ((x.float() - self.mean) / self.std)[:, None].expand(n, t, channels, size, size)  # one frame, t times
+        # [N, frame, channel, block row, row in block, pixel row, block column, column in block, pixel column] to
+        # [N, block row, block column, row in block, column in block, channel, frame, pixel row, pixel column]
+        x = x.reshape(n, t, channels, side // m, m, p, side // m, m, p).permute(0, 3, 6, 4, 7, 2, 1, 5, 8)
+        return x.reshape(n * side * side, channels * t * p * p), torch.tensor([[1, side, side]] * n)
+
+    def tokens(self, x: torch.Tensor) -> torch.Tensor:
+        """The tower's own tokens of images [N, 3, S, S] in 0..1, before the projection: [N, P, D], D its width
+        before the merger (patches) or after it (merged)."""
+        pixels, grid = self.pixel_values(x)
+        kept = []  # the patches as the merger reads them: its norm's output
+        hook = None
+        if not self.merged:
+            hook = self.tower.merger.norm.register_forward_hook(lambda _, args, out: kept.append(out))
+        try:
+            with torch.no_grad() if self.frozen_all else contextlib.nullcontext():
+                out = self.tower(pixels, grid_thw=grid)
+        finally:
+            if hook is not None:
+                hook.remove()
+        if self.merged:
+            tokens = out[0] if isinstance(out, (tuple, list)) else out  # Qwen3-VL: (merged, deepstack features)
+        elif len(kept) == 1:
+            tokens = kept[0]
+        else:
+            raise RuntimeError(f"tower: the merger's norm ran {len(kept)} times in one forward of the tower, not once")
+        return tokens.reshape(x.shape[0], self.count, tokens.shape[-1])
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.proj(self.tokens(x))
+
+
 # ------------------------------------------------------------------------------------------------------- model
 class Eyes(nn.Module):
     """Images to a scene: forward gives raw outputs, loss trains them, decode reads them as percepts, see serves one
-    request. `pretrained` (hf backbone only) False skips the model's pretrained weights, for load_eyes."""
+    request. `pretrained` (hf backbone only) False skips the model's pretrained weights, for load_eyes; the tower
+    backbone always loads its tower, whose frozen weights no checkpoint holds."""
 
     def __init__(self, config: EyesConfig | None = None, pretrained: bool = True):
         super().__init__()
         self.config = config = config or EyesConfig()
         width = config.hidden_dim
-        self.backbone = _ViTBackbone(config) if config.backbone == "vit" else _HFBackbone(config, pretrained)
+        if config.backbone == "vit":
+            self.backbone = _ViTBackbone(config)
+        elif config.backbone == "hf":
+            self.backbone = _HFBackbone(config, pretrained)
+        else:
+            self.backbone = _TowerBackbone(config)
         self.view_embedding = nn.Parameter(torch.randn(len(config.views), width) * 0.02)
         self.queries = nn.Parameter(torch.randn(config.slots + 2, width) * 0.02)  # the slots, the flower, the card
         layer = nn.TransformerDecoderLayer(
@@ -581,7 +790,8 @@ def save(run_dir: str | Path, k: int, model: Eyes, ema: nn.Module | None = None,
 
 def load_eyes(run_dir: str | Path, checkpoint: int | None = None, weights: str = "ema", device: str = "cpu") -> Eyes:
     """The eyes of a run (train_eyes.py), in eval mode: checkpoint `checkpoint` (the latest by default), its averaged
-    weights ("ema", as the policies are evaluated) or the trained ones ("model")."""
+    weights ("ema", as the policies are evaluated) or the trained ones ("model"). The tower backbone's frozen weights
+    are loaded from its tower_name again (the checkpoint holds the rest)."""
     if weights not in ("ema", "model"):
         raise ValueError(f"weights {weights!r}: 'ema' or 'model'")
     run = Path(run_dir)

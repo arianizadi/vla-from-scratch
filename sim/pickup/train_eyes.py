@@ -26,7 +26,7 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 
-from .eyes import CONFIG_FILE, TARGETS, Eyes, EyesConfig, checkpoints, evaluate, save
+from .eyes import CONFIG_FILE, TARGETS, TOWER_TOKENS, Eyes, EyesConfig, checkpoints, evaluate, save
 from .eyes_data import SceneFrames, collate
 
 FINISHED = "Model has seen the desired number of samples"
@@ -98,9 +98,14 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--cameras", nargs="+", default=["front", "wrist"], help="front, wrist, plant (the plant crop)")
     ap.add_argument("--frames", nargs="+", type=int, default=[0], help="frame offsets: -20 0 adds 1 s earlier")
-    ap.add_argument("--backbone", choices=("vit", "hf"), default="vit")
+    ap.add_argument("--backbone", choices=("vit", "hf", "tower"), default="vit")
     ap.add_argument("--hf_name", default=None, help="hf: a model name or a local directory")
     ap.add_argument("--hf_trainable_layers", type=int, default=0, help="hf: train its last n layers (0: frozen)")
+    ap.add_argument("--tower_name", default=None, help="tower: a vision-language model's name or local directory")
+    ap.add_argument(
+        "--tower_tokens", choices=TOWER_TOKENS, default="patches", help="tower: before its merger, or after it"
+    )
+    ap.add_argument("--tower_trainable_layers", type=int, default=0, help="tower: train its last n blocks (0: frozen)")
     ap.add_argument("--workers", type=int, default=8, help="data-loader workers")
     ap.add_argument("--checkpoints", type=int, default=10)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -123,6 +128,9 @@ def main(argv=None):
         backbone=args.backbone,
         hf_name=args.hf_name,
         hf_trainable_layers=args.hf_trainable_layers,
+        tower_name=args.tower_name,
+        tower_tokens=args.tower_tokens,
+        tower_trainable_layers=args.tower_trainable_layers,
     )
     found = checkpoints(out)
     if found and not args.resume:
