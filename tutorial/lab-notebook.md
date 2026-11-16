@@ -1064,14 +1064,16 @@ demonstrations, 20M samples), final checkpoint, trained / averaged weights, succ
 | Frames t-1 and t, no previous action (`dp_vit_lang_frames`) | `dp_vit_lang_frames_prune2k_rs_tail10_20m` | 53/100 / 35/100 | 1 | about 810 | 81/100 / 79/100 |
 | Frames t-20 and t (1 s back), no previous action (`dp_vit_lang_frames_1s`), seed 42 | `dp_vit_lang_frames_1s_prune2k_rs_tail10_20m` | 77/100 / 70/100 | 2 | about 700 | 81/100 / 79/100 |
 | The same, seed 43 | `..._seed43` | 86/100 / 89/100 | 4 | about 680 | 44/100 / 56/100 |
+| The same, seed 44 | `..._seed44` | 93/100 / 90/100 | 1 | about 670 | 80/100 / 78/100 |
 
 Averaged weights per checkpoint, 1 s memory: seed 42: 8, 32, 36, 56, 63, 65, 73, 73, 69, 76, 70; seed 43: 13, 50, 78,
-77, 77, 84, 87, 79, 90, 80, 89. The previous action breaks the policy again (it repeats its last action, as with
+77, 77, 84, 87, 79, 90, 80, 89; seed 44: 1, 37, 49, 74, 85, 87, 91, 91, 91, 93, 90. The previous action breaks the policy again (it repeats its last action, as with
 `pick_target`), and the previous frame alone does worse than no memory. A frame from a second ago does not hurt the
-seed that learned well without memory (70-77 against 79-81) and lifts the seed that learned late from 56 to 89, the
-best final score of any pruning run so far, holding 79-90 over its last six checkpoints. It does not make the policy
+seed that learned well without memory (70-77 against 79-81), lifts the seed that learned late from 56 to 89, and
+lifts seed 44 from 78 to 90 (93 trained, 1 flower touched): over three seeds 70/89/90 against 79/56/78 without memory,
+the best final scores of any pruning runs so far. It does not make the policy
 faster (about 680-700 steps per success, as without memory, against the expert's 515): it fails less often, not
-quicker. Two seeds are not enough to call it; a third seed (44) is training.
+quicker. Over three seeds the memory helps on average (83 against 71) and on two of the three.
 
 **Test situations and robustness.** `tutorial/test-situations.md` adds situations on top of any plant task
 (`--scenario`): changed lighting, a knocked camera, another bench, distractor objects, wind, a bumped plate, a sticky
