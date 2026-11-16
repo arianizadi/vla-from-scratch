@@ -352,6 +352,170 @@ def test_each_part_keeps_the_sighting_its_state_rests_on_and_the_one_that_marked
     assert "evidence" not in snap["parts"][0]  # each part's own entry is as it was
 
 
+# ---------------------------------------------------------------------------------- memory: unseen parts, revoked cuts
+def _with(scene, *parts):
+    """`scene` with more parts reported (the eyes' other slots)."""
+    return S.Scene([*scene.parts, *parts], scene.flower, scene.label, scene.p_flower, scene.p_label)
+
+
+def test_without_unseen_a_part_the_eyes_are_sure_of_but_judge_no_camera_shows_changes_nothing():
+    plain, told = S.SceneMemory(stable=2), S.SceneMemory(stable=2)
+    ghost = _part(0.15, 0.7, p=1.0, vis=False)  # sure it is there, and that no camera shows it
+    two, cut = _scene(_part(0.08), _part(0.115)), _scene(_part(0.08), _part(0.115, cut=True))
+    for step, scene in enumerate([_scene(), two, two, two, cut, cut, _scene(), _scene(), two, two]):
+        assert told.update(_with(scene, ghost), step) == plain.update(scene, step)
+        assert told.snapshot() == plain.snapshot()
+    assert len(told.parts) == 2 and told.parts[1].cut and told.settled
+
+
+def test_without_unseen_a_sighting_2cm_off_a_remembered_part_still_founds_a_phantom():
+    memory = S.SceneMemory(stable=2)
+    _feed(memory, _scene(_part(0.10)), 2)
+    _feed(memory, _scene(_part(0.12)), 2, step=2)  # the same shoot read 2 cm high: beyond `match`, so another part
+    assert [r.height for r in memory.parts] == pytest.approx([0.10, 0.12])
+
+
+def test_with_unseen_a_part_no_camera_shows_is_added_and_its_first_seen_sighting_replaces_its_height():
+    memory = S.SceneMemory(stable=3, unseen=True)
+    low = _part(0.08, 1.0)
+    for step, (h, b) in enumerate([(0.128, 0.3), (0.13, 0.4), (0.132, 0.5)]):  # the eyes are sure, the cameras not
+        memory.update(_scene(low, _part(h, b, p=1.0, vis=False)), step)
+    lowest, part = memory.parts
+    assert part.height == pytest.approx(0.13) and part.bearing == 0.5  # the mean height, the last bearing
+    assert (part.sightings, part.seen_step, part.evidence, part.cut) == (0, -1, None, False)
+    assert (lowest.sightings, lowest.seen_step) == (3, 2) and not memory.settled  # it grew at the third look
+    memory.update(_scene(low, _part(0.121, -0.2)), 3)  # a camera shows it now, 9 mm lower
+    assert part.height == pytest.approx(0.121) and part.bearing == -0.2
+    assert (part.sightings, part.seen_step) == (1, 3) and part.evidence == dict(step=3, p=0.95, p_cut=None, cut=False)
+    memory.update(_scene(low, _part(0.123, -0.2)), 4)
+    assert part.height == pytest.approx(0.122) and not memory.settled  # the mean of the seen sightings alone
+    assert memory.update(_scene(low, _part(0.13, 2.0, p=1.0, vis=False)), 5)  # three counted updates without growth
+    assert memory.settled and part.height == pytest.approx(0.122) and part.bearing == -0.2 and part.sightings == 2
+    assert memory.text() == "2 shoots, red flower"
+
+
+def test_with_unseen_updates_that_count_only_unseen_parts_found_and_settle_the_inventory():
+    for unseen in (False, True):
+        memory = S.SceneMemory(stable=2, unseen=unseen)
+        _feed(memory, _scene(_part(0.09, p=1.0, vis=False), _part(0.13, p=1.0, vis=False)), 4)
+        assert (len(memory.parts), memory.settled) == ((2, True) if unseen else (0, False)), unseen
+
+
+def test_with_unseen_an_unseen_sighting_neither_feeds_nor_breaks_a_cut_row_and_leaves_its_part_as_it_is():
+    memory = S.SceneMemory(stable=3, unseen=True)
+    _feed(memory, _scene(_part(0.10, 0.2)), 3)
+    (part,) = memory.parts
+    _feed(memory, _scene(_part(0.10, 0.2, cut=True)), 2, step=3)  # two seen sightings in a row that say cut
+    _feed(memory, _scene(_part(0.105, 1.5, cut=True, p=1.0, vis=False)), 3, step=5)  # unseen, saying cut: no more
+    _feed(memory, _scene(_part(0.095, -1.5, p=1.0, vis=False)), 3, step=8)  # unseen, saying not cut: no fewer
+    assert not part.cut
+    assert part.height == pytest.approx(0.10) and (part.bearing, part.sightings, part.seen_step) == (0.2, 5, 4)
+    assert part.evidence == dict(step=4, p=0.95, p_cut=None, cut=True)
+    memory.update(_scene(_part(0.10, 0.2, cut=True)), 11)  # the third seen sighting in a row that says cut
+    assert part.cut and part.cut_evidence == dict(step=11, p=0.95, p_cut=None, cut=True)
+
+
+def test_with_unseen_a_sighting_nearer_than_the_separation_to_a_remembered_part_founds_nothing_seen_or_unseen():
+    for visible in (True, False):
+        memory = S.SceneMemory(stable=2, unseen=True)
+        _feed(memory, _scene(_part(0.075)), 2)
+        _feed(memory, _scene(_part(0.075), _part(0.10, p=1.0, vis=visible)), 6, step=2)  # 2.5 cm above: ambiguous
+        _feed(memory, _scene(_part(0.095, p=1.0, vis=visible)), 6, step=8)  # 2 cm above, alone: once a phantom
+        assert [r.id for r in memory.parts] == [0], visible
+        _feed(memory, _scene(_part(0.075), _part(0.115, p=1.0, vis=visible)), 2, step=14)  # 4 cm above: a shoot
+        # 3.5 cm above that one, as near as two shoots get (0.15 - 0.115 < 0.035 in floats): a shoot too
+        _feed(memory, _scene(_part(0.075), _part(0.115), _part(0.15, p=1.0, vis=visible)), 2, step=16)
+        assert [r.height for r in memory.parts] == pytest.approx([0.075, 0.115, 0.15]), visible
+
+
+def test_with_unseen_a_shoot_whose_height_is_read_a_few_mm_towards_its_neighbour_is_still_a_shoot():
+    # Shoots are 3.5 cm apart at the nearest, and the separation leaves room for the error of a height: a sighting
+    # 3 cm from a remembered part is another shoot (S.SEPARATE * match is 2.6 cm), one 2.5 cm from it is not
+    assert S.SEPARATE * S.SceneMemory().match == pytest.approx(0.02625)
+    for visible in (True, False):
+        memory = S.SceneMemory(stable=2, unseen=True)
+        _feed(memory, _scene(_part(0.115)), 2)
+        _feed(memory, _scene(_part(0.115), _part(0.145, p=1.0, vis=visible)), 2, step=2)
+        assert [r.height for r in memory.parts] == pytest.approx([0.115, 0.145]), visible
+
+
+def test_with_unseen_a_part_no_camera_has_shown_takes_its_first_seen_sighting_from_further_than_match():
+    memory = S.SceneMemory(stable=2, unseen=True)
+    low = _part(0.08)
+    _feed(memory, _scene(low, _part(0.15, 0.5, p=1.0, vis=False)), 2)  # founded where the eyes judged it to be
+    _, part = memory.parts
+    memory.update(_scene(low, _part(0.128, -0.2)), 2)  # shown 2.2 cm lower: beyond match, within the separation
+    assert len(memory.parts) == 2 and part.height == pytest.approx(0.128) and part.bearing == -0.2
+    assert (part.sightings, part.seen_step) == (1, 2)
+    memory.update(_scene(low, _part(0.15, 0.5)), 3)  # once seen it is where it was seen: 2.2 cm from it is ambiguous
+    assert len(memory.parts) == 2 and part.height == pytest.approx(0.128) and part.sightings == 1
+    # a part that has been seen is never moved that far: the same sighting founds nothing and moves nothing
+    seen = S.SceneMemory(stable=2, unseen=True)
+    _feed(seen, _scene(low, _part(0.15, 0.5)), 2)
+    _feed(seen, _scene(low, _part(0.128, -0.2)), 4, step=2)
+    assert [r.height for r in seen.parts] == pytest.approx([0.08, 0.15])
+
+
+def test_with_revoke_a_cut_is_unmarked_by_revoke_confident_sightings_in_a_row_of_the_part_not_cut():
+    memory = S.SceneMemory(stable=3, revoke=3)
+    _feed(memory, _scene(_part(0.10)), 3)
+    (part,) = memory.parts
+    _feed(memory, _scene(_part(0.10, cut=True, p_cut=0.9)), 3, step=3)  # the jaws closed beside it: it seems cut
+    assert part.cut and part.cut_evidence == dict(step=5, p=0.95, p_cut=0.9, cut=True)
+    assert _feed(memory, _scene(_part(0.10, p_cut=0.1)), 3, step=6) == [False, False, True]  # unmarked: a fact
+    assert not part.cut and part.cut_evidence is None and part.revocations == 1
+    assert part.evidence == dict(step=8, p=0.95, p_cut=0.1, cut=False)
+    snap = json.loads(json.dumps(memory.snapshot()))
+    assert snap["evidence"] == [dict(id=0, evidence=part.evidence, cut_evidence=None, revocations=1)]
+    assert snap["parts"][0]["cut"] is False and "revocations" not in snap["parts"][0]
+    _feed(memory, _scene(_part(0.10, cut=True, p_cut=0.9)), 2, step=9)  # its cut row started again
+    assert not part.cut
+    assert memory.update(_scene(_part(0.10, cut=True, p_cut=0.9)), 11)
+    assert part.cut and part.cut_evidence["step"] == 11 and part.revocations == 1
+
+
+def test_with_revoke_an_unsure_sighting_breaks_the_row_and_a_look_that_does_not_see_the_part_leaves_it():
+    sure, unsure = _scene(_part(0.10, p_cut=0.1)), _scene(_part(0.10, p_cut=0.5))
+    for unseen in (False, True):
+        memory = S.SceneMemory(stable=2, revoke=3, unseen=unseen)
+        _feed(memory, _scene(_part(0.10)), 2)
+        _feed(memory, _scene(_part(0.10, cut=True)), 2, step=2)
+        (part,) = memory.parts
+        _feed(memory, sure, 2, step=4)
+        memory.update(unsure, 6)  # it says not cut, but not surely enough: the row is broken
+        _feed(memory, sure, 2, step=7)
+        memory.update(_scene(_part(0.10, cut=True, p_cut=0.5)), 9)  # it says cut, unsure of it: broken again
+        _feed(memory, sure, 2, step=10)
+        memory.update(_scene(_part(0.10, p_cut=0.1, p=1.0, vis=False)), 12)  # no camera shows it (an unseen sighting)
+        memory.update(_scene(), 13)  # the arm hides the plant
+        assert part.cut and part.revocations == 0, unseen
+        memory.update(sure, 14)
+        assert not part.cut and part.revocations == 1, unseen
+
+
+def test_with_revoke_the_truth_of_a_part_not_cut_counts_as_sure():
+    def truth(cut):
+        return S.Scene([S.Part(0.10, 0.0, cut, True, views=(True, False))], "red", "none")
+
+    memory = S.SceneMemory(stable=1, p_min=0.0, revoke=2)
+    memory.update(truth(False), 0)
+    memory.update(truth(True), 1)
+    (part,) = memory.parts
+    assert part.cut
+    assert _feed(memory, truth(False), 2, step=2) == [False, True]
+    assert not part.cut and part.revocations == 1
+
+
+def test_without_revoke_a_cut_is_never_unmarked_and_the_snapshot_is_as_it_was():
+    memory = S.SceneMemory(stable=2)
+    _feed(memory, _scene(_part(0.10)), 2)
+    _feed(memory, _scene(_part(0.10, cut=True)), 2, step=2)
+    assert not any(_feed(memory, _scene(_part(0.10, p_cut=0.0)), 20, step=4))  # sure it is not cut, twenty times
+    (part,) = memory.parts
+    assert part.cut and part.revocations == 0 and part.cut_evidence["step"] == 3
+    assert set(memory.snapshot()["evidence"][0]) == {"id", "evidence", "cut_evidence"}
+
+
 # ------------------------------------------------------------------------------------------------ simulator tests
 def _env(task):
     pytest.importorskip("mujoco")

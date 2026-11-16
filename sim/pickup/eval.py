@@ -509,6 +509,19 @@ def main():
     )
     ap.add_argument("--slow_p_min", type=float, default=0.7, help="v2: the confidence a percept needs to count")
     ap.add_argument(
+        "--slow_unseen",
+        action="store_true",
+        help="v2: a part the eyes are sure of counts as being there although they see no camera show it (it is "
+        "added, never marked cut by such sightings; scene.SceneMemory unseen)",
+    )
+    ap.add_argument(
+        "--slow_revoke",
+        type=int,
+        default=0,
+        help="v2: a part marked cut is unmarked after this many confident sightings in a row of it not cut "
+        "(scene.SceneMemory revoke). 0: a cut is never unmarked",
+    )
+    ap.add_argument(
         "--patience", type=int, default=160, help="v2: control steps without progress before a recovery (--recover)"
     )
     ap.add_argument(
@@ -517,6 +530,12 @@ def main():
         default=0,
         help="v2: the most recoveries per episode (a scripted move out of the plant); after them the slow level gives "
         "up. 0: none, and no limit on slowness but the episode's own",
+    )
+    ap.add_argument(
+        "--slow_give_up",
+        type=int,
+        default=40,
+        help="v2: control steps a verdict (complete or failed) must stand before the episode ends",
     )
     ap.add_argument(
         "--park_reset",
@@ -540,9 +559,15 @@ def main():
             "--scene eyes and --program writer are served by slow_server.py: give its --slow_port"
         )
         assert args.recover >= 0 and args.patience >= 1, "--recover must be 0 or more and --patience 1 or more"
+        assert args.slow_revoke >= 0 and args.slow_give_up >= 0, (
+            "--slow_revoke must be 0 or more and --slow_give_up 0 or more"
+        )
     else:
         assert (args.scene, args.program, args.slow_port, args.recover) == ("truth", "gold", None, 0), (
             "--scene, --program, --slow_port and --recover are for --slow_level v2"
+        )
+        assert (args.slow_unseen, args.slow_revoke, args.slow_give_up) == (False, 0, 40), (
+            "--slow_unseen, --slow_revoke and --slow_give_up are for --slow_level v2"
         )
     writer = None
     if env.reason:
@@ -606,6 +631,9 @@ def main():
             p_min=args.slow_p_min,
             patience=args.patience,
             max_recoveries=args.recover,
+            give_up=args.slow_give_up,
+            unseen=args.slow_unseen,
+            revoke=args.slow_revoke,
         )
 
     episodes, latencies = [], []

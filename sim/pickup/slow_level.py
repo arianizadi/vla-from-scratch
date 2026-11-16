@@ -13,7 +13,9 @@ and adds what the loop needs and no single part has:
 
   Monitored transitions. What was cut is what the memory saw cut, never what a sub-goal asked for: Complete comes
   only once every shoot meant has been seen cut (`stable` looks in a row), and a shoot seen cut that was to stay makes
-  the plan say Failed. The step at which the plan first said Complete is kept (declared_complete).
+  the plan say Failed. The step at which the plan first said Complete is kept (declared_complete). The plan is stepped
+  at every look, so a verdict goes when its grounds do (a shoot found later, a cut the memory unmarks: SceneMemory's
+  revoke); one that gives way to no verdict at the next look is counted as withdrawn (verdicts_withdrawn).
   Holding. While a fact is missing (the inventory is not settled, the flower's colour is not known) the arm holds the
   command it is under for one control step and the slow level looks again. An inventory of fewer than two or more than
   three parts is held the same way: the fast level knows the shoots of such a plant by no name.
@@ -62,6 +64,8 @@ STAYED = "a shoot that was to stay is cut"  # program.Plan's reason for a cut th
 OUTCOMES = ("open", "confirmed", "violated", "superseded", "gave_up")  # of an attempt in the ledger
 TURN = math.radians(10)  # the target's bearing moving by more than this is progress: the plant is being turned
 CHECKS = ("parts", "cut", "label", "flower")  # the memory against the simulator, at every look (memory_right)
+# The memory's errors that no lag explains (memory_false): more parts than the plant has, a cut the plant does not have
+FALSE_CHECKS = ("parts", "cut")
 CAMERAS = ("front", "wrist", "plant")  # what the eyes can ask for: the two cameras and the plant crop
 HOME_STEPS = 40  # a recovery without a preamble: control steps of the straight line in joint space to the home pose
 JAWS_OPEN = 1.0  # the gripper's command at the start of every episode (env.reset)
@@ -103,12 +107,14 @@ class Supervisor:
     program         what to carry out: a program (program.py), its text, or None. Text that does not parse, and None,
                     make every decision Failed ("no program")
     stable, p_min   the scene memory's (scene.SceneMemory)
+    unseen, revoke  the scene memory's options (scene.SceneMemory, rules 1 to 3), off by default
     patience        control steps a sub-goal may stand with nothing progressing before a recovery is asked for
     max_recoveries  how many recoveries may be asked for; then Failed ("no progress"). 0: no such rule at all
     give_up         control steps a Complete or a Failed must stand before `done`
 
     `step(percept, step)` takes one look; `step` is the control step, and every clock above counts control steps. The
-    runner holds the arm for one control step per hold, so `hold_steps` counts those steps.
+    runner holds the arm for one control step per hold, so `hold_steps` counts those steps. `withdrawn` counts the
+    looks at which a verdict (Complete or Failed) that stood at the look before gave way to no verdict.
 
     `ledger`: one entry per attempt (see the module's docstring), plain data: {"sub_goal", "part" (the target's id, None
     for the label), "position", "expected" (what the sub-goal is meant to bring about, in words), "opened", "closed"
@@ -116,12 +122,16 @@ class Supervisor:
     An attempt opens when a decision first gives a sub-goal other than "stop" that differs from the open attempt's, or
     names another part. A hold leaves it open. The evidence of a confirmed cut is the part's cut_evidence
     (scene.Remembered), of the card {"step", "label"}: the look at which the memory read it; of a violation, the
-    cut_evidence of the shoot that was to stay, with its id ("part").
+    cut_evidence of the shoot that was to stay, with its id ("part"). An entry once closed stays as it is: a confirmed
+    cut that the memory unmarks later (revoke) is still confirmed there, and the plan's next Execute of that part opens
+    another attempt.
     """
 
-    def __init__(self, program, stable=3, p_min=0.7, patience=160, max_recoveries=0, give_up=40):
+    def __init__(
+        self, program, stable=3, p_min=0.7, patience=160, max_recoveries=0, give_up=40, unseen=False, revoke=0
+    ):
         assert patience >= 1 and max_recoveries >= 0 and give_up >= 0, (patience, max_recoveries, give_up)
-        self.memory = SceneMemory(stable=stable, p_min=p_min)
+        self.memory = SceneMemory(stable=stable, p_min=p_min, unseen=unseen, revoke=revoke)
         self.text, self.plan = _compile(program)
         self.patience, self.max_recoveries, self.give_up = patience, max_recoveries, give_up
         self.decision: Decision | None = None  # the last one
@@ -132,6 +142,7 @@ class Supervisor:
         self.recoveries = 0
         self.recovery_steps: list[int] = []
         self.declared_complete: int | None = None  # the control step at which the plan first said Complete
+        self.withdrawn = 0  # verdicts that gave way to no verdict at the next look
         self._step = 0  # the step of the last look
         # Progress (rule d): the state it is measured against, the bearings watched then, and since when it stands
         self._state: tuple | None = None
@@ -217,6 +228,8 @@ class Supervisor:
         if not self.outcomes or self.outcomes[-1][1:] != [decision.kind, shown]:
             self.outcomes.append([step, decision.kind, shown])
         verdict = (decision.kind, decision.detail) if decision.kind in ("complete", "failed") else None
+        if self._verdict is not None and verdict is None:  # withdrawn; one that changes into another is not
+            self.withdrawn += 1
         if verdict != self._verdict:  # a verdict that changes, or goes, starts the clock again
             self._verdict, self._verdict_since = verdict, step
 
@@ -290,14 +303,16 @@ class Supervisor:
 
     def record(self) -> dict:
         """Plain types, for the episode's record: the program run, the last decision's kind and its failure (if it
-        failed), the step of the first Complete, the outcome changes, the counters, the ledger (an attempt still
-        unresolved is "open") and the memory's snapshot."""
+        failed), the step of the first Complete, the verdicts withdrawn, the outcome changes, the counters, the cuts
+        the memory unmarked (revocations, over every part), the ledger (an attempt still unresolved is "open") and the
+        memory's snapshot."""
         last = self.decision
         return dict(
             program=self.text,
             final=None if last is None else last.kind,
             failure=last.detail if last is not None and last.kind == "failed" else None,
             declared_complete=self.declared_complete,
+            verdicts_withdrawn=self.withdrawn,
             outcomes=[list(outcome) for outcome in self.outcomes],
             looks=self.looks,
             hold_steps=self.hold_steps,
@@ -305,6 +320,7 @@ class Supervisor:
             recoveries=self.recoveries,
             recovery_steps=list(self.recovery_steps),
             rebinds=0 if self.plan is None else int(self.plan.rebinds),
+            revocations=sum(int(part.revocations) for part in self.memory.parts),
             ledger=[
                 dict(entry, evidence=None if entry["evidence"] is None else dict(entry["evidence"]))
                 for entry in self.ledger
@@ -351,7 +367,7 @@ class SlowLevel:
                     server's language model writes for the instruction, once per episode
     server          an open connection to a slow server (slow_server.py); needed for the eyes and for the writer
     stable          the memory's rows; by default 1 for the truth (it is exact) and 3 for the eyes
-    p_min, patience, max_recoveries, give_up: the Supervisor's
+    p_min, patience, max_recoveries, give_up, unseen, revoke: the Supervisor's
     truth           what gives the simulator's truth (default scene.scene_truth); a stand-in for tests
 
     reset() after env.reset (and any random start); tick(obs, history) at every look; record(info) at the end of an
@@ -370,6 +386,8 @@ class SlowLevel:
         patience: int = 160,
         max_recoveries: int = 0,
         give_up: int = 40,
+        unseen: bool = False,
+        revoke: int = 0,
         truth=None,
     ):
         assert scene in SCENES, f"scene {scene!r}: one of {SCENES}"
@@ -379,6 +397,7 @@ class SlowLevel:
         self.env, self.scene, self.source, self.server = env, scene, program, server
         self.stable = (1 if scene == "truth" else 3) if stable is None else stable
         self.p_min, self.patience, self.max_recoveries, self.give_up = p_min, patience, max_recoveries, give_up
+        self.unseen, self.revoke = unseen, revoke
         self.truth = scene_truth if truth is None else truth
         self.info: dict | None = None  # the slow server's
         if scene == "eyes" or program == "writer":
@@ -398,6 +417,7 @@ class SlowLevel:
         self._looked = 0
         self._right = dict.fromkeys(CHECKS, 0)
         self._wrong = dict.fromkeys(CHECKS, False)
+        self._false = dict.fromkeys(FALSE_CHECKS, False)
 
     @property
     def offsets(self) -> list[int]:
@@ -433,12 +453,22 @@ class SlowLevel:
             reply = self._ask({"cmd": "write", "instruction": env.instruction})
             self._write_s.append(float(reply["latency_s"]))
             given = self.written = str(reply["program"])
-        self.supervisor = Supervisor(given, self.stable, self.p_min, self.patience, self.max_recoveries, self.give_up)
+        self.supervisor = Supervisor(
+            given,
+            self.stable,
+            self.p_min,
+            self.patience,
+            self.max_recoveries,
+            self.give_up,
+            unseen=self.unseen,
+            revoke=self.revoke,
+        )
         plan = self.supervisor.plan
         self.meaning = None if self.gold is None else plan is not None and equivalent(plan.program, self.gold)
         self._looked = 0
         self._right = dict.fromkeys(CHECKS, 0)
         self._wrong = dict.fromkeys(CHECKS, False)
+        self._false = dict.fromkeys(FALSE_CHECKS, False)
 
     def tick(self, obs: dict, history=None) -> Decision:
         """One look at the scene now (`obs`: the newest observation; `history`: frames to reach back to, for eyes that
@@ -468,13 +498,15 @@ class SlowLevel:
 
     def _compare(self):
         """The memory against the simulator (CHECKS), for the record only. A flower or a card colour not known yet is
-        not wrong; the shoots cut are compared as positions on each one's own plant."""
+        not wrong; the shoots cut are compared as positions on each one's own plant. FALSE_CHECKS are the errors that
+        are not mere lag: more parts than the plant has, a position marked cut that the simulator does not have cut."""
         env, memory = self.env, self.supervisor.memory
         count = len(env.active)
         cut = {_position_name(env.active.index(name), count) for name in env.cut if name in env.active}
+        marked = {memory.position(part.id) for part in memory.parts if part.cut}
         right = dict(
             parts=len(memory.parts) == count,
-            cut={memory.position(part.id) for part in memory.parts if part.cut} == cut,
+            cut=marked == cut,
             label=memory.label_read is None or memory.label_read == env.label_colour,
             flower=memory.flower is None or memory.flower == env.flower_colour,
         )
@@ -482,13 +514,19 @@ class SlowLevel:
         for name, ok in right.items():
             self._right[name] += int(ok)
             self._wrong[name] = self._wrong[name] or not ok
+        # positions are named over each side's own count: a cut can be judged only when the counts agree
+        errors = dict(parts=len(memory.parts) > count, cut=len(memory.parts) == count and not marked <= cut)
+        for name, made in errors.items():
+            self._false[name] = self._false[name] or made
 
     def record(self, info: dict) -> dict:
         """The episode's record, plain types (`info`: the simulator's last). The Supervisor's record and: where the
         percepts and the program came from, the task's own program (gold) and what the writer wrote, whether the
-        program run means the same as the task's, false_complete (Complete was declared and the simulator does not
-        count the episode a success), memory_right (per check, the share of looks at which the memory agreed with the
-        simulator and whether it ever disagreed), and the median latencies of the server's see and write in ms."""
+        program run means the same as the task's, false_complete (Complete was declared at some look and the simulator
+        does not count the episode a success), ended_false_complete (the same with Complete as the last decision: one
+        that was withdrawn does not count), memory_right (per check, the share of looks at which the memory agreed
+        with the simulator and whether it ever disagreed), memory_false (per FALSE_CHECKS, whether the memory ever made
+        that error) and the median latencies of the server's see and write in ms."""
         record = self.supervisor.record()
         shares = {name: self._right[name] / self._looked if self._looked else None for name in CHECKS}
         return dict(
@@ -498,7 +536,9 @@ class SlowLevel:
             written=self.written,
             program_meaning=self.meaning,
             false_complete=record["declared_complete"] is not None and not bool(info.get("success")),
+            ended_false_complete=record["final"] == "complete" and not bool(info.get("success")),
             memory_right={name: dict(share=shares[name], ever_wrong=self._wrong[name]) for name in CHECKS},
+            memory_false=dict(self._false),
             see_ms=_median_ms(self._see_s),
             write_ms=_median_ms(self._write_s),
             **record,
@@ -511,6 +551,8 @@ class SlowLevel:
             program=self.source,
             stable=self.stable,
             p_min=self.p_min,
+            unseen=self.unseen,
+            revoke=self.revoke,
             patience=self.patience,
             max_recoveries=self.max_recoveries,
             give_up=self.give_up,
@@ -574,12 +616,15 @@ def _mean(values) -> float | None:
 
 def summary(episodes: list[dict]) -> dict:
     """results.json's v2 section, from eval.py's per-episode records (each with "success" and "v2", SlowLevel.record):
-    successes; episodes in which Complete was declared, and false completions among them; failures by the reason of
-    the last decision; programs with the right meaning (of those that have a task's program to compare with);
-    recoveries (asked for, episodes with one, successes among those); the mean hold steps; per check of the memory
-    against the simulator, the mean of its share of looks right and the number of episodes in which it was ever wrong;
-    the median latencies of the server's see and write; the ledgers' attempts by outcome, summed over the episodes, and
-    repeated_targets, the episodes in which one part was the target of more than one attempt."""
+    successes; episodes in which Complete was declared, false completions among them, and those that ended on one
+    (records written before that was kept count every false completion); failures by the reason of the last decision;
+    programs with the right meaning (of those that have a task's program to compare with); recoveries (asked for,
+    episodes with one, successes among those); the mean hold steps; per check of the memory
+    against the simulator, the mean of its share of looks right and the number of episodes in which it was ever wrong,
+    and per FALSE_CHECKS the number of episodes in which it made that error; the cuts the memory unmarked (in all, and
+    the episodes with one) and the verdicts withdrawn; the median latencies of the server's see and write; the ledgers'
+    attempts by outcome, summed over the episodes, and repeated_targets, the episodes in which one part was the target
+    of more than one attempt. Records written before memory_false, revocations and verdicts_withdrawn count as none."""
     rows = [(bool(e["success"]), e["v2"]) for e in episodes if e.get("v2") is not None]
     attempts = [entry for _, r in rows for entry in r.get("ledger", [])]
     targeted = [Counter(entry["part"] for entry in r.get("ledger", []) if entry["part"] is not None) for _, r in rows]
@@ -588,11 +633,13 @@ def summary(episodes: list[dict]) -> dict:
     failures = Counter(r["failure"] for _, r in rows if r["failure"] is not None)
     see = [r["see_ms"] for _, r in rows if r["see_ms"] is not None]
     write = [r["write_ms"] for _, r in rows if r["write_ms"] is not None]
+    revoked = [r.get("revocations", 0) for _, r in rows]
     return dict(
         episodes=len(rows),
         successes=sum(ok for ok, _ in rows),
         declared_complete=sum(r["declared_complete"] is not None for _, r in rows),
         false_complete=sum(bool(r["false_complete"]) for _, r in rows),
+        ended_false_complete=sum(bool(r.get("ended_false_complete", r["false_complete"])) for _, r in rows),
         failures=dict(sorted(failures.items())),
         programs_right_meaning=sum(compared),
         programs_compared=len(compared),
@@ -601,6 +648,9 @@ def summary(episodes: list[dict]) -> dict:
         mean_inventory_hold_steps=_mean(r["inventory_hold_steps"] for _, r in rows),
         memory_right={name: _mean(r["memory_right"][name]["share"] for _, r in rows) for name in CHECKS},
         memory_ever_wrong={name: sum(r["memory_right"][name]["ever_wrong"] for _, r in rows) for name in CHECKS},
+        memory_false={name: sum(bool(r.get("memory_false", {}).get(name)) for _, r in rows) for name in FALSE_CHECKS},
+        revocations=dict(total=sum(revoked), episodes=sum(n > 0 for n in revoked)),
+        verdicts_withdrawn=sum(r.get("verdicts_withdrawn", 0) for _, r in rows),
         see_ms=float(np.median(see)) if see else None,
         write_ms=float(np.median(write)) if write else None,
         ledger=dict(

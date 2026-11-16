@@ -21,7 +21,9 @@ the arm is in the way, and when it is cut its stub stays at that height. The mem
 and only from evidence that is confident and repeated: a part is added once it has been seen `stable` updates in a
 row, and marked cut once it has been seen cut that often. Nothing is removed, and nothing is marked cut because it went
 out of view or because an action was meant to cut it: a plan made from the memory follows what happened, not what was
-intended.
+intended. Two options, off by default, answer errors the eyes make (SceneMemory, rules 1 to 3): `unseen` takes a part
+they are sure of but judge no camera to show as being there, and `revoke` unmarks a cut when enough confident
+sightings in a row say the part is not cut.
 
 The memory writes itself as the expert's notes write what they see (reasoning.note_text, field `see`), so a reasoner
 reads the same line whether the notes or the memory wrote it, with the shoots cut added:
@@ -43,6 +45,9 @@ from . import reasoning
 # The card in the pot: none, one that does not show its face to the front camera, or the colour of its face
 LABELS = ("none", "unreadable", "white", "yellow", "cyan")
 NO_COLOUR = ("none", "unreadable")
+# SceneMemory with `unseen`: a sighting founds a new part only at least this many `match` from every remembered
+# part. Shoots are at least 2 * match apart; the half between is left for the error of a height
+SEPARATE = 1.5
 
 
 def _r(x) -> float:
@@ -302,20 +307,22 @@ class Remembered:
     """A part of the inventory."""
 
     id: int  # stable for the episode: the order of discovery
-    height: float  # the mean of its counted sightings
+    height: float  # the mean of its seen sightings (rule 2: of the unseen ones that founded it, while it has none)
     cut: bool = False
-    bearing: float | None = None  # its last counted sighting (meaningless once cut)
-    sightings: int = 0
+    bearing: float | None = None  # its last seen sighting's, or the last founding unseen one's (meaningless once cut)
+    sightings: int = 0  # seen sightings only
     seen_step: int = -1
     attributes: dict[str, str] = field(default_factory=dict)
-    # What the memory holds about the part rests on a look: its last counted sighting, and the sighting at which it was
-    # marked cut (kept from then on), each {"step", "p", "p_cut", "cut"} as that percept said them
+    # What the memory holds about the part rests on a look: its last seen sighting, and the sighting at which it was
+    # marked cut (kept from then on, cleared if the cut is unmarked), each {"step", "p", "p_cut", "cut"} as that
+    # percept said them
     evidence: dict | None = None
     cut_evidence: dict | None = None
+    revocations: int = 0  # how often its cut was unmarked (rule 3)
 
 
 def _sighting(sighting: Part, step: int) -> dict:
-    """A counted sighting as plain data: the look's control step, and what the percept said of the part."""
+    """A seen sighting as plain data: the look's control step, and what the percept said of the part."""
     p_cut = None if sighting.p_cut is None else _r(sighting.p_cut)
     return dict(step=int(step), p=_r(sighting.p), p_cut=p_cut, cut=bool(sighting.cut))
 
@@ -342,27 +349,46 @@ def _nearest_pairs(a: list[float], b: list[float], limit: float) -> list[tuple[i
 class SceneMemory:
     """The scene over an episode, from scene records (percepts or the truth), by rules that need no training:
 
-    1. Only confident evidence counts: a part when p >= p_min and it is visible, the flower when p_flower >= p_min,
-       the label when p_label >= p_min.
-    2. A part is known by its height on the main stem. A counted part is matched to the nearest remembered part within
-       `match` metres (one to one, the nearest pairs first); one that matches none is a candidate, and a candidate
-       counted in `stable` updates in a row becomes a remembered part with the next id. Parts are never removed.
-    3. A part is marked cut after `stable` counted sightings in a row that say cut (a sighting says cut when its `cut`
-       is set and its p_cut, if any, is at least p_min) and is never unmarked. A part that goes out of view is not cut.
+    1. Only confident evidence counts: a part when p >= p_min and it is visible (a seen sighting), the flower when
+       p_flower >= p_min, the label when p_label >= p_min. With `unseen`, a part with p >= p_min that is not visible
+       counts too (an unseen sighting), as evidence that it exists and of nothing else.
+    2. A part is known by its height on the main stem. A counted sighting, seen or unseen, is matched to the nearest
+       remembered part within `match` metres (one to one, the nearest pairs first): a seen one updates the part (its
+       height is the mean of its seen sightings, its bearing, seen_step and evidence the last one's, `sightings` their
+       number), an unseen one leaves it as it is. One that matches none is a candidate, and a candidate counted in
+       `stable` updates in a row (by seen sightings, unseen ones or both) becomes a remembered part with the next id.
+       A part founded on unseen sightings alone has their mean height and the last one's bearing, sightings 0,
+       seen_step -1 and no evidence; its first seen sighting replaces that height, and until then a seen sighting
+       that matched nothing is taken for it up to SEPARATE * match away. With `unseen`, a sighting that matches none
+       starts or continues a candidate only at least SEPARATE * match from every remembered part (no two shoots are
+       nearer than 2 * match, and the rest is left for the error of a height); one nearer is ambiguous and is dropped
+       for the update. Parts are never removed.
+    3. A part is marked cut after `stable` seen sightings in a row that say cut (a sighting says cut when its `cut` is
+       set and its p_cut, if any, is at least p_min). A part that goes out of view is not cut, and an unseen sighting
+       neither counts toward the row nor breaks it. With revoke 0 a cut is never unmarked. With `revoke` > 0 it is
+       unmarked after `revoke` seen sightings in a row that say, with confidence, that it is not cut (its `cut` is not
+       set and its p_cut, if any, is at most 1 - p_min); any other seen sighting breaks that row, and an update that
+       does not see the part neither counts nor breaks it. Unmarking clears cut_evidence, starts the cut row again and
+       is counted in revocations.
     4. The flower's colour is known after `stable` confident percepts of one colour in a row and changes only after
        `stable` of another. label_now is debounced the same way; label_read is its first colour and is kept when the
        card leaves view, replaced only by `stable` confident readings in a row of another colour. Percepts that are not
        confident neither count toward a row nor break it.
     5. `settled`: at least `stable` updates were made and the inventory did not grow in the last `stable` updates in
-       which a part was counted (updates that count no part, the arm hiding the plant, say nothing about it).
+       which a part was counted, seen or unseen (updates that count no part, the arm hiding the plant, say nothing
+       about it).
     6. Positions are named over the whole inventory, cut or not, as the expert's notes name them.
     7. With stable=1, p_min=0 and the simulator's truth as the percept, the memory is the truth after one update (of
-       the parts a camera shows: rule 1 counts nothing else).
+       the parts a camera shows: rule 1 counts nothing else; with `unseen` the others are listed too, uncut).
     """
 
-    def __init__(self, stable: int = 3, p_min: float = 0.7, match: float = 0.0175):
+    def __init__(
+        self, stable: int = 3, p_min: float = 0.7, match: float = 0.0175, unseen: bool = False, revoke: int = 0
+    ):
         assert stable >= 1, stable
+        assert revoke >= 0, revoke
         self.stable, self.p_min, self.match = stable, p_min, match
+        self.unseen, self.revoke = unseen, revoke
         self.reset()
 
     def reset(self):
@@ -374,7 +400,8 @@ class SceneMemory:
         self.updates = 0
         self._next_id = 0
         self._candidates: list[list[tuple[Part, int]]] = []  # each: its sightings (part, step), one per update in a row
-        self._cut_rows: dict[int, int] = {}  # part id -> counted sightings in a row that say cut
+        self._cut_rows: dict[int, int] = {}  # part id -> seen sightings in a row that say cut
+        self._uncut_rows: dict[int, int] = {}  # part id -> seen sightings in a row sure it is not cut (rule 3, revoke)
         self._attribute_rows: dict[tuple[int, str], tuple[str, int]] = {}  # (part id, attribute) -> (value, row)
         self._flower_row: tuple[str | None, int] = (None, 0)
         self._label_row: tuple[str | None, int] = (None, 0)
@@ -383,11 +410,11 @@ class SceneMemory:
     # ----------------------------------------------------------------------------------------------- updating
     def update(self, scene: Scene, step: int) -> bool:
         """Take in what is seen now (`step`: the control step, kept as each part's seen_step). True when a fact a plan
-        depends on changed: a part was added or marked cut, an attribute became known, the flower, either label field
-        or `settled` changed. A bearing or a height moving is not such a fact."""
+        depends on changed: a part was added, marked cut or unmarked, an attribute became known, the flower, either
+        label field or `settled` changed. A bearing or a height moving is not such a fact."""
         before = self._facts()
         self.updates += 1
-        counted = [p for p in scene.parts if p.visible and p.p >= self.p_min]
+        counted = [p for p in scene.parts if (p.visible or self.unseen) and p.p >= self.p_min]  # rule 1
         grew = self._update_parts(counted, step)
         if counted:
             self._grew.append(grew)
@@ -409,12 +436,26 @@ class SceneMemory:
         return (value, row[1] + 1) if row[0] == value else (value, 1)
 
     def _update_parts(self, counted: list[Part], step: int) -> bool:
-        """Match the counted parts to the inventory, then to the candidates; True if the inventory grew."""
+        """Match the counted sightings to the inventory, then to the candidates; True if the inventory grew."""
         matched = _nearest_pairs([p.height for p in counted], [r.height for r in self.parts], self.match)
         for i, j in matched:
-            self._observe(self.parts[j], counted[i], step)
+            if counted[i].visible:  # an unseen sighting only accounts for the part it matches
+                self._observe(self.parts[j], counted[i], step)
         taken = {i for i, _ in matched}
+        if self.unseen:
+            far = SEPARATE * self.match  # the separation of rule 2
+            # A part no camera has shown yet has only an estimate of its height: a seen sighting that matched nothing
+            # is taken for it up to that separation, and from then on the part is where it was seen
+            held = {j for _, j in matched}
+            loose = [j for j, r in enumerate(self.parts) if not r.sightings and j not in held]
+            seen = [i for i, p in enumerate(counted) if i not in taken and p.visible]
+            pairs = _nearest_pairs([counted[i].height for i in seen], [self.parts[j].height for j in loose], far)
+            for a, b in pairs:
+                self._observe(self.parts[loose[b]], counted[seen[a]], step)
+                taken.add(seen[a])
         rest = [p for i, p in enumerate(counted) if i not in taken]
+        if self.unseen:
+            rest = [p for p in rest if all(abs(p.height - r.height) >= far for r in self.parts)]
         heights = [sum(p.height for p, _ in c) / len(c) for c in self._candidates]
         pairs = _nearest_pairs([p.height for p in rest], heights, self.match)
         rows = [[*self._candidates[j], (rest[i], step)] for i, j in pairs]
@@ -430,16 +471,20 @@ class SceneMemory:
             part = Remembered(id=self._next_id, height=sightings[0][0].height)
             self._next_id += 1
             for sighting, at in sightings:
-                self._observe(part, sighting, at)
+                if sighting.visible:
+                    self._observe(part, sighting, at)
+            if not part.sightings:  # founded on unseen sightings alone: the best estimates there are
+                part.height = sum(p.height for p, _ in sightings) / len(sightings)
+                part.bearing = float(sightings[-1][0].bearing)
             self.parts.append(part)
             grew = True
         self.parts.sort(key=lambda r: r.height)
         return grew
 
     def _observe(self, part: Remembered, sighting: Part, step: int):
-        """One counted sighting of a remembered part."""
+        """One seen sighting of a remembered part."""
         n = part.sightings
-        part.height = (part.height * n + sighting.height) / (n + 1)
+        part.height = (part.height * n + sighting.height) / (n + 1)  # the first replaces an unseen estimate
         part.sightings, part.bearing, part.seen_step = n + 1, float(sighting.bearing), step
         part.evidence = _sighting(sighting, step)
         says_cut = sighting.cut and (sighting.p_cut is None or sighting.p_cut >= self.p_min)
@@ -447,7 +492,13 @@ class SceneMemory:
         if self._cut_rows[part.id] >= self.stable:
             if not part.cut:
                 part.cut_evidence = dict(part.evidence)  # the sighting that made it count
-            part.cut = True  # and never back
+            part.cut = True  # and never back, but by revoke
+        if self.revoke:
+            sure_uncut = not sighting.cut and (sighting.p_cut is None or sighting.p_cut <= 1 - self.p_min)
+            self._uncut_rows[part.id] = self._uncut_rows.get(part.id, 0) + 1 if sure_uncut else 0
+            if part.cut and self._uncut_rows[part.id] >= self.revoke:
+                part.cut, part.cut_evidence, part.revocations = False, None, part.revocations + 1
+                self._cut_rows[part.id] = self._uncut_rows[part.id] = 0
         for key, value in sighting.attributes.items():
             row = self._row(self._attribute_rows.get((part.id, key), (None, 0)), value)
             self._attribute_rows[(part.id, key)] = row
@@ -493,7 +544,7 @@ class SceneMemory:
 
     def snapshot(self) -> dict:
         """Plain types, for logs. The evidence of each part (Remembered.evidence, cut_evidence) is listed apart, by id,
-        in the inventory's order."""
+        in the inventory's order, with its revocations when the memory can unmark a cut (revoke)."""
         return dict(
             parts=[
                 dict(
@@ -519,6 +570,7 @@ class SceneMemory:
                     id=int(r.id),
                     evidence=None if r.evidence is None else dict(r.evidence),
                     cut_evidence=None if r.cut_evidence is None else dict(r.cut_evidence),
+                    **(dict(revocations=int(r.revocations)) if self.revoke else {}),  # without revoke, as it always was
                 )
                 for r in self.parts
             ],

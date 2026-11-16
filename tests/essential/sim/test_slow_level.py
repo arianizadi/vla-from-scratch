@@ -15,7 +15,7 @@ import json
 import re
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -411,6 +411,119 @@ def test_the_no_progress_rule_gives_up_the_attempt_with_its_recoveries_counted()
     assert _ledger(run) == [_entry("cut the middle shoot", 1, 40, 536, "gave_up", recoveries=2)]
 
 
+# ------------------------------------------------------------------------- the memory's options: revoke and unseen
+def test_with_revoke_a_false_complete_is_withdrawn_once_the_shoot_is_seen_whole_and_done_waits_for_one_that_stands():
+    plant = Plant()
+    run = Run("Cut(Rank(1,top))", plant, obey=False, revoke=3, give_up=5)
+    sup, done = run.supervisor, []
+
+    def look(n):
+        for _ in range(n):
+            run.look()
+            done.append(sup.done)
+
+    look(6)  # held five looks, then "cut the highest shoot"
+    plant.cut.add(2)  # the eyes say it is cut: the jaws closed beside it
+    look(3)  # seen cut at steps 6, 7 and 8: Complete at 8
+    plant.cut.discard(2)  # the jaws open: it is seen whole
+    look(3)  # at steps 9, 10 and 11: the cut is unmarked at 11, and the plan says Execute again
+    assert _runs(run.decisions) == [
+        (*HOLD, 5),
+        ("execute", "cut the highest shoot", 3),
+        ("complete", "stop", 3),
+        ("execute", "cut the highest shoot", 1),
+    ]
+    part = sup.memory.parts[2]
+    assert sup.withdrawn == 1 and not part.cut and part.cut_evidence is None and part.revocations == 1
+    plant.cut.add(2)  # now it is cut
+    look(8)  # seen cut at steps 12, 13 and 14: Complete from 14, which stands its 5 steps at 19
+    assert [d.kind for d in run.decisions[12:]] == ["execute"] * 2 + ["complete"] * 6
+    assert done == [False] * 19 + [True]
+    record = sup.record()
+    assert record["declared_complete"] == 8 and record["verdicts_withdrawn"] == 1 and record["revocations"] == 1
+    # the first attempt stays confirmed by the sighting that misled the memory; the Execute after it opened another
+    assert _ledger(run) == [
+        _entry("cut the highest shoot", 2, 5, 8, "confirmed", dict(step=8, **SEEN_CUT)),
+        _entry("cut the highest shoot", 2, 11, 14, "confirmed", dict(step=14, **SEEN_CUT)),
+    ]
+
+
+def test_with_revoke_a_failure_for_a_shoot_that_was_to_stay_seen_cut_is_withdrawn_the_same_way():
+    plant = Plant()
+    run = Run("Cut(Rank(1,top))", plant, obey=False, revoke=3)
+    run.look(6)
+    plant.cut.add(0)  # the lowest, which is to stay, seems cut
+    run.look(3)
+    plant.cut.discard(0)
+    run.look(3)
+    assert _runs(run.decisions) == [
+        (*HOLD, 5),
+        ("execute", "cut the highest shoot", 3),
+        ("failed", "stop", 3),
+        ("execute", "cut the highest shoot", 1),
+    ]
+    assert run.decisions[8].detail == L.STAYED and run.supervisor.withdrawn == 1 and not run.supervisor.done
+    assert _ledger(run) == [
+        _entry("cut the highest shoot", 2, 5, 8, "violated", dict(step=8, **SEEN_CUT, part=0)),
+        _entry("cut the highest shoot", 2, 11, None, "open"),
+    ]
+
+
+def test_without_revoke_a_false_complete_and_a_false_failure_stand_as_before():
+    for seen_cut, kind in ((2, "complete"), (0, "failed")):
+        plant = Plant()
+        run = Run("Cut(Rank(1,top))", plant, obey=False, give_up=5)
+        run.look(6)
+        plant.cut.add(seen_cut)
+        run.look(3)
+        plant.cut.discard(seen_cut)  # seen whole from step 9: it changes nothing
+        run.look(6)
+        sup = run.supervisor
+        assert [d.kind for d in run.decisions[8:]] == [kind] * 7, kind
+        assert sup.withdrawn == 0 and sup.done and sup.memory.parts[seen_cut].cut, kind
+        assert (sup.record()["verdicts_withdrawn"], sup.record()["revocations"]) == (0, 0), kind
+
+
+def test_a_verdict_that_goes_is_withdrawn_and_one_that_changes_into_another_is_not():
+    plant = Plant(hidden={1})
+    run = Run("Cut(Middle())", plant)
+    run.look(30)  # failed since step 5: a plant of two has no middle shoot
+    plant.hidden.clear()
+    run.look(8)  # the third shoot is added at step 32: no verdict while the plant settles again, then Execute
+    assert [kind for _, kind, _ in run.supervisor.outcomes] == [
+        "need_observation",
+        "failed",
+        "need_observation",
+        "execute",
+    ]
+    assert run.supervisor.withdrawn == 1
+
+    plant = Plant()
+    run = Run("Cut(Rank(2,top))", plant)
+    run.look(30)  # complete since step 8
+    plant.cut.add(0)  # then a shoot that was to stay is seen cut: Failed from step 32
+    run.look(5)
+    assert [kind for _, kind, _ in run.supervisor.outcomes][-2:] == ["complete", "failed"]
+    assert run.supervisor.withdrawn == 0
+
+
+def test_with_unseen_a_shoot_the_eyes_are_sure_of_but_judge_no_camera_shows_ends_the_hold_on_an_inventory_of_one():
+    def run(unseen):
+        # Two shoots, the upper one shown a little by the wrist camera only: the eyes judge that no camera shows it
+        run = Run("Cut(Rank(1,top))", Plant(heights=HEIGHTS[:2], hidden={1}), obey=False, unseen=unseen)
+        run.look(20)
+        return run
+
+    held = run(unseen=False)  # as before: an inventory of one, held for as long as the image does not change
+    assert _runs(held.decisions) == [(*HOLD, 20)] and held.supervisor.inventory_hold_steps == 15
+    assert len(held.supervisor.memory.parts) == 1 and held.supervisor.memory.settled
+    told = run(unseen=True)
+    assert _runs(told.decisions) == [(*HOLD, 5), ("execute", "cut the highest shoot", 15)]
+    memory = told.supervisor.memory
+    assert memory.settled and [(part.sightings, part.seen_step) for part in memory.parts] == [(20, 19), (0, -1)]
+    assert memory.parts[1].height == pytest.approx(HEIGHTS[1])  # the unseen sightings' height, never seen since
+
+
 # ------------------------------------------------------------------------------------ the slow level, stand-ins
 class StubEnv:
     """What the slow level reads of a PickupEnv: a plant task, its shoots (lowest first) and those cut, the flower and
@@ -506,6 +619,7 @@ def test_a_complete_the_simulator_does_not_confirm_is_a_false_completion():
         env.steps += 1
     record = slow.record({"success": False})
     assert record["declared_complete"] == 1 and record["final"] == "complete" and record["false_complete"] is True
+    assert record["ended_false_complete"] is True  # and it is the last decision
     # the memory says the highest is cut and the simulator does not, at every look from the first
     assert record["memory_right"]["cut"] == dict(share=0.0, ever_wrong=True)
     assert record["memory_right"]["parts"] == dict(share=1.0, ever_wrong=False)
@@ -522,6 +636,75 @@ def test_a_misread_flower_or_card_is_in_the_record_and_one_not_read_yet_is_not_w
     assert record["memory_right"]["flower"] == dict(share=0.0, ever_wrong=True)
     assert record["memory_right"]["label"] == dict(share=1.0, ever_wrong=False)
     assert env.cut == {"shoot0"}  # white names the lowest, read once the card faced the camera
+
+
+def test_the_record_tells_the_memory_s_false_parts_and_cuts_from_its_lag_and_counts_what_was_unmarked_or_withdrawn():
+    # The highest seems cut at the first two looks, then is seen whole: unmarked (revoke 2), then cut for real
+    env = StubEnv(ORDINAL)
+    slow = L.SlowLevel(env, truth=lambda env: _truth(env, cut={"shoot2"} if env.steps < 2 else ()), revoke=2)
+    assert (slow.settings()["unseen"], slow.settings()["revoke"]) == (False, 2)
+    slow.reset()
+    decisions = _drive(slow, env, 8)
+    assert _runs(decisions) == [
+        (*HOLD, 1),
+        ("complete", "stop", 2),
+        ("execute", "cut the highest shoot", 1),
+        ("complete", "stop", 4),
+    ]
+    record = slow.record({"success": True})
+    assert json.loads(json.dumps(record)) == record
+    assert record["memory_false"] == dict(parts=False, cut=True) and record["memory_right"]["cut"]["share"] == 5 / 8
+    assert record["revocations"] == 1 and record["verdicts_withdrawn"] == 1
+    assert record["memory"]["evidence"][2]["revocations"] == 1
+    assert record["declared_complete"] == 1 and record["false_complete"] is False
+    # had the episode failed, the withdrawn Complete would be a false completion, but not one the episode ended on
+    for _ in range(2):
+        env.steps += 1
+        slow.tick(None)
+    failed = slow.record({"success": False})
+    assert failed["false_complete"] is True and failed["ended_false_complete"] is True  # Complete stands again
+    env = StubEnv(ORDINAL)
+    slow = L.SlowLevel(env, truth=lambda env: _truth(env, cut={"shoot2"} if env.steps < 2 else ()), revoke=2)
+    slow.reset()
+    for _ in range(5):  # Complete at looks 2 and 3, withdrawn at look 4: the episode stops there, the shoot uncut
+        slow.tick(None)
+        env.steps += 1
+    stopped = slow.record({"success": False})
+    assert stopped["final"] == "execute" and stopped["verdicts_withdrawn"] == 1
+    assert stopped["false_complete"] is True and stopped["ended_false_complete"] is False
+    out = L.summary([dict(success=False, v2=record) for record in (failed, stopped)])
+    assert (out["false_complete"], out["ended_false_complete"]) == (2, 1)
+    old = {key: value for key, value in stopped.items() if key != "ended_false_complete"}
+    assert L.summary([dict(success=False, v2=old)])["ended_false_complete"] == 1  # as records were before
+
+    # The middle shoot out of view for three looks, and with stable 2 a cut seen a look after it is made: the memory is
+    # short of the plant and behind it, which is lag, not false
+    def middle_late(env):
+        scene = _truth(env)
+        return scene if env.steps >= 3 else replace(scene, parts=[scene.parts[0], scene.parts[2]])
+
+    env = StubEnv(ORDINAL)
+    late = L.SlowLevel(env, truth=middle_late, stable=2)
+    late.reset()
+    decisions = _drive(late, env, 7)
+    assert _runs(decisions) == [
+        (*HOLD, 3),  # the two shoots in view are added at step 1
+        ("execute", "cut the highest shoot", 1),  # settled at step 3, the middle one not added yet
+        (*HOLD, 2),  # added at step 4: the plant settles again while the cut made at step 3 is seen
+        ("complete", "stop", 1),
+    ]
+    record = late.record({"success": True})
+    assert record["memory_right"]["parts"]["ever_wrong"] and record["memory_right"]["cut"]["ever_wrong"]
+    assert record["memory_false"] == dict(parts=False, cut=False)
+    assert record["revocations"] == 0 and "revocations" not in record["memory"]["evidence"][0]
+
+    # A part the plant does not have is false
+    env = StubEnv(ORDINAL)
+    ghost = S.Part(0.19, 0.0, False, True, views=(True, False))
+    phantom = L.SlowLevel(env, truth=lambda env: replace(_truth(env), parts=[*_truth(env).parts, ghost]))
+    phantom.reset()
+    _drive(phantom, env, 4)
+    assert phantom.record({"success": False})["memory_false"] == dict(parts=True, cut=False)
 
 
 def test_a_written_program_is_compared_with_the_task_s_by_meaning():
@@ -741,6 +924,28 @@ def test_the_summary_sums_the_ledgers_and_counts_the_episodes_that_aimed_at_one_
     assert L.summary([])["ledger"] == dict(attempts=0, open=0, confirmed=0, violated=0, superseded=0, gave_up=0)
 
 
+def test_the_summary_counts_false_memories_revocations_and_withdrawn_verdicts_and_reads_records_without_them():
+    env = StubEnv(ORDINAL)
+    slow = L.SlowLevel(env, truth=_truth)
+    slow.reset()
+    _drive(slow, env, 4)
+    right = slow.record({"success": True})
+    assert right["memory_false"] == dict(parts=False, cut=False)
+    assert (right["revocations"], right["verdicts_withdrawn"]) == (0, 0)
+    false_cut = dict(right, memory_false=dict(parts=False, cut=True), revocations=2, verdicts_withdrawn=1)
+    phantom = dict(right, memory_false=dict(parts=True, cut=True), revocations=1, verdicts_withdrawn=3)
+    new = ("memory_false", "revocations", "verdicts_withdrawn")
+    old = {key: value for key, value in right.items() if key not in new}
+    out = L.summary([dict(success=True, v2=record) for record in (right, false_cut, phantom, old)])
+    assert json.loads(json.dumps(out)) == out
+    assert out["memory_false"] == dict(parts=1, cut=2)
+    assert out["revocations"] == dict(total=3, episodes=2) and out["verdicts_withdrawn"] == 4
+    for records in ([], [old]):  # nothing, or records written before these were kept
+        out = L.summary([dict(success=True, v2=record) for record in records])
+        assert out["memory_false"] == dict(parts=0, cut=0)
+        assert out["revocations"] == dict(total=0, episodes=0) and out["verdicts_withdrawn"] == 0
+
+
 # -------------------------------------------------------------------------------------------- the slow server
 class StubEyes:
     def __init__(self):
@@ -938,6 +1143,11 @@ V2_ARGUMENTS = [
     (["--task", "reason_mix", "--slow_level", "v2", "--recover", "-1"], "--recover must be 0 or more"),
     (["--task", "reason_mix", "--scene", "eyes"], "are for --slow_level v2"),
     (["--task", "reason_mix", "--recover", "2"], "are for --slow_level v2"),
+    (["--task", "reason_mix", "--slow_level", "v2", "--slow_revoke", "-1"], "--slow_revoke must be 0 or more"),
+    (["--task", "reason_mix", "--slow_level", "v2", "--slow_give_up", "-1"], "--slow_give_up 0 or more"),
+    (["--task", "reason_mix", "--slow_unseen"], "are for --slow_level v2"),
+    (["--task", "reason_mix", "--slow_revoke", "3"], "are for --slow_level v2"),
+    (["--task", "reason_mix", "--slow_give_up", "80"], "are for --slow_level v2"),
 ]
 
 
