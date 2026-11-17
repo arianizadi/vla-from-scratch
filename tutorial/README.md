@@ -124,6 +124,7 @@ notebook is right.
 | # | Chapter | After reading you can |
 |---|---|---|
 | 110 | [Toward Real Tasks](chapters/110-toward-real-tasks.md) | Split a real manipulation task into properties, say for each one what this repository has measured and what it has not, and run and read the first experiments that add those properties to the simulator. |
+| 111 | [Pruning a Plant](chapters/111-pruning-a-plant.md) | Follow how a policy learned to prune a potted plant on a turntable, one rung at a time, why the full task needed a longer training budget, and why takeover demonstrations first made it worse |
 | 112 | [Reasoning Before Acting](chapters/112-reasoning-before-acting.md) | Explain why a policy that maps instruction words to actions cannot solve tasks whose answer must be seen, counted or remembered, and build and measure the two designs that work it out first: a written note, then eyes, a scene memory and a written program. |
 
 ### Part 12: Appendix
