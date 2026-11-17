@@ -162,7 +162,16 @@ another shoot's makes it cut that shoot, so the text drives the action. Held-out
 **Stage 2 result (architecture v2, `tutorial/architecture-v2.md`).** Trained eyes read the plant into a part-level scene
 memory, the frozen language model writes the instruction as a typed program, and code runs it: 169/200 on training
 instructions and 148/200 held out, against 133 and 66 for stage 1; with a reset for the fast level's wrong first move,
-180/200 and 165/200 (175 and 157 on a second fast-level seed). The fast level is now the limit.
+180/200 and 165/200 (175 and 157 on a second fast-level seed). The fast level is now the limit. Two tries at a
+better fast level did not beat it: told its aim (in reach or not, which way to turn) it turns the plant reliably but
+loses as many episodes to turning past the target (163/200 and 152/200), and a frame from one second earlier does not
+help a fast level that is strong without it.
+
+**Still open: what the camera sees.** Every pruning policy collapses when the lighting, the camera pose or the bench
+changes (0-4/100, the 1 s memory policies included). Adding varied looks to a third of the demonstrations, and drawing
+the same demonstrations again in new looks (paired re-rendering), both stop the policy from learning the task at all
+(2-16/100), although frame by frame it predicts the expert's actions well in the new looks. Robustness needs another
+route: a pretrained image encoder is the next candidate.
 
 The policies here go from pixels and joint angles to joint targets in one pass. They do not reason
 in words, and the instruction has one job: to say which object. Two kinds of work would open them up.
