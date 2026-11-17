@@ -37,7 +37,8 @@ right, whatever the plant: 42-65% of the time, depending on the kind (lab notebo
 words"; `reasoning.lookup_ceiling` computes it). A policy that does not look at the flower, count the
 shoots or read the card is capped there. "The math" below works one case out by hand.
 
-**Held-out instructions** have new sentence wordings, new combinations of trained words, or both. No
+**Held-out instructions** (new instructions) put a new combination of trained words in a training
+sentence frame, a trained combination in a new frame, or both; the hidden kind has new frames only. No
 held-out instruction occurs in training.
 
 The scripted expert solves every kind 99/100. While it works, it writes a **note** at each decision
@@ -105,7 +106,7 @@ Two diagnoses, both measured in the lab notebook, section "Architecture v2", and
 - **Fine-tuning hurt its language.** As downloaded, the language model writes a program with the right
   meaning (below) for 100/100 training and 92/100 held-out instructions. With the stage-1 reasoner's
   fine-tuned weights: 71 and 60. Training on the fixed format of the notes taught it the notes and
-  cost it some of the wording it knew. Held out, the reasoner restates a new wording
+  cost it some of the wording it knew. Held out, the reasoner restates a held-out instruction
   correctly only 32-36% of the time.
 
 ## Stage 2: eyes, a scene memory and a written program
@@ -146,7 +147,7 @@ flowchart LR
 5. **Fast level**: unchanged, the same weights as in stage 1.
 
 With the program evaluated by code, new *combinations* of trained words are right by construction once
-the program is. New *wordings* stay a test of the writer.
+the program is. New sentence *frames* stay a test of the writer.
 
 **Results** (lab notebook; 200 layouts per split, the seed-43 fast level throughout; differences under
 about 15 are within noise):
@@ -167,8 +168,8 @@ mean a cut: 3-12/200). Holding an unseen part, revoking a belief after 3 contrad
 up after 80 steps take v2 on the eyes from 143 to 162 on validation layouts.
 
 *A film of it is in the site's lesson: v2 with the program it wrote and what its memory holds shown as it works,
-including a wording it never saw and a label it reads, turns away from and still remembers. This is
-the version before the reset below: 169/200 and 148/200.*
+including an instruction it never saw in training and a label it reads, turns away from and still
+remembers. This is the version before the reset below: 169/200 and 148/200.*
 
 **The fast level is now the limit.** With the eyes, v2 is within noise of the simulator's own scene,
 and with a perfect slow level the fast level still times out in 22/200, 5-8 of them with a correct
