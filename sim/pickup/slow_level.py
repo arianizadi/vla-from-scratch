@@ -34,6 +34,12 @@ and adds what the loop needs and no single part has:
   plan moved on without the effect seen) or given up (the no-progress rule). An attempt still open at the end was
   never seen to work, whatever the fast level was told.
 
+Architecture v3 (tutorial/architecture-v3.md; Supervisor with v3, on by itself for a program outside v2's language)
+adds: a plan over the worlds the unknown facts allow, in stages (program.WorldPlan); a look at one shoot whose fact is
+missing ("show the middle shoot", or a hold), bounded by one full turn of the plate; the home move on a verdict
+(Decision.home), with its own attempt in the ledger; and rule f, the cut gate (cut_gate, Supervisor.check_cut), which
+the runner asks at every control step.
+
 Supervisor holds these rules without a simulator, so that they can be tested with scripted percepts. SlowLevel is what
 eval.py --slow_level v2 drives: it takes the percepts from the simulator or from the slow server (slow_server.py), and
 at every look it compares the memory with the simulator, for the record only (nothing of it is fed back). summary
@@ -50,7 +56,20 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-from .program import Complete, Execute, NeedObservation, Plan, ProgramError, equivalent, from_task, parse
+from .program import (
+    OUT_OF_ORDER,
+    Complete,
+    Execute,
+    NeedObservation,
+    Plan,
+    ProgramError,
+    WorldPlan,
+    cannot_see,
+    equivalent,
+    from_task,
+    in_language,
+    parse,
+)
 from .program import text as program_text
 from .reasoning import aim_of, aimed, subgoal_target
 from .scene import PlantCrop, Scene, SceneMemory, _position_name, scene_truth
@@ -99,6 +118,15 @@ HOME_STEPS = 40  # a recovery without a preamble: control steps of the straight 
 JAWS_OPEN = 1.0  # the gripper's command at the start of every episode (env.reset)
 PREAMBLE_LIMIT = 200  # control steps after which a recovery ends whatever the expert is doing (its preambles take
 # at most about 100; a plate turned by hand during one starts it again)
+# Architecture v3 (tutorial/architecture-v3.md, "The plan and the runner"; Supervisor with v3)
+INSPECT = ("hold", "show")  # what a missing attribute of one shoot asks of the fast level: hold, or "show the X shoot"
+LOOK_TURN = 2 * math.pi  # a look for one fact is bounded by one full turn of the plate from when the need arose,
+LOOK_STEPS = 360  # and, where the plate does not turn (a hold), by this many control steps: two turns at the buttons'
+#                   speed (0.7 rad/s)
+HOME = "home"  # the ledger's entry for the home move that follows a verdict
+JAWS_CUTTING = sum(JAWS_CUT) / 2  # rule f: the jaws a veto leaves at the cutting width
+GATE_BAND = 0.0175  # rule f: metres; the jaws are at the part whose height is nearest, within half the least spacing
+FACING = FAR  # rule f: the part authorised faces the robot within this
 
 
 @dataclass(frozen=True)
@@ -110,6 +138,7 @@ class Decision:
     recover: bool = False  # first hand the arm to a scripted recovery (Recovery): nothing has progressed for long
     detail: str = ""  # need_observation: what is missing; failed: why; with a recovery: "no progress"
     aim: str = ""  # execute, where the slow level says it (Supervisor aim): what the shoot needs, reasoning.aim_of
+    home: bool = False  # v3: a verdict; the runner takes the arm to the home pose (Recovery then_home) and holds it
 
     @property
     def instruction(self) -> str | None:
@@ -123,17 +152,36 @@ def _wrap(angle: float) -> float:
     return (angle + math.pi) % (2 * math.pi) - math.pi
 
 
-def _compile(source) -> tuple[str | None, Plan | None]:
-    """(the program's text, a plan for it) from a program, the text of one, or None. Text that is not a program keeps
-    its text and has no plan."""
+def _compile(source, v3: bool | None = None) -> tuple[str | None, Plan | WorldPlan | None, bool]:
+    """(the program's text, a plan for it, whether it is run as v3) from a program, the text of one, or None. Text that
+    is not a program keeps its text and has no plan. v3 None: a program outside v2's language is run as v3, and text is
+    read in v2's language; v3 True: text is read in v3's language and the plan is a WorldPlan."""
     if source is None:
-        return None, None
+        return None, None, bool(v3)
     if isinstance(source, str):
         try:
-            source = parse(source)
+            source = parse(source, "v3" if v3 else "v2")
         except ProgramError:
-            return source, None
-    return program_text(source), Plan(source)
+            return source, None, bool(v3)
+    if v3 is None:
+        v3 = not in_language(source, "v2")
+    return program_text(source), WorldPlan(source) if v3 else Plan(source), v3
+
+
+def cut_gate(jaws: float, height: float | None, among: bool, parts, authorised: int | None) -> tuple[bool, int | None]:
+    """Rule f, the cut gate, as a function: may a command that sets the jaws to `jaws` (1 open, 0 shut) be carried out
+    with the gripper at `height` (metres above the stem's base) and among the shoots (`among`: near the stand's axis
+    and in the band of heights where shoots grow, from the robot's own kinematics)? `parts`: the memory's inventory
+    (`id`, `height`, `bearing`); `authorised`: the part the plan has authorised (the target of the Execute in force),
+    or None. Returns (allowed, the part at that height, or None). A command that does not shut the jaws below the
+    cutting width, or one away from the shoots, is always allowed. One that shuts them among the shoots is allowed only
+    at the part authorised (the nearest part by height, within GATE_BAND) while it faces the robot (FACING)."""
+    if not among or height is None or jaws >= JAWS_CUT[0]:
+        return True, None
+    near = min(parts, key=lambda part: abs(part.height - height), default=None)
+    at = near.id if near is not None and abs(near.height - height) <= GATE_BAND else None
+    faces = near is not None and near.bearing is not None and abs(near.bearing) <= FACING
+    return at is not None and at == authorised and faces, at
 
 
 # --------------------------------------------------------------------------------------------------------- the rules
@@ -158,6 +206,20 @@ class Supervisor:
                     (dp_vit_lang_reactive_aim.yaml). Off by default: the fast level decides by itself. A "press"
                     stands until the plate stands still (STILL), as the note it was written from stood until the
                     turn had ended: a shoot that comes within reach while the plate still turns is not yet "in reach"
+    v3              architecture v3 (tutorial/architecture-v3.md): the plan is a WorldPlan (the program evaluated in
+                    every world the unknown facts allow, in stages), a verdict asks for the home move (Decision.home),
+                    and a look for an attribute of one shoot is bounded. None (the default): v3 for a program outside
+                    v2's language, v2 otherwise, so that v2's runs are what they were; text is then read as v2's
+    inspect         v3: an attribute of one shoot that is missing asks the fast level to "show the <position> shoot"
+                    ("show") or holds ("hold", the default: the fast level has no such skill yet). Either way the look
+                    is bounded by one full turn of the plate (LOOK_TURN, from the memory's bearings) or LOOK_STEPS
+                    control steps from when the need arose; then Failed, "cannot see the tie of the middle shoot",
+                    for good: a look that fails is never a "no"
+    gate            rule f, the cut gate (`check_cut`, at every control step): a command that would shut the jaws
+                    among the shoots anywhere but at the part authorised, facing the robot, leaves them at the cutting
+                    width, is recorded as a veto and asks for a reset (as rule e does, within `resets`). Off: the same
+                    is recorded as a veto that would have been, and nothing is changed
+    attribute_rule, witness: the scene memory's (SceneMemory rules 8 and 9)
 
     `step(percept, step)` takes one look; `step` is the control step, and every clock above counts control steps. The
     runner holds the arm for one control step per hold, so `hold_steps` counts those steps. `withdrawn` counts the
@@ -186,11 +248,34 @@ class Supervisor:
         revoke=0,
         aim=False,
         resets=0,
+        v3=None,
+        inspect="hold",
+        gate=False,
+        attribute_rule="row",
+        witness=False,
     ):
         assert patience >= 1 and max_recoveries >= 0 and give_up >= 0, (patience, max_recoveries, give_up)
         assert resets >= 0, resets
-        self.memory = SceneMemory(stable=stable, p_min=p_min, unseen=unseen, revoke=revoke)
-        self.text, self.plan = _compile(program)
+        assert inspect in INSPECT, f"inspect {inspect!r}: one of {INSPECT}"
+        self.memory = SceneMemory(
+            stable=stable, p_min=p_min, unseen=unseen, revoke=revoke, attribute_rule=attribute_rule, witness=witness
+        )
+        self.text, self.plan, self.v3 = _compile(program, v3)
+        self.inspect, self.gate_on = inspect, bool(gate)
+        # v3: the look in progress ({"fact", "since", "turned"}), the bound's verdict once it ran out, the plate's turn
+        self._look: dict | None = None
+        self._look_failed: str | None = None
+        self._seen_bearings: dict[int, float] = {}  # part id -> bearing, of the parts seen at the last look
+        self.looks_asked = 0  # the looks for a fact of one shoot that began
+        self.look_turn = 0.0  # radians the plate turned while one was going on
+        self.attribute_hold_steps = 0  # looks that held for an attribute
+        self.complete_without_action: bool | None = None  # Complete declared before any sub-goal was given
+        self.home_reached: int | None = None  # the control step at which the arm was first reported home on a verdict
+        # rule f: the part authorised now, the vetoes ({"step", "at", "authorised", "carried_out"}), a reset asked
+        self._authorised: int | None = None
+        self._vetoing = False
+        self.vetoes: list[dict] = []
+        self._veto_reset = False
         self.patience, self.max_recoveries, self.give_up = patience, max_recoveries, give_up
         self.aim = bool(aim)
         self._aimed: dict[int, tuple] = {}  # part id -> (the aim last said of it, its bearing then)
@@ -223,9 +308,10 @@ class Supervisor:
         self._attempt: dict | None = None  # the open one, an entry of the ledger
         self._label_step: int | None = None  # the look at which the memory's label_read took its value
 
-    def step(self, percept: Scene, step: int, jaws: float | None = None) -> Decision:
+    def step(self, percept: Scene, step: int, jaws: float | None = None, home: bool | None = None) -> Decision:
         """Take one look at control step `step`: the memory takes the percept, the plan is stepped, the rules apply.
-        `jaws`: how far the gripper is open now (1 open, 0 shut), for rule e; None where that is not known."""
+        `jaws`: how far the gripper is open now (1 open, 0 shut), for rule e; None where that is not known. `home`
+        (v3): whether the arm is at the home pose now, from its own joint angles; None where that is not known."""
         step = int(step)
         self.looks += 1
         self._step = step
@@ -235,20 +321,83 @@ class Supervisor:
             self._label_step = step
         if self._resume:  # the first look after a recovery: the arm is the fast level's again, from now on
             self._progress_at, self._resume = step, False
-        decision, target = self._decide(step)
+        turned = self._plate_turn(step)
+        decision, target = self._decide(step, turned)
         decision = self._watch(decision, target, step)
         decision = self._reset(decision, target, jaws, step)
+        decision = self._vetoed(decision, step)
         self._keep(decision, step)
-        self._account(decision, target, step)
+        self._account(decision, target, step, home)
+        self._authorised = target if decision.kind == "execute" else None  # rule f
         self.decision = decision
         return decision
 
-    def _decide(self, step: int) -> tuple[Decision, int | None]:
-        """What the plan says for the memory now (rules a to c), and the part an Execute names."""
+    # --------------------------------------------------------------------------------------------------------- v3
+    def _plate_turn(self, step: int) -> float:
+        """How far the plate turned since the last look, from the memory's bearings of the parts seen at both (their
+        median change); 0 when no part was."""
+        seen = {part.id: part.bearing for part in self.memory.parts if part.seen_step == step}
+        changes = [_wrap(b - self._seen_bearings[i]) for i, b in seen.items() if i in self._seen_bearings]
+        self._seen_bearings = seen
+        return float(np.median(changes)) if changes else 0.0
+
+    def _inspect(self, outcome: NeedObservation, step: int, turned: float) -> Decision:
+        """v3: a fact about one shoot is missing. The look is bounded; past the bound, Failed for good."""
+        fact = (outcome.what, outcome.part)
+        if self._look is None or self._look["fact"] != fact:
+            self._look = dict(fact=fact, since=step, turned=0.0)
+            self.looks_asked += 1
+        else:
+            self._look["turned"] += abs(turned)
+            self.look_turn += abs(turned)
+        if self._look["turned"] >= LOOK_TURN or step - self._look["since"] >= LOOK_STEPS:
+            self._look_failed = cannot_see(outcome.what, self.memory.position(outcome.part))
+            return Decision("failed", STOP, detail=self._look_failed, home=True)
+        subgoal = outcome.subgoal if self.inspect == "show" else None
+        if subgoal is None:
+            self.attribute_hold_steps += 1
+        return Decision("need_observation", subgoal, detail=outcome.what)
+
+    def check_cut(self, jaws: float, height: float | None, among: bool, step: int) -> float:
+        """Rule f, at every control step: the jaws' command to carry out in place of `jaws` (cut_gate). A command
+        that shuts the jaws among the shoots is recorded for the memory's witness rule when it is carried out; one
+        that the gate refuses is a veto, recorded once per run of control steps that it lasts, and with the gate on
+        it leaves the jaws at the cutting width and asks for a reset at the next look."""
+        allowed, at = cut_gate(jaws, height, among, self.memory.parts, self._authorised)
+        shutting = among and height is not None and jaws < JAWS_CUT[0]
+        if allowed:
+            self._vetoing = False
+            if shutting:
+                self.memory.jaws_shut(height, step)
+            return jaws
+        if not self._vetoing:
+            self.vetoes.append(dict(step=int(step), at=at, authorised=self._authorised, carried_out=not self.gate_on))
+            self._veto_reset = self.gate_on
+        self._vetoing = True
+        if not self.gate_on:
+            self.memory.jaws_shut(height, step)
+            return jaws
+        return JAWS_CUTTING
+
+    def _vetoed(self, decision: Decision, step: int) -> Decision:
+        """Rule f: a veto since the last look asks for a reset, within the resets allowed."""
+        asked, self._veto_reset = self._veto_reset, False
+        if not asked or decision.home or decision.recover or self.resets >= self.max_resets:
+            return decision
+        self.resets += 1
+        self.reset_steps.append(step)
+        self._cut_row, self._cut_from = 0, None
+        self._progress_at, self._resume = step, True
+        return replace(decision, recover=True, detail="veto")
+
+    def _decide(self, step: int, turned: float = 0.0) -> tuple[Decision, int | None]:
+        """What the plan says for the memory now (rules a to c), and the part an Execute (or a look) names."""
         if self.plan is None:
-            return Decision("failed", STOP, detail="no program"), None
+            return Decision("failed", STOP, detail="no program", home=self.v3), None
         if self._given_up:  # rule d gave up: final
-            return Decision("failed", STOP, detail="no progress"), None
+            return Decision("failed", STOP, detail="no progress", home=self.v3), None
+        if self._look_failed is not None:  # v3: a look ran out of its bound: final
+            return Decision("failed", STOP, detail=self._look_failed, home=True), None
         memory = self.memory
         if memory.settled and not 2 <= len(memory.parts) <= 3:
             # Rule a: the fast level names shoots as the lowest, the middle or the highest of two or three
@@ -256,16 +405,22 @@ class Supervisor:
             self.inventory_hold_steps += 1
             return Decision("need_observation", None, detail="plant"), None
         outcome = self.plan.step(memory)
+        if not (isinstance(outcome, NeedObservation) and outcome.part is not None):
+            self._look = None  # v3: no look in progress
         if isinstance(outcome, Execute):
             aim = self._aim(outcome.part) if self.aim else ""
             return Decision("execute", outcome.subgoal, aim=aim), outcome.part
+        if isinstance(outcome, NeedObservation) and outcome.part is not None:  # v3: an attribute of one shoot
+            decision = self._inspect(outcome, step, turned)
+            return decision, outcome.part if decision.subgoal is not None else None
         if isinstance(outcome, NeedObservation):  # "show the label" for the card, else hold
             return Decision("need_observation", outcome.subgoal, detail=outcome.what), None
         if isinstance(outcome, Complete):  # every shoot meant was seen cut: the memory's rows say so, not a sub-goal
             if self.declared_complete is None:
                 self.declared_complete = step
-            return Decision("complete", STOP), None
-        return Decision("failed", STOP, detail=outcome.reason), None
+                self.complete_without_action = not self.ledger
+            return Decision("complete", STOP, home=self.v3), None
+        return Decision("failed", STOP, detail=outcome.reason, home=self.v3), None
 
     def _aim(self, target: int) -> str:
         """What the target needs, from where the memory last saw it point; a "press" is kept while the plate turns."""
@@ -344,12 +499,28 @@ class Supervisor:
         if verdict != self._verdict:  # a verdict that changes, or goes, starts the clock again
             self._verdict, self._verdict_since = verdict, step
 
-    def _account(self, decision: Decision, target: int | None, step: int):
+    def _account(self, decision: Decision, target: int | None, step: int, home: bool | None = None):
         """The ledger: the open attempt is closed by what the memory shows, by the plan moving on or by rule d, and a
-        new one opens when the decision gives the fast level a new sub-goal. Recording only: no decision reads it."""
+        new one opens when the decision gives the fast level a new sub-goal. Recording only: no decision reads it.
+        v3 adds two kinds of attempt: a look at one shoot (closed by the fact read, or given up when the look's bound
+        runs out) and the home move after a verdict (closed by the arm reported at the home pose)."""
         memory, attempt = self.memory, self._attempt
-        violated = decision.kind == "failed" and decision.detail == STAYED
-        if attempt is not None and attempt["part"] is not None:
+        violated = decision.kind == "failed" and decision.detail in (STAYED, OUT_OF_ORDER)
+        if attempt is not None and attempt.get("fact") is not None:  # v3: a look at one shoot
+            part = next((p for p in memory.parts if p.id == attempt["part"]), None)
+            if part is not None and attempt["fact"] in part.attributes:
+                self._close("confirmed", step, dict(step=step, value=part.attributes[attempt["fact"]]))
+            elif decision.kind == "failed" and decision.detail.startswith("cannot see"):
+                self._close("gave_up", step, None)
+        elif attempt is not None and attempt["sub_goal"] == HOME:  # v3: the home move
+            if not decision.home:
+                self._close("superseded", step, None)  # the verdict was withdrawn
+            elif home:
+                self.home_reached = step if self.home_reached is None else self.home_reached
+                self._close("confirmed", step, dict(step=step))
+            if decision.home:
+                return
+        elif attempt is not None and attempt["part"] is not None:
             # A cut is meant to leave its part cut and no other: a shoot that was to stay seen cut at the same look
             # makes it a violation, even with its own part cut
             part = next((p for p in memory.parts if p.id == attempt["part"]), None)
@@ -369,6 +540,11 @@ class Supervisor:
         if subgoal == STOP:  # Complete or Failed with the open attempt's effect not seen: the plan has moved on
             if self._attempt is not None:
                 self._close("superseded", step, None)
+            if decision.home and not (self.decision is not None and self.decision.home):  # v3: a verdict begins
+                self._open(step, sub_goal=HOME, part=None, position=None, expected="the arm at the home pose")
+                if home:
+                    self.home_reached = step if self.home_reached is None else self.home_reached
+                    self._close("confirmed", step, dict(step=step))
             return
         attempt = self._attempt
         if attempt is not None and (attempt["sub_goal"], attempt["part"]) == (subgoal, target):
@@ -377,6 +553,18 @@ class Supervisor:
         if attempt is not None:
             self._close("superseded", step, None)
         position = subgoal_target(subgoal)
+        if decision.kind == "need_observation" and target is not None:  # v3: "show the <position> shoot"
+            position = memory.position(target)
+            self._open(
+                step,
+                decision.recover,
+                sub_goal=subgoal,
+                part=target,
+                position=position,
+                expected=f"the {decision.detail} of the {position} shoot read",
+                fact=decision.detail,
+            )
+            return
         if position is not None:
             expected = f"the {position} shoot cut, no other shoot cut"
         else:
@@ -397,6 +585,10 @@ class Supervisor:
     def _close(self, outcome: str, step: int, evidence: dict | None):
         self._attempt.update(outcome=outcome, closed=step, evidence=evidence)
         self._attempt = None
+
+    def _open(self, step: int, recover: bool = False, **entry):
+        self._attempt = dict(entry, opened=step, closed=None, outcome="open", evidence=None, recoveries=int(recover))
+        self.ledger.append(self._attempt)
 
     def _stayed(self) -> dict | None:
         """The cut_evidence of the shoot that was to stay and was seen cut (the last such), with its id."""
@@ -438,6 +630,28 @@ class Supervisor:
                 for entry in self.ledger
             ],
             memory=self.memory.snapshot(),
+            **(dict(v3=self._record_v3()) if self.v3 else {}),
+        )
+
+    def _record_v3(self) -> dict:
+        """v3's counters (tutorial/architecture-v3.md, "What is reported")."""
+        plan = self.plan if isinstance(self.plan, WorldPlan) else None
+        return dict(
+            inspect=self.inspect,
+            gate=self.gate_on,
+            stages=None if plan is None or plan.stages is None else [list(stage) for stage in plan.stages],
+            worlds=None if plan is None else int(plan.worlds),
+            choices=None if plan is None else len(plan.choices),
+            complete_without_action=self.complete_without_action,
+            looks_asked=self.looks_asked,
+            look_turn=round(self.look_turn, 4),
+            look_failed=self._look_failed,
+            attribute_hold_steps=self.attribute_hold_steps,
+            ended_holding_for_attribute=self._look is not None
+            and self.decision is not None
+            and self.decision.kind == "need_observation",
+            vetoes=[dict(v) for v in self.vetoes],
+            home_reached=self.home_reached,
         )
 
 

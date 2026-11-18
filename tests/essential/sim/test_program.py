@@ -5,9 +5,11 @@ scene memory says what to do next with stable part identities.
 Pure Python: nothing here needs MuJoCo. The scene memory is a small fake with the fields a plan reads.
 """
 
+import itertools
 import math
 import random
 import sys
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -993,3 +995,256 @@ def test_the_program_of_each_situation_written_out():
         R.Task("ordinal", "x", "train", 3, (1,), "x", dict(k=2, end="top")),
     )
     assert P.text(P.from_scenario(env)) == "Cut(Rank(2,top))"
+
+
+# ================================================================================================ v3's plan (WorldPlan)
+def _plan(written, memory, **kwargs):
+    plan = P.WorldPlan(P.parse(written, "v3"), **kwargs)
+    return plan, plan.step(memory)
+
+
+def test_world_plan_keeps_an_order_and_fails_one_broken():
+    memory = _memory(3)
+    plan = P.WorldPlan(P.parse("CutFrom(top,All())", "v3"))
+    for expected in (2, 1, 0):
+        assert plan.step(memory) == P.Execute(f"cut the {memory.position(expected)} shoot", expected)
+        memory.parts[expected].cut = True
+    assert plan.step(memory) == P.Complete() and plan.stages == [[2], [1], [0]] and plan.targets == [0, 1, 2]
+    memory = _memory(3, bearings=[0.0, 2.0, 2.0])  # the lowest needs no turning, and still waits for its turn
+    plan = P.WorldPlan(P.parse("CutFrom(top,All())", "v3"))
+    assert plan.step(memory) == P.Execute("cut the highest shoot", 2)
+    memory.parts[0].cut = True  # the fast level cut the lowest first
+    assert plan.step(memory) == P.Failed(P.OUT_OF_ORDER)
+    # a pair: the lowest, then the highest; the middle stays
+    memory = _memory(3)
+    plan = P.WorldPlan(P.parse("Then(Cut(Rank(1,bottom)),Cut(Rank(1,top)))", "v3"))
+    assert plan.step(memory) == P.Execute("cut the lowest shoot", 0)
+    memory.parts[0].cut = True
+    assert plan.step(memory) == P.Execute("cut the highest shoot", 2)
+    memory.parts[1].cut = True
+    assert plan.step(memory) == P.Failed(P.STAYED)
+
+
+def test_world_plan_returns_to_a_stage_whose_cut_is_unmarked():
+    memory = _memory(3)
+    plan = P.WorldPlan(P.parse("CutFrom(bottom,All())", "v3"))
+    assert plan.step(memory).part == 0
+    memory.parts[0].cut = True
+    assert plan.step(memory).part == 1
+    memory.parts[0].cut = False  # the memory unmarks the cut (revoke): back to the first stage
+    assert plan.step(memory) == P.Execute("cut the lowest shoot", 0)
+    memory.parts[1].cut = True  # and the next stage's cut made meanwhile breaks the order
+    assert plan.step(memory) == P.Failed(P.OUT_OF_ORDER)
+
+
+def test_world_plan_on_a_plant_of_stubs_is_complete_with_nothing_to_do():
+    memory = _memory(3)
+    for part in memory.parts:
+        part.cut = True
+    assert _plan("Cut(All())", memory)[1] == P.Complete()
+    healthy = _memory(2)
+    for part in healthy.parts:
+        part.attributes["sick"] = "no"
+    assert _plan("Cut(Filter(sick,yes,All()))", healthy)[1] == P.Complete()
+    assert _plan("Nothing()", healthy)[1] == P.Complete()
+
+
+def test_world_plan_cuts_what_every_world_cuts_and_asks_only_for_what_decides():
+    # the design's example: the lowest known sick, the middle unread, the highest healthy
+    memory = _memory(3, bearings=[1.0, 0.0, 0.5])
+    memory.parts[0].attributes["sick"] = "yes"
+    memory.parts[2].attributes["sick"] = "no"
+    plan, outcome = _plan("Cut(Filter(sick,yes,All()))", memory)
+    assert outcome == P.Execute("cut the lowest shoot", 0) and plan.worlds == 2 and plan.stages is None
+    memory.parts[0].cut = True
+    assert plan.step(memory) == P.NeedObservation("sick", "show the middle shoot", 1)
+    memory.parts[1].attributes["sick"] = "no"
+    assert plan.step(memory) == P.Complete() and plan.stages == [[0]] and plan.worlds == 1
+    # "the highest sick shoot": the two worlds cut different shoots, so it asks first
+    memory = _memory(3)
+    memory.parts[0].attributes["sick"] = "yes"
+    memory.parts[2].attributes["sick"] = "no"
+    assert _plan("Cut(Take(1,top,Filter(sick,yes,All())))", memory)[1] == P.NeedObservation(
+        "sick", "show the middle shoot", 1
+    )
+    # a fact that cannot change what the program does is not asked for: the lowest's bud decides nothing here
+    memory = _memory(3)
+    memory.parts[1].attributes["bud"] = "no"
+    memory.parts[2].attributes["bud"] = "yes"
+    plan, outcome = _plan("Cut(Except(Filter(bud,no,Except(All(),Rank(1,bottom))),Rank(1,bottom)))", memory)
+    assert outcome == P.Execute("cut the middle shoot", 1) and plan.worlds == 1
+    # with the facts that decide unread, it asks for the one the evaluation read first
+    memory = _memory(2)
+    assert _plan("Cut(Filter(tie,red,All()))", memory)[1] == P.NeedObservation("tie", "show the lowest shoot", 0)
+    # the flower and the card as in v2
+    assert _plan("If(FlowerIs(red),Cut(Rank(1,top)),Cut(Rank(1,bottom)))", _memory(3, flower=None))[1] == (
+        P.NeedObservation("flower", None)
+    )
+    assert _plan("Cut(ReadLabel())", _memory(3))[1] == P.NeedObservation("label", "show the label")
+    # a condition whose branches agree needs no flower
+    assert _plan("If(FlowerIs(red),Cut(Rank(1,top)),Cut(Rank(1,top)))", _memory(3, flower=None))[1].part == 2
+
+
+def test_world_plan_never_takes_a_fact_it_cannot_get_for_a_no():
+    memory = _memory(3)
+    memory.parts[0].cut = True  # cut before its tie was read: its tie fell with it
+    memory.parts[1].attributes["tie"] = "none"
+    memory.parts[2].attributes["tie"] = "none"
+    assert _plan("Cut(Filter(tie,red,All()))", memory)[1] == P.Failed("cannot see the tie of the lowest shoot")
+    # one that can still be seen is asked for first
+    memory.parts[2].attributes.pop("tie")
+    assert _plan("Cut(Filter(tie,red,All()))", memory)[1] == P.NeedObservation("tie", "show the highest shoot", 2)
+
+
+def test_world_plan_frozen_attributes_keep_a_cut_target_and_a_stub_read_as_no_tie_binds_nothing_again():
+    memory = _memory(3)
+    for part, tie in zip(memory.parts, ("blue", "red", "none"), strict=True):
+        part.attributes["tie"] = tie
+    plan = P.WorldPlan(P.parse("Cut(Filter(tie,red,All()))", "v3"))
+    assert plan.step(memory) == P.Execute("cut the middle shoot", 1)
+    memory.parts[1].cut = True  # the memory keeps its red tie (SceneMemory rule 8)
+    assert plan.step(memory) == P.Complete() and plan.rebinds == 0
+    memory.parts[1].attributes["tie"] = "none"  # without the rule: the stub read as "no tie"
+    assert plan.step(memory) == P.Failed(P.STAYED) and plan.rebinds == 1
+
+
+def test_world_plan_makes_the_choice_of_any_once_and_keeps_it():
+    memory = _memory(3, bearings=[2.0, 0.1, -0.5])
+    plan = P.WorldPlan(P.parse("Cut(Take(2,any,All()))", "v3"))
+    assert plan.step(memory) == P.Execute("cut the middle shoot", 1)  # the two that need the least turning
+    assert plan.targets == [1, 2]
+    memory.parts[1].cut = True
+    memory.parts[0].bearing, memory.parts[2].bearing = 0.0, 3.0  # the plate turned: the lowest now faces the robot
+    assert plan.step(memory) == P.Execute("cut the highest shoot", 2)  # the choice stands: no new budget
+    memory.parts[2].cut = True
+    assert plan.step(memory) == P.Complete() and len(plan.choices) == 1
+    # shoots to keep are those that need the most turning: "leave exactly one"
+    memory = _memory(3, bearings=[2.0, 0.1, -0.5])
+    plan = P.WorldPlan(P.parse("Cut(Except(All(),Take(1,any,All())))", "v3"))
+    assert plan.step(memory) == P.Execute("cut the middle shoot", 1) and plan.targets == [1, 2]
+
+
+def test_world_plan_holds_until_the_plant_is_settled_and_fails_a_shoot_the_plant_does_not_have():
+    assert _plan("CutFrom(top,All())", _memory(3, settled=False))[1] == P.NeedObservation("plant", None)
+    assert _plan("CutFrom(top,Middle())", _memory(2))[1] == P.Failed("no middle shoot on a plant with 2")
+    with pytest.raises(ValueError):
+        P.WorldPlan(P.parse("Cut(ReadLabel())"), label_rule={"white": "top"})
+
+
+# ------------------------------------------------------------------------------------------------ the brute force
+def _completions(program, memory, limit=4000):
+    """Every assignment of the facts the program can read and the memory does not know, or None if more than
+    `limit`."""
+    reads_flower, reads_label, attrs = P._reads(program)
+    facts = []
+    if reads_flower and memory.flower is None:
+        facts.append((("flower",), R.FLOWERS))
+    if reads_label and memory.label_read is None:
+        facts.append((("label",), tuple(R.LABEL_MEANS)))
+    for part in memory.parts:
+        for attr in sorted(attrs):
+            if attr not in part.attributes:
+                facts.append(((attr, part.id), P.DOMAINS[attr]))
+    if math.prod(len(values) for _, values in facts) > limit:
+        return None
+    keys = [key for key, _ in facts]
+    return [dict(zip(keys, values, strict=True)) for values in itertools.product(*(v for _, v in facts))]
+
+
+def _status_in(plan, memory, completion):
+    """The world `completion` evaluated independently of WorldPlan's combination: failed, complete, or the parts of
+    its open stage."""
+    parts = list(memory.parts)
+    attributes = [{**p.attributes, **{k[0]: v for k, v in completion.items() if k[1:] == (p.id,)}} for p in parts]
+    plant = P._Shoots(
+        len(parts),
+        memory.flower or completion.get(("flower",)),
+        memory.label_read or completion.get(("label",)),
+        tuple(attributes),
+        dict(R.LABEL_MEANS),
+        plan._chooser(parts),
+    )
+    try:
+        (stages,) = P._stage_lists(plan.program, plant)
+    except P.ProgramError:
+        return ("failed",)
+    stages = [{parts[i].id for i in stage} for stage in stages]
+    cut = {p.id for p in parts if p.cut}
+    if cut - set().union(*stages):
+        return ("failed",)
+    for j, stage in enumerate(stages):
+        if stage - cut:
+            return ("failed",) if cut & set().union(*stages[j + 1 :]) else ("open", stage - cut)
+    return ("complete",)
+
+
+def test_world_plan_acts_only_on_what_every_completion_of_the_unknown_facts_agrees_on():
+    rng = random.Random(20)
+    checked = Counter()
+    while sum(checked.values()) < 2000:
+        program = _random_program_v3(rng)
+        count = rng.choice((2, 3))
+        memory = _memory(count, bearings=[rng.uniform(-3, 3) for _ in range(count)])
+        memory.flower = None if rng.random() < 0.3 else rng.choice(R.FLOWERS)
+        memory.label_read = None if rng.random() < 0.5 else rng.choice(R.label_options(count))
+        for part in memory.parts:
+            part.cut = rng.random() < 0.3
+            for attr, values in P.DOMAINS.items():
+                if rng.random() < 0.7:
+                    part.attributes[attr] = rng.choice(values)
+        completions = _completions(program, memory)
+        if completions is None:
+            continue
+        plan = P.WorldPlan(program)
+        outcome = plan.step(memory)
+        statuses = [_status_in(plan, memory, c) for c in completions]
+        if isinstance(outcome, P.Execute):
+            assert all(s[0] == "open" and outcome.part in s[1] for s in statuses), (P.text(program), outcome)
+        elif isinstance(outcome, P.Complete):
+            assert all(s == ("complete",) for s in statuses), (P.text(program), outcome)
+        elif isinstance(outcome, P.Failed) and not outcome.reason.startswith("cannot see"):
+            assert all(s == ("failed",) for s in statuses), (P.text(program), outcome)
+        else:  # a fact is asked for: the completions do not all agree on any of the three
+            assert not all(s == ("complete",) for s in statuses) and not all(s == ("failed",) for s in statuses)
+        checked[type(outcome).__name__] += 1
+    assert min(checked.values()) > 50, checked  # every kind of outcome was met
+
+
+# ------------------------------------------------------------------------------------------- v2's plan, the reference
+@pytest.mark.parametrize("kind", R.KINDS)
+def test_for_v2_s_programs_the_world_plan_decides_as_v2_s_plan_look_for_look(kind):
+    """2000 scripted sequences in all: facts arrive late or are first read wrong, a shoot is found late, the plate
+    turns, the fast level cuts the shoot it is told to (now and then another), and the memory unmarks a cut."""
+    rng = random.Random(21 + R.KINDS.index(kind))
+    for split in ("train", "heldout"):
+        for count, flower, task in _draws(kind, split, n=250, seed=R.KINDS.index(kind)):
+            program = P.from_task(task)
+            v2, v3 = P.Plan(program), P.WorldPlan(program)
+            late = count == 3 and rng.random() < 0.3  # the middle shoot is found after a few looks
+            memory = _memory(2 if late else count, flower=None, settled=False)
+            if late:
+                memory.parts[1].height = 0.15
+            wrong_flower = rng.choice([f for f in R.FLOWERS if f != flower])
+            label = task.params.get("label")
+            for look in range(14):
+                if look == 1:
+                    memory.settled = True
+                if look == 2:
+                    memory.flower = wrong_flower if rng.random() < 0.2 else flower
+                if look == 4:
+                    memory.flower = flower
+                    if label is not None:
+                        memory.label_read = label
+                if late and look == 5:
+                    memory.discover(0.115)
+                for part in memory.parts:
+                    part.bearing = rng.uniform(-math.pi, math.pi) if rng.random() < 0.5 else part.bearing
+                a, b = v2.step(memory), v3.step(memory)
+                assert a == b, (task, look, a, b)
+                if isinstance(a, P.Execute) and rng.random() < 0.8:
+                    victim = a.part if rng.random() < 0.9 else rng.choice(memory.parts).id
+                    next(p for p in memory.parts if p.id == victim).cut = True
+                elif rng.random() < 0.05:
+                    cut = [p for p in memory.parts if p.cut]
+                    if cut:
+                        rng.choice(cut).cut = False

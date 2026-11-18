@@ -1064,3 +1064,195 @@ class Plan:
             if value != then:
                 return True
         return False
+
+
+# ---------------------------------------------------------------------------------------------- the plan of v3
+STAYED = "a shoot that was to stay is cut"  # Plan's reason, and WorldPlan's
+OUT_OF_ORDER = "a shoot was cut out of its order"
+PLACES = {"tie": "tie", "tag": "tag", "sick": "leaves", "bud": "tip"}  # where each attribute is read
+
+
+def cannot_see(attr: str, position: str) -> str:
+    """The reason of a Failed for a fact that cannot be had: "cannot see the leaves of the middle shoot"."""
+    return f"cannot see the {PLACES.get(attr, attr)} of the {position} shoot"
+
+
+def _turning(part) -> float:
+    """How far the plate has to turn to bring a part to face the robot (a bearing not known: half a turn)."""
+    return math.pi if part.bearing is None else abs(part.bearing)
+
+
+class WorldPlan:
+    """v3's plan (tutorial/architecture-v3.md, "The plan and the runner"): a program of either language evaluated on a
+    scene memory in every *world* the unknown facts still allow. `step(memory)` says what to do now, as Plan does, and
+    reads the memory the same way (`parts`, each with `id`, `cut`, `bearing` and `attributes`; `settled`, `flower`,
+    `label_read`, `position(id)`).
+
+    A world is one value for each fact the evaluation reads and the memory does not know: the flower's colour, the
+    card's colour, an attribute of one shoot (DOMAINS). Only the facts the evaluation reads are enumerated, as it
+    reads them, so a fact that does not change what the program selects is never one. In each world the program
+    evaluates to stages (sets of parts in the order in which they are to be cut); the open stage is the first that has
+    a part the memory has not seen cut. Then:
+
+      every world has a shoot cut that was to stay, or one cut before an earlier stage was done, or names a shoot the
+      plant does not have: Failed (STAYED, OUT_OF_ORDER, or the evaluation's own reason)
+      every world has nothing left to cut: Complete (a plant of stubs, a selection that is empty)
+      a part is in the open stage of every world: Execute the one of those that needs the least turning
+      otherwise: NeedObservation of a fact on which the outcome depends ("flower"; "label" with "show the label"; an
+      attribute with "show the <position> shoot" and the part's id), or Failed "cannot see the tie (leaves, tip) of
+      the <position> shoot" (cannot_see) when every such fact is about a part already cut: its tie, leaves and bud
+      fell with it
+
+    A fact the outcome depends on: one whose value changes the outcomes the worlds allow (looked for in the order the
+    evaluation read the facts); where no single fact does (two facts that decide together), the first fact read that
+    can still be seen. The plan never acts on a guess and never takes a fact it does not have for a "no".
+
+    Bound once: positions and ranks count over the plant as found (every part, cut or not), and the choice of a Take
+    with "any" is made the first time its selection is evaluated and kept as part ids (`choices`): among shoots to cut
+    it takes those that need the least turning, among shoots to keep (inside the second selection of an Except) those
+    that need the most. A choice is made again only for another selection (the inventory grew, or another world).
+
+    `stages`: the stages as part ids when every world agrees, else None; `targets` their parts, lowest first (None
+    until then); `rebinds` how often the stages every world agreed on changed; `worlds` the worlds evaluated at the
+    last step. With every fact the program reads known there is one world, and for v2's programs the decisions are
+    v2's Plan's.
+    """
+
+    def __init__(self, program: Node, label_rule: dict[str, str] | None = None):
+        self.program = _statement(program)
+        self.label_rule = dict(reasoning.LABEL_MEANS if label_rule is None else label_rule)
+        if not set(self.label_rule.values()) <= set(reasoning.POSITIONS):
+            raise ValueError(f"a card names one of {reasoning.POSITIONS}: {self.label_rule}")
+        self.stages: list[list[int]] | None = None
+        self.targets: list[int] | None = None
+        self.rebinds = 0
+        self.worlds = 0
+        self.choices: dict[tuple, frozenset] = {}  # (path, part ids taken from, k, keep) -> the part ids taken
+
+    # ------------------------------------------------------------------------------------------------ evaluating
+    def _domain(self, fact: tuple) -> tuple:
+        if fact[0] == "flower":
+            return reasoning.FLOWERS
+        if fact[0] == "label":
+            return tuple(self.label_rule)
+        return DOMAINS[fact[0]]
+
+    def _chooser(self, parts: list):
+        index = {part.id: i for i, part in enumerate(parts)}
+
+        def choose(path, chosen, k, keep):
+            key = (path, frozenset(parts[i].id for i in chosen), k, keep)
+            if key not in self.choices:
+                sign = -1.0 if keep else 1.0
+                ranked = sorted(chosen, key=lambda i: (sign * _turning(parts[i]), i))
+                self.choices[key] = frozenset(parts[i].id for i in ranked[:k])
+            return [frozenset(index[part_id] for part_id in self.choices[key])]
+
+        return choose
+
+    def _evaluate(self, memory, parts: list, assumed: dict) -> tuple:
+        """("stages", stages as part ids) or ("error", reason) in the world `assumed` ({fact: value}); raises
+        NeedsObservation with the fact's key for a fact neither the memory nor the world gives."""
+        attributes = []
+        for part in parts:
+            known = dict(part.attributes)
+            known.update({fact[0]: value for fact, value in assumed.items() if fact[1:] == (part.id,)})
+            attributes.append(known)
+        plant = _Shoots(
+            len(parts),
+            memory.flower if memory.flower is not None else assumed.get(("flower",)),
+            memory.label_read if memory.label_read is not None else assumed.get(("label",)),
+            tuple(attributes),
+            self.label_rule,
+            self._chooser(parts),
+        )
+        try:
+            (stages,) = _stage_lists(self.program, plant)  # the plan's own choices: one list
+        except ProgramError as error:
+            return ("error", str(error))
+        return ("stages", tuple(frozenset(parts[i].id for i in stage) for stage in stages))
+
+    def _worlds(self, memory, parts: list) -> list[tuple[dict, tuple]]:
+        """Every world the unknown facts allow, as far as the evaluation reads them: (the facts assumed, the result)."""
+        out, todo = [], [{}]
+        while todo:
+            assumed = todo.pop(0)
+            try:
+                out.append((assumed, self._evaluate(memory, parts, assumed)))
+            except NeedsObservation as need:
+                fact = (need.what,) if need.index is None else (need.what, parts[need.index].id)
+                todo[:0] = [{**assumed, fact: value} for value in self._domain(fact)]
+        return out
+
+    @staticmethod
+    def _status(result: tuple, cut: frozenset) -> tuple:
+        """("failed", reason), ("complete",) or ("open", the parts of the open stage not cut yet)."""
+        if result[0] == "error":
+            return ("failed", result[1])
+        stages = result[1]
+        if cut - frozenset().union(*stages):
+            return ("failed", STAYED)
+        for j, stage in enumerate(stages):
+            if stage - cut:
+                if cut & frozenset().union(*stages[j + 1 :]):
+                    return ("failed", OUT_OF_ORDER)
+                return ("open", stage - cut)
+        return ("complete",)
+
+    # ---------------------------------------------------------------------------------------------------- deciding
+    def step(self, memory) -> Execute | NeedObservation | Complete | Failed:
+        if not memory.settled:
+            return NeedObservation("plant", None)
+        parts = list(memory.parts)
+        cut = frozenset(part.id for part in parts if part.cut)
+        worlds = self._worlds(memory, parts)
+        self.worlds = len(worlds)
+        statuses = [self._status(result, cut) for _, result in worlds]
+        results = {result for _, result in worlds}
+        if len(results) == 1 and worlds[0][1][0] == "stages":
+            stages = [sorted(stage, key=[part.id for part in parts].index) for stage in worlds[0][1][1]]
+            if self.stages is not None and stages != self.stages:
+                self.rebinds += 1
+            self.stages = stages
+            meant = {part_id for stage in stages for part_id in stage}
+            self.targets = [part.id for part in parts if part.id in meant]
+        kinds = {status[0] for status in statuses}
+        if kinds == {"failed"}:
+            return Failed(statuses[0][1])
+        if kinds == {"complete"}:
+            return Complete()
+        if kinds == {"open"}:
+            common = frozenset.intersection(*(status[1] for status in statuses))
+            if common:
+                part = min((part for part in parts if part.id in common), key=_turning)  # min keeps the lowest
+                return Execute(f"cut the {memory.position(part.id)} shoot", part.id)
+        return self._ask(memory, parts, worlds, statuses)
+
+    def _ask(self, memory, parts, worlds, statuses):
+        """The fact to observe, or Failed when the facts that decide can no longer be seen."""
+        facts = list(dict.fromkeys(fact for assumed, _ in worlds for fact in assumed))
+        cut = {part.id for part in parts if part.cut}
+
+        def seeable(fact):
+            return len(fact) == 1 or fact[1] not in cut
+
+        def relevant(fact):
+            outcomes = [
+                frozenset(
+                    status for (assumed, _), status in zip(worlds, statuses, strict=True) if assumed.get(fact, v) == v
+                )
+                for v in self._domain(fact)
+            ]
+            return len(set(outcomes)) > 1
+
+        deciding = [fact for fact in facts if relevant(fact)] or facts
+        fact = next((fact for fact in deciding if seeable(fact)), deciding[0])
+        if fact == ("flower",):
+            return NeedObservation("flower", None)
+        if fact == ("label",):
+            return NeedObservation("label", "show the label")
+        attr, part_id = fact
+        position = memory.position(part_id)
+        if not seeable(fact):
+            return Failed(cannot_see(attr, position))
+        return NeedObservation(attr, f"show the {position} shoot", part_id)

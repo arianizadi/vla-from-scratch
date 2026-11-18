@@ -1380,3 +1380,205 @@ def test_a_reasoning_task_with_a_test_situation_on_top_is_evaluated_and_recorded
     (episode,) = results["per_episode"]
     assert results["scenario"]["spec"] == "bump" and episode["scenario"]["bump"]["applied"]
     assert episode["kind"] and isinstance(episode["cut_order"], list) and "notes_correct" in episode
+
+
+# ======================================================================================= architecture v3: Supervisor
+from sim.pickup import program as P  # noqa: E402
+
+
+@dataclass
+class Tended(Plant):
+    """A Plant with what the eyes read of each shoot's attributes (S.UNREADABLE where they cannot)."""
+
+    attributes: list = field(default_factory=lambda: [{}, {}, {}])
+
+    def percept(self) -> S.Scene:
+        scene = super().percept()
+        for i, part in enumerate(scene.parts):
+            part.attributes = (
+                dict(self.attributes[i]) if i not in self.cut else dict.fromkeys(self.attributes[i], S.UNREADABLE)
+            )
+        return scene
+
+
+def _v3(written, plant, **kwargs) -> Run:
+    return Run(P.parse(written, "v3"), plant, **{"stable": 1, "v3": True, **kwargs})
+
+
+def test_a_v3_program_runs_as_v3_and_a_v2_program_as_v2_unless_told():
+    assert L.Supervisor(P.parse("CutFrom(top,All())", "v3")).v3
+    assert isinstance(L.Supervisor(P.parse("CutFrom(top,All())", "v3")).plan, P.WorldPlan)
+    assert not L.Supervisor("Cut(All())").v3 and isinstance(L.Supervisor("Cut(All())").plan, P.Plan)
+    assert L.Supervisor("Cut(All())", v3=True).v3 and isinstance(L.Supervisor("Cut(All())", v3=True).plan, P.WorldPlan)
+    assert L.Supervisor("CutFrom(top,All())").plan is None  # text is v2's unless v3 is asked for
+    assert isinstance(L.Supervisor("CutFrom(top,All())", v3=True).plan, P.WorldPlan)
+    assert "v3" not in L.Supervisor("Cut(All())").record()  # v2's record is what it was
+
+
+def test_a_plant_of_stubs_is_complete_at_the_first_settled_look_and_the_arm_goes_home():
+    run = _v3("Cut(All())", Plant(cut={0, 1, 2}), v3=True)
+    first, second = run.look(2)
+    assert first.kind == "need_observation" and first.detail == "plant"  # the inventory is not settled yet
+    assert (second.kind, second.subgoal, second.home) == ("complete", L.STOP, True)
+    assert run.supervisor.complete_without_action and run.supervisor.declared_complete == 1
+    assert run.supervisor.ledger == [_entry(L.HOME, None, 1, None, "open") | dict(expected="the arm at the home pose")]
+    run.supervisor.step(run.plant.percept(), 2)  # the verdict stands; no second entry while it does
+    run.supervisor.step(run.plant.percept(), 3, home=True)
+    assert run.supervisor.ledger[0]["outcome"] == "confirmed" and len(run.supervisor.ledger) == 1
+    record = run.supervisor.record()["v3"]
+    assert record["complete_without_action"] and record["home_reached"] == 3 and record["stages"] == [[0, 1, 2]]
+
+
+def test_an_order_is_kept_and_one_broken_fails_with_the_home_move():
+    run = _v3("CutFrom(top,All())", Plant())
+    run.look(5)
+    assert _runs(run.decisions)[:4] == [
+        ("need_observation", None, 1),
+        ("execute", "cut the highest shoot", 1),
+        ("execute", "cut the middle shoot", 1),
+        ("execute", "cut the lowest shoot", 1),
+    ]
+    assert run.decisions[-1].kind == "complete" and run.supervisor.complete_without_action is False
+    run = _v3("CutFrom(top,All())", Plant(), obey=False)
+    run.look(2)
+    run.plant.cut.add(0)  # the fast level cut the lowest first
+    (decision,) = run.look()
+    assert (decision.kind, decision.detail, decision.home) == ("failed", P.OUT_OF_ORDER, True)
+    assert [e["outcome"] for e in run.supervisor.ledger] == ["violated", "open"]
+
+
+def test_an_unknown_attribute_asks_for_its_shoot_and_a_shoot_cut_in_every_world_goes_first():
+    plant = Tended(bearings=[1.0, 0.0, 0.5], attributes=[{"sick": "yes"}, {"sick": S.UNREADABLE}, {"sick": "no"}])
+    run = _v3("Cut(Filter(sick,yes,All()))", plant, inspect="show")
+    run.look(2)
+    assert run.decisions[1].subgoal == "cut the lowest shoot"
+    (decision,) = run.look()
+    assert (decision.kind, decision.subgoal, decision.detail) == ("need_observation", "show the middle shoot", "sick")
+    plant.attributes[1]["sick"] = "yes"  # turned into view, it shows sick leaves
+    (decision,) = run.look()
+    assert decision.subgoal == "cut the middle shoot"
+    ledger = run.supervisor.ledger
+    assert [(e["sub_goal"], e["outcome"]) for e in ledger] == [
+        ("cut the lowest shoot", "confirmed"),
+        ("show the middle shoot", "confirmed"),
+        ("cut the middle shoot", "open"),
+    ]
+    assert ledger[1]["expected"] == "the sick of the middle shoot read" and ledger[1]["evidence"]["value"] == "yes"
+    # holding instead: no sub-goal, and the holds are counted
+    plant = Tended(attributes=[{"sick": "yes"}, {"sick": S.UNREADABLE}, {"sick": "no"}])
+    run = _v3("Cut(Filter(sick,yes,All()))", plant, inspect="hold", obey=False)
+    run.look(3)
+    assert run.decisions[-1].subgoal == "cut the lowest shoot"  # the fast level has not cut it yet
+    plant.cut.add(0)
+    run.look(2)
+    assert run.decisions[-1] == L.Decision("need_observation", None, detail="sick")
+    assert run.supervisor.attribute_hold_steps == 2 and run.supervisor.looks_asked == 1
+
+
+def test_a_look_is_bounded_by_one_full_turn_of_the_plate_and_then_fails_for_good():
+    bearings = [0.0, 0.0, 0.0]
+    plant = Tended(bearings=bearings, attributes=[{"tie": "none"}, {"tie": S.UNREADABLE}, {"tie": "none"}])
+    run = _v3("Cut(Filter(tie,red,All()))", plant, inspect="show")
+    run.look(1)
+    turns = 0
+    while run.decisions[-1].kind == "need_observation":
+        plant.bearings = [L._wrap(b + 0.3) for b in plant.bearings]  # 0.3 rad a look
+        run.look()
+        turns += 1
+        assert turns < 40
+    decision = run.decisions[-1]
+    assert (decision.kind, decision.detail, decision.home) == ("failed", "cannot see the tie of the middle shoot", True)
+    assert 20 <= turns <= 22  # 2 pi / 0.3
+    assert run.supervisor.record()["v3"]["look_failed"] == decision.detail
+    assert run.supervisor.ledger[0]["outcome"] == "gave_up"
+    plant.attributes[1]["tie"] = "red"  # read afterwards: the verdict stands, a look that failed is never undone
+    (decision,) = run.look()
+    assert decision.detail == "cannot see the tie of the middle shoot"
+    # holding with the plate still: bounded by time
+    plant = Tended(attributes=[{"bud": "yes"}, {"bud": S.UNREADABLE}, {"bud": "yes"}])
+    run = _v3("Cut(Filter(bud,no,All()))", plant, every=8)
+    run.look(L.LOOK_STEPS // 8 + 2)
+    assert run.decisions[-1].detail == "cannot see the tip of the middle shoot"
+
+
+def test_a_stub_read_as_no_tie_does_not_bind_the_plan_again():
+    plant = Tended(attributes=[{"tie": "blue"}, {"tie": "red"}, {"tie": "none"}])
+    run = _v3("Cut(Filter(tie,red,All()))", plant, stable=2, obey=False)
+    run.look(4)
+    assert run.decisions[-1].subgoal == "cut the middle shoot"
+    plant.cut.add(1)
+    plant.attributes[1]["tie"] = "none"
+    for _ in range(3):  # the eyes read the stub's missing tie as "no tie"
+        scene = plant.percept()
+        scene.parts[1].attributes = {"tie": "none"}
+        run.decisions.append(run.supervisor.step(scene, run.step))
+        run.step += 1
+    assert run.decisions[-1].kind == "complete" and run.supervisor.plan.rebinds == 0
+
+
+def test_the_gate_lets_the_jaws_shut_only_at_the_part_authorised_facing_the_robot():
+    parts = [S.Remembered(0, 0.08, bearing=0.1), S.Remembered(1, 0.115, bearing=2.0), S.Remembered(2, 0.15)]
+    assert L.cut_gate(0.2, 0.081, True, parts, 0) == (True, 0)
+    assert L.cut_gate(0.2, 0.081, True, parts, 2) == (False, 0)  # another part
+    assert L.cut_gate(0.2, 0.116, True, parts, 1) == (False, 1)  # it faces away
+    assert L.cut_gate(0.2, 0.15, True, parts, 2) == (False, 2)  # its bearing is not known
+    assert L.cut_gate(0.2, 0.081, True, parts, None) == (False, 0)  # nothing authorised: a hold, a look, a verdict
+    assert L.cut_gate(0.2, 0.2, True, parts, 0) == (False, None)  # no part there
+    assert L.cut_gate(0.6, 0.081, True, parts, 2)[0]  # the jaws at the cutting width: not shutting
+    assert L.cut_gate(0.2, 0.081, False, parts, 2)[0]  # away from the shoots
+
+
+def test_a_veto_keeps_the_jaws_at_the_cutting_width_and_asks_for_a_reset_and_off_it_is_only_recorded():
+    for gate in (True, False):
+        run = _v3("Cut(Rank(1,top))", Plant(bearings=[0.0, 0.0, 0.0]), obey=False, gate=gate, resets=2, v3=True)
+        run.look(2)
+        sup = run.supervisor
+        assert sup.check_cut(0.2, 0.15, True, 2) == 0.2  # at the highest, authorised: carried out
+        jaws = [sup.check_cut(0.2, 0.08, True, 3 + k) for k in range(3)]  # at the lowest: three steps of it
+        assert jaws == ([L.JAWS_CUTTING] * 3 if gate else [0.2] * 3)
+        assert sup.vetoes == [dict(step=3, at=0, authorised=2, carried_out=not gate)]  # one veto per run of steps
+        (decision,) = run.look()
+        assert decision.recover == gate and (decision.detail == "veto") == gate and sup.resets == int(gate)
+        # what was carried out is the witness of SceneMemory rule 9
+        assert [h for _, h in sup.memory.shut] == ([0.15] if gate else [0.15, 0.08, 0.08, 0.08])
+        assert sup.record()["v3"]["vetoes"] == sup.vetoes and sup.record()["v3"]["gate"] == gate
+
+
+def test_a_cut_part_whose_attribute_was_never_read_fails_at_once_and_the_memory_options_reach_the_memory():
+    plant = Tended(attributes=[{"tie": S.UNREADABLE}, {"tie": "none"}, {"tie": "none"}], cut={0})
+    run = _v3("Cut(Filter(tie,red,All()))", plant)
+    run.look(2)
+    assert run.decisions[-1].detail == "cannot see the tie of the lowest shoot" and run.decisions[-1].home
+    sup = L.Supervisor(P.parse("Nothing()", "v3"), attribute_rule="angles", witness=True)
+    assert sup.memory.attribute_rule == "angles" and sup.memory.witness
+    with pytest.raises(AssertionError):
+        L.Supervisor(P.parse("Nothing()", "v3"), inspect="peek")
+
+
+@pytest.mark.parametrize("kind", R.KINDS)
+def test_for_v2_s_tasks_the_v3_supervisor_decides_as_v2_s_through_the_memory(kind):
+    """Scripted percepts through the scene memory (stable 3): the eyes unsure of the flower at first, the card turned
+    away and then shown, the plate turning, a cut seen late, and now and then the wrong shoot cut. The decisions are
+    v2's, look for look, but for the home move on a verdict."""
+    rng = np.random.default_rng(R.KINDS.index(kind))
+    for count, flower, task in ((c, f, R.draw(kind, "train", c, f, rng)) for c, f in [(2, "red"), (3, "pink")] * 25):
+        program = P.from_task(task)
+        plant_v2 = Plant(heights=HEIGHTS[:count], bearings=[0.0] * count, flower=flower, sure_of_flower=False)
+        plant_v2.card = task.params.get("label")
+        runs = [Run(program, plant_v2, obey=False), Run(program, Plant(**vars(plant_v2)), obey=False, v3=True)]
+        for look in range(40):
+            bearings = [float(rng.uniform(-3, 3)) for _ in range(count)] if rng.random() < 0.3 else None
+            sure, facing = look > 4, look > 8 and rng.random() < 0.7
+            decisions = []
+            for run in runs:
+                run.plant.sure_of_flower, run.plant.facing = sure, facing
+                if bearings is not None:
+                    run.plant.bearings = list(bearings)
+                decisions.append(run.look()[0])
+            a, b = decisions
+            assert (a.kind, a.subgoal, a.detail, a.recover) == (b.kind, b.subgoal, b.detail, b.recover), (task, look)
+            assert b.home == (b.kind in ("complete", "failed")) and not a.home
+            if a.kind == "execute" and rng.random() < 0.5:
+                shoot = runs[0].plant.index(a.subgoal) if rng.random() < 0.9 else int(rng.integers(count))
+                for run in runs:
+                    run.plant.cut.add(shoot)

@@ -854,3 +854,86 @@ def test_the_recording_arguments_are_checked_before_any_server_is_reached(argv, 
     monkeypatch.setattr(sys, "argv", ["eval.py", "--out", str(tmp_path / "out"), *argv])
     with pytest.raises(AssertionError, match=message):
         E.main()
+
+
+# ================================================================================ architecture v3: attributes in memory
+def _attr_part(h, b=0.0, cut=False, vis=True, p=0.95, p_cut=None, p_attributes=None, **attributes):
+    return S.Part(h, b, cut, vis, p=p, p_cut=p_cut, attributes=attributes, p_attributes=p_attributes or {})
+
+
+def test_an_attribute_needs_stable_readings_in_a_row_and_a_look_that_cannot_read_it_neither_counts_nor_breaks_it():
+    memory = S.SceneMemory(stable=3)
+    looks = ["red", "red", S.UNREADABLE, "red", S.UNREADABLE, "blue", "blue", "unreadable", "blue"]
+    known = []
+    for step, tie in enumerate(looks):
+        memory.update(_scene(_attr_part(0.1, tie=tie)), step)
+        known.append(memory.parts[0].attributes.get("tie") if memory.parts else None)
+    # red after its third reading; blue only after three of its own in a row, the unreadable looks skipped
+    assert known == [None, None, None, "red", "red", "red", "red", "red", "blue"]
+    assert [v for _, v, _ in memory.readings[(0, "tie")]] == ["red", "red", "red", "blue", "blue", "blue"]
+    # an unsure reading does not count either, nor one of a part not seen
+    memory = S.SceneMemory(stable=1)
+    memory.update(_scene(_attr_part(0.1, bud="yes", p_attributes={"bud": 0.5})), 0)
+    assert memory.parts[0].attributes == {}
+    memory.update(_scene(_attr_part(0.1, vis=False, bud="yes")), 1)
+    assert memory.parts[0].attributes == {}
+    memory.update(_scene(_attr_part(0.1, bud="yes", p_attributes={"bud": 0.9})), 2)
+    assert memory.parts[0].attributes == {"bud": "yes"}
+
+
+def test_attributes_are_frozen_once_a_part_is_cut_and_a_stub_reads_nothing():
+    memory = S.SceneMemory(stable=2)
+    _feed(memory, _scene(_attr_part(0.1, tie="red")), 2)
+    assert memory.parts[0].attributes == {"tie": "red"}
+    _feed(memory, _scene(_attr_part(0.1, cut=True, tie="none")), 2, step=2)  # a stub, read as "no tie"
+    assert memory.parts[0].cut and memory.parts[0].attributes == {"tie": "red"}
+    _feed(memory, _scene(_attr_part(0.1, cut=True, tie="none")), 3, step=4)
+    assert memory.parts[0].attributes == {"tie": "red"}
+    # unmarked (revoke), the part reads again
+    memory = S.SceneMemory(stable=1, revoke=2)
+    memory.update(_scene(_attr_part(0.1, tie="red")), 0)
+    memory.update(_scene(_attr_part(0.1, cut=True, tie="none")), 1)
+    _feed(memory, _scene(_attr_part(0.1, tie="blue")), 2, step=2)
+    assert not memory.parts[0].cut and memory.parts[0].attributes == {"tie": "blue"}
+
+
+def test_the_last_look_and_two_angles_are_the_other_attribute_rules_and_every_reading_keeps_its_bearing():
+    last = S.SceneMemory(stable=3, attribute_rule="last")
+    _feed(last, _scene(_attr_part(0.1, sick="yes")), 3)
+    last.update(_scene(_attr_part(0.1, sick="no")), 3)
+    assert last.parts[0].attributes == {"sick": "no"}
+    angles = S.SceneMemory(stable=2, attribute_rule="angles")
+    for step, bearing in enumerate((0.0, 0.1, 0.2, 0.3)):  # four readings in a row within 17 degrees: one witness
+        angles.update(_scene(_attr_part(0.1, b=bearing, sick="yes")), step)
+    assert angles.parts[0].attributes == {}
+    angles.update(_scene(_attr_part(0.1, b=0.6, sick="yes")), 4)  # 34 degrees from the first
+    assert angles.parts[0].attributes == {"sick": "yes"}
+    assert [b for _, _, b in angles.readings[(0, "sick")]] == [0.0, 0.1, 0.2, 0.3, 0.6]
+    snapshot = angles.snapshot()
+    assert snapshot["readings"] == [
+        dict(id=0, attribute="sick", readings=[[s, "yes", b] for s, b in enumerate((0.0, 0.1, 0.2, 0.3, 0.6))])
+    ]
+    json.dumps(snapshot)
+    assert "readings" not in S.SceneMemory().snapshot()  # without attributes, the snapshot is as it was
+    with pytest.raises(AssertionError):
+        S.SceneMemory(attribute_rule="majority")
+
+
+def test_with_witness_a_part_first_seen_whole_is_cut_only_where_the_jaws_have_shut():
+    memory = S.SceneMemory(stable=1, witness=True)
+    memory.update(_scene(_attr_part(0.08), _attr_part(0.115)), 0)
+    memory.update(_scene(_attr_part(0.08, cut=True), _attr_part(0.115, cut=True)), 1)
+    assert [p.cut for p in memory.parts] == [False, False]  # the hand was never there
+    memory.jaws_shut(0.112, 2)  # the jaws shut at the upper shoot's height
+    memory.update(_scene(_attr_part(0.08, cut=True), _attr_part(0.115, cut=True)), 3)
+    assert [p.cut for p in memory.parts] == [False, True]
+    # jaws shut before the part was first seen whole are no witness; a part found cut needs none
+    memory = S.SceneMemory(stable=1, witness=True)
+    memory.jaws_shut(0.08, 0)
+    memory.update(_scene(_attr_part(0.08), _attr_part(0.115, cut=True)), 1)
+    memory.update(_scene(_attr_part(0.08, cut=True), _attr_part(0.115, cut=True)), 2)
+    assert [p.cut for p in memory.parts] == [False, True]
+    without = S.SceneMemory(stable=1)
+    without.update(_scene(_attr_part(0.08)), 0)
+    without.update(_scene(_attr_part(0.08, cut=True)), 1)
+    assert without.parts[0].cut  # the option is off by default

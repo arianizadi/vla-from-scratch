@@ -54,6 +54,11 @@ NO_ATTRIBUTES = {"tie": "none", "sick": "no", "bud": "no"}
 # SceneMemory with `unseen`: a sighting founds a new part only at least this many `match` from every remembered
 # part. Shoots are at least 2 * match apart; the half between is left for the error of a height
 SEPARATE = 1.5
+# SceneMemory's rules for an attribute (architecture v3): "row" (stable readings in a row, as every fact of v2), "last"
+# (the last reading), "angles" (a row whose readings were taken with the plate at least ANGLES_APART apart: looks from
+# one angle are one witness)
+ATTRIBUTE_RULES = ("row", "last", "angles")
+ANGLES_APART = float(np.radians(30))
 
 
 def _r(x) -> float:
@@ -422,12 +427,19 @@ class Remembered:
     evidence: dict | None = None
     cut_evidence: dict | None = None
     revocations: int = 0  # how often its cut was unmarked (rule 3)
+    whole_step: int | None = None  # the first seen sighting that said it is not cut (rule 9, witness)
 
 
 def _sighting(sighting: Part, step: int) -> dict:
     """A seen sighting as plain data: the look's control step, and what the percept said of the part."""
     p_cut = None if sighting.p_cut is None else _r(sighting.p_cut)
     return dict(step=int(step), p=_r(sighting.p), p_cut=p_cut, cut=bool(sighting.cut))
+
+
+def _spread(bearings: list[float]) -> float:
+    """The largest angle between two of the bearings."""
+    wrapped = [(a - b + np.pi) % (2 * np.pi) - np.pi for a in bearings for b in bearings]
+    return float(max((abs(x) for x in wrapped), default=0.0))
 
 
 def _position_name(index: int, count: int) -> str:
@@ -483,15 +495,34 @@ class SceneMemory:
     6. Positions are named over the whole inventory, cut or not, as the expert's notes name them.
     7. With stable=1, p_min=0 and the simulator's truth as the percept, the memory is the truth after one update (of
        the parts a camera shows: rule 1 counts nothing else; with `unseen` the others are listed too, uncut).
+    8. An attribute of a part (architecture v3): a reading counts when it comes with a seen sighting (rule 1) that does
+       not say the part is cut, its class is not UNREADABLE and its probability (p_attributes, if any) is at least
+       p_min. Under `attribute_rule` "row" (the default) the attribute is known after `stable` readings in a row of one
+       value and changes only after `stable` of another; "last" takes the last reading; "angles" asks of the row that
+       its readings were taken at bearings at least ANGLES_APART apart. A look that cannot read it neither counts nor
+       breaks the row: what a tie showed is kept when it has turned away. Once a part is marked cut its attributes do
+       not change (until a revoke unmarks it): a stub read as "no tie" would otherwise move the plan's selection. Every
+       counted reading is kept with the part's bearing then (`readings`).
+    9. With `witness`, a part first seen whole is marked cut only if the jaws have shut at its height (within `match`)
+       since (`jaws_shut`, which the runner's cut gate calls); a part found cut at its first sighting needs no witness.
     """
 
     def __init__(
-        self, stable: int = 3, p_min: float = 0.7, match: float = 0.0175, unseen: bool = False, revoke: int = 0
+        self,
+        stable: int = 3,
+        p_min: float = 0.7,
+        match: float = 0.0175,
+        unseen: bool = False,
+        revoke: int = 0,
+        attribute_rule: str = "row",
+        witness: bool = False,
     ):
         assert stable >= 1, stable
         assert revoke >= 0, revoke
+        assert attribute_rule in ATTRIBUTE_RULES, f"attribute_rule {attribute_rule!r}: one of {ATTRIBUTE_RULES}"
         self.stable, self.p_min, self.match = stable, p_min, match
         self.unseen, self.revoke = unseen, revoke
+        self.attribute_rule, self.witness = attribute_rule, bool(witness)
         self.reset()
 
     def reset(self):
@@ -505,7 +536,10 @@ class SceneMemory:
         self._candidates: list[list[tuple[Part, int]]] = []  # each: its sightings (part, step), one per update in a row
         self._cut_rows: dict[int, int] = {}  # part id -> seen sightings in a row that say cut
         self._uncut_rows: dict[int, int] = {}  # part id -> seen sightings in a row sure it is not cut (rule 3, revoke)
-        self._attribute_rows: dict[tuple[int, str], tuple[str, int]] = {}  # (part id, attribute) -> (value, row)
+        # (part id, attribute) -> (value, its readings in a row, their bearings)
+        self._attribute_rows: dict[tuple[int, str], tuple[str, int, list]] = {}
+        self.readings: dict[tuple[int, str], list[tuple[int, str, float | None]]] = {}  # -> [(step, value, bearing)]
+        self.shut: list[tuple[int, float]] = []  # (control step, height): the jaws shut among the shoots (rule 9)
         self._flower_row: tuple[str | None, int] = (None, 0)
         self._label_row: tuple[str | None, int] = (None, 0)
         self._grew: deque[bool] = deque(maxlen=self.stable)  # per update that counted a part: did the inventory grow
@@ -590,9 +624,11 @@ class SceneMemory:
         part.height = (part.height * n + sighting.height) / (n + 1)  # the first replaces an unseen estimate
         part.sightings, part.bearing, part.seen_step = n + 1, float(sighting.bearing), step
         part.evidence = _sighting(sighting, step)
+        if not sighting.cut and part.whole_step is None:
+            part.whole_step = step
         says_cut = sighting.cut and (sighting.p_cut is None or sighting.p_cut >= self.p_min)
         self._cut_rows[part.id] = self._cut_rows.get(part.id, 0) + 1 if says_cut else 0
-        if self._cut_rows[part.id] >= self.stable:
+        if self._cut_rows[part.id] >= self.stable and (part.cut or self._witnessed(part)):
             if not part.cut:
                 part.cut_evidence = dict(part.evidence)  # the sighting that made it count
             part.cut = True  # and never back, but by revoke
@@ -602,11 +638,33 @@ class SceneMemory:
             if part.cut and self._uncut_rows[part.id] >= self.revoke:
                 part.cut, part.cut_evidence, part.revocations = False, None, part.revocations + 1
                 self._cut_rows[part.id] = self._uncut_rows[part.id] = 0
+        if sighting.cut or part.cut:  # rule 8: nothing is read of a stub, and a cut part's attributes are frozen
+            return
         for key, value in sighting.attributes.items():
-            row = self._row(self._attribute_rows.get((part.id, key), (None, 0)), value)
-            self._attribute_rows[(part.id, key)] = row
-            if row[1] >= self.stable:
+            p = sighting.p_attributes.get(key)
+            if value == UNREADABLE or (p is not None and p < self.p_min):
+                continue
+            self.readings.setdefault((part.id, key), []).append((int(step), value, part.bearing))
+            then, n, bearings = self._attribute_rows.get((part.id, key), (None, 0, []))
+            n, bearings = (n + 1, [*bearings, part.bearing]) if then == value else (1, [part.bearing])
+            self._attribute_rows[(part.id, key)] = (value, n, bearings)
+            known = n >= self.stable
+            if self.attribute_rule == "last":
+                known = True
+            elif self.attribute_rule == "angles":
+                known = known and _spread([b for b in bearings if b is not None]) >= ANGLES_APART
+            if known:
                 part.attributes[key] = value
+
+    def _witnessed(self, part: Remembered) -> bool:
+        """Rule 9: a part first seen whole is cut only if the jaws have shut at its height since."""
+        if not self.witness or part.whole_step is None:
+            return True
+        return any(at >= part.whole_step and abs(h - part.height) <= self.match for at, h in self.shut)
+
+    def jaws_shut(self, height: float, step: int):
+        """The jaws shut among the shoots at `height` (metres above the stem's base) at control step `step` (rule 9)."""
+        self.shut.append((int(step), float(height)))
 
     def _facts(self) -> tuple:
         parts = tuple((r.id, r.cut, tuple(sorted(r.attributes.items()))) for r in self.parts)
@@ -677,4 +735,17 @@ class SceneMemory:
                 )
                 for r in self.parts
             ],
+            # rule 8, where there are any: every reading counted, by part and attribute, with the bearing then
+            **(
+                dict(
+                    readings=[
+                        dict(
+                            id=int(i), attribute=a, readings=[[s, v, None if b is None else _r(b)] for s, v, b in rows]
+                        )
+                        for (i, a), rows in sorted(self.readings.items())
+                    ]
+                )
+                if self.readings
+                else {}
+            ),
         )
