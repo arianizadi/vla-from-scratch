@@ -85,6 +85,8 @@ class Part:
     # cannot show it (scene_truth with attributes)
     attributes: dict[str, str] = field(default_factory=dict)
     p_attributes: dict[str, float] = field(default_factory=dict)  # percepts: the probability of each class given
+    # truth with attribute_views: which cameras (front, wrist) can read each attribute now
+    attribute_views: dict[str, tuple[bool, ...]] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         """The plain form: a truth part has "vis" [front, wrist]; a percept part has "vis" (one boolean) and "p",
@@ -103,6 +105,8 @@ class Part:
             out["attr"] = dict(self.attributes)
         if self.p_attributes:
             out["p_attr"] = {k: _r(v) for k, v in self.p_attributes.items()}
+        if self.attribute_views:
+            out["attr_vis"] = {k: [bool(x) for x in v] for k, v in self.attribute_views.items()}
         return out
 
     @classmethod
@@ -120,6 +124,7 @@ class Part:
             views=views,
             attributes={str(k): str(v) for k, v in d.get("attr", d.get("attributes", {})).items()},
             p_attributes={str(k): float(v) for k, v in d.get("p_attr", {}).items()},
+            attribute_views={str(k): tuple(bool(x) for x in v) for k, v in d.get("attr_vis", {}).items()},
         )
 
 
@@ -324,7 +329,7 @@ def drawn_attributes(env) -> dict[str, dict[str, str]]:
     return out
 
 
-def scene_truth(env, attributes: bool | None = None, full: bool = False) -> Scene:
+def scene_truth(env, attributes: bool | None = None, full: bool = False, views: bool = False) -> Scene:
     """The scene as the simulator knows it (env: a PickupEnv of a plant task, in the state the cameras show now): one
     Part per shoot of the plant, lowest first, cut or not, with which cameras show it (views: front, wrist), the
     flower's colour and the card.
@@ -333,7 +338,9 @@ def scene_truth(env, attributes: bool | None = None, full: bool = False) -> Scen
     read it (attribute_views) and for every attribute of a cut part. None, the default: only where a situation that
     draws attributes applies (ties, sick, buds), so that every other scene is what it was. `full`: the simulator's
     whole state, hidden facts included (architecture v3's second oracle): every part is shown by both cameras, every
-    attribute is its value, cut or not, and the card's colour is given whichever way it faces."""
+    attribute is its value, cut or not, and the card's colour is given whichever way it faces. `views` (with
+    attributes, not full): each part also says which cameras can read each attribute (Part.attribute_views), for
+    measuring eyes that look through one camera."""
     from .env import REACH_AZIMUTH, STEM_BASE, _wrap_angle
 
     assert env.plant_task, f"{env.task} has no plant"
@@ -341,6 +348,7 @@ def scene_truth(env, attributes: bool | None = None, full: bool = False) -> Scen
         attributes = full or any(s.applied and s.attributes(env) for s in env.scenarios)
     front, wrist = _Camera(env, "front"), _Camera(env, "wrist")
     drawn = drawn_attributes(env) if attributes else {}
+    views_asked = bool(views)  # (`views` is each part's cameras below)
     parts = []
     for name in env.active:  # from the lowest shoot up
         if full:
@@ -348,7 +356,7 @@ def scene_truth(env, attributes: bool | None = None, full: bool = False) -> Scen
         else:
             points, own = _part_points(env, name), _own_geoms(env, name)
             views = tuple(sum(camera.sees(p, own) for p in points) >= SEEN_POINTS for camera in (front, wrist))
-        values = {}
+        values, readable = {}, {}
         if attributes and full:
             values = dict(drawn[name])
         elif attributes:
@@ -362,6 +370,7 @@ def scene_truth(env, attributes: bool | None = None, full: bool = False) -> Scen
                 visible=any(views),
                 views=views,
                 attributes=values,
+                attribute_views=readable if views_asked else {},
             )
         )
     label = (env.label_colour or "none") if full else _label(env, front)  # full: the card's colour, faced or not

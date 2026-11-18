@@ -1814,6 +1814,50 @@ def test_the_record_counts_the_looks_at_which_the_memory_held_an_attribute_other
         env.close()
 
 
+def test_a_swapped_target_is_named_by_its_place_and_the_jaws_place_at_a_cut_is_on_the_shoot():
+    """eval.py --swap_target: the slow level's program names the swapped shoot by its place, not the tie; and
+    eval.cut_place, on the scripted expert's cuts, puts the jaws within a few mm of the shoot's axis, out in its cut
+    zone."""
+    pytest.importorskip("mujoco")
+    from sim.pickup import eval as V
+    from sim.pickup import slow_level as L3
+    from sim.pickup.env import CUT_ZONE, PANDA_XML, PickupEnv
+    from sim.pickup.expert import ScriptedExpert
+
+    if not PANDA_XML.exists():
+        pytest.skip("Franka model not fetched (sim/pickup/scripts/fetch_assets.sh)")
+    env = PickupEnv("prune", scenario="ties:one")
+    env.get_obs = lambda: {"state": env.state()}
+    try:
+        slow = L3.SlowLevel(env, v3=True)
+        for seed in range(900_000, 900_010):
+            env.reset(seed=seed)
+            env.swapped_from = None
+            slow.reset()
+            assert slow.gold == P.parse("Cut(Filter(tie,any,All()))", "v3")
+            tied = list(env.targets)
+            env.swapped_from, env.targets = tied, [V.swap_shoot(env, seed)]
+            assert env.targets[0] != tied[0] and env.targets[0] in env.active
+            slow.reset()
+            position = R.position_name(env.active.index(env.targets[0]), len(env.active))
+            named = {"lowest": "Rank(1,bottom)", "middle": "Middle()", "highest": "Rank(1,top)"}[position]
+            assert slow.gold == P.parse(f"Cut({named})", "v3")
+        env.swapped_from = None
+        expert, places = ScriptedExpert(env, seed=0), []
+        for seed in range(900_000, 900_003):
+            env.reset(seed=seed)
+            expert.reset()
+            done = False
+            while not done:
+                before = set(env.cut)
+                _, done, _ = env.step(expert.act())
+                places += [V.cut_place(env, name) for name in sorted(set(env.cut) - before)]
+        assert places and all(p["across_mm"] < 15 for p in places), places
+        assert all(1000 * CUT_ZONE[0] - 15 <= p["along_mm"] <= 1000 * CUT_ZONE[1] + 15 for p in places), places
+    finally:
+        env.close()
+
+
 def test_the_v3_summary_counts_by_situation_mode_shoots_and_cuts_meant():
     def episode(situation, mode, shoots, meant, success, **v3):
         counters = dict(

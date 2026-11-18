@@ -684,6 +684,13 @@ def test_the_truth_s_attributes_are_the_scenario_s_draw_where_a_camera_can_read_
                 readable += value != SC.UNREADABLE
             json = truth.to_json()
             assert SC.Scene.from_json(json).to_json() == json
+            # with views, each part says which cameras can read each attribute: readable where any of them can
+            viewed = SC.scene_truth(env, views=True)
+            for name, part, seen in zip(env.active, truth.parts, viewed.parts, strict=True):
+                assert seen.attributes == part.attributes and seen.attribute_views == SC.attribute_views(env, name)
+                assert all((v != SC.UNREADABLE) == any(seen.attribute_views[a]) for a, v in part.attributes.items())
+            assert SC.Scene.from_json(viewed.to_json()).to_json() == viewed.to_json()
+            assert "attr_vis" not in json
     finally:
         env.close()
     assert readable > 400  # most can be read at the start (the census counts how many; unreadable is tested below)
@@ -806,6 +813,23 @@ def test_sized_draws_the_same_episode_with_some_looks_at_other_scales(situation)
         sized.close()
     with pytest.raises(ValueError, match="sized"):
         S.parse("sick+sized")
+    if situation != "ties":
+        return
+    # one scale for every look: a tie at its true size (ties are drawn at TIE_SCALE)
+    true = 1 / S.TIE_SCALE
+    env, base = _env("prune", f"ties+size{true:.4f}"), _env("prune", "ties")
+    try:
+        assert env.scenarios[0].spec() == f"ties+size{true:.4f}"
+        for seed in range(5):
+            env.reset(seed=seed)
+            assert env.scenario_info["ties"]["sizes"] == [round(true, 4)] * len(env.active)
+            g = env.model.geom(f"{env.active[0]}_tie").id
+            assert env.model.geom_rbound[g] == pytest.approx(base.model.geom_rbound[g] * true, rel=1e-3)
+    finally:
+        env.close()
+        base.close()
+    with pytest.raises(ValueError, match="size"):
+        S.parse("ties+sizebig")
 
 
 @pytest.mark.parametrize(

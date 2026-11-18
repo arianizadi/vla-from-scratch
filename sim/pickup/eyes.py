@@ -43,9 +43,10 @@ EyesConfig.attributes (tie, sick, bud) every part slot also classifies each attr
 own for "cannot be read in this view" (scene.UNREADABLE) beside the values a program can ask for (program.DOMAINS):
 the truth's own, which says unreadable where no camera's rays reach where the attribute is to be seen, and for every
 attribute of a cut part. A slot without a part, and a part whose truth has no attributes (a dataset collected before
-them), leaves the attribute out of the loss. The truth decides readable by the front and the wrist cameras together,
-so eyes with attributes look through both (the plant crop is the front camera's). Without attributes the eyes are v2's,
-weight for weight.
+them), leaves the attribute out of the loss. The truth decides readable by the front and the wrist cameras together:
+eyes meant for the scene memory look through both (the plant crop is the front camera's), and eyes that look through
+one camera (a probe of what that camera can read) are scored only where it can read (eyes_report, with the truth's
+attribute_views). Without attributes the eyes are v2's, weight for weight.
 
 What the percept is for. Eyes.decode writes the outputs in the percept form of scene.py: every slot, the lowest first,
 with how sure the eyes are of each field (Scene.from_dict reads it). SceneMemory takes it from there. Eyes.see does
@@ -143,11 +144,7 @@ class EyesConfig:
         self.attributes = [str(a) for a in self.attributes]
         if set(self.attributes) - set(TRUTH_ATTRIBUTES) or len(set(self.attributes)) != len(self.attributes):
             raise ValueError(f"attributes {self.attributes}: each once, of {list(TRUTH_ATTRIBUTES)}")
-        if self.attributes and not ({"wrist"} <= set(self.cameras) and {"front", "plant"} & set(self.cameras)):
-            raise ValueError(
-                f"attributes with cameras {self.cameras}: the truth reads them by the front and the wrist cameras "
-                "together, so the eyes need the wrist camera and the front camera or the plant crop"
-            )
+
         unknown = set(self.loss_weights) - set(LOSS_WEIGHTS)
         if unknown:
             raise ValueError(f"no loss terms {sorted(unknown)}; the terms are {list(LOSS_WEIGHTS)}")

@@ -21,8 +21,9 @@ costs the fast level). `ties` also takes `+undrawn_target` (every tie drawn but 
 ties elsewhere on the plant. `+sized` (ties, buds; it can stand beside an `+undrawn` option) draws, in a fifth of the
 episodes (SIZED_SHARE), each tie or bud at a scale of its own between half and twice its size (SIZES), for the eyes'
 accuracy against the size of what they read (architecture v3, E16); the episode is otherwise the one drawn without it,
-and the variation lists the scale of each shoot's look, lowest shoot first (`sizes`). The catalogue numbers (B1, A5,
-...) are accepted as names. See tutorial/test-situations.md for the catalogue.
+and the variation lists the scale of each shoot's look, lowest shoot first (`sizes`); `+size<x>` draws every look at
+scale x instead (`ties+size0.5556` is a tie at its true size: ties are drawn at TIE_SCALE). The catalogue numbers (B1,
+A5, ...) are accepted as names. See tutorial/test-situations.md for the catalogue.
 
 A situation that draws something about each shoot that a program can ask for (a tie, sick leaves, a bud) says what it
 drew with `attributes(env)`, {shoot: {"tie": "red"}}; scene.scene_truth writes it per part, with "unreadable" where no
@@ -115,8 +116,10 @@ class Scenario:
         assert hide in (None, "target", "others") and (hide is None or self.partial_undraw), (self.name, hide)
         assert not (undrawn and hide), "+undrawn leaves every look out: not with +undrawn_target or +undrawn_others"
         assert not sized or self.can_size, f"{self.name} has no look to draw at other sizes"
+        assert isinstance(sized, bool) or 0.1 <= float(sized) <= 4, f"{self.name}: a look's scale of {sized}"
         self.mode, self.prob, self.split, self.undrawn = mode, prob, split, bool(undrawn)
-        self.sized = bool(sized)  # ties, buds: a fifth of the episodes draw each look at a scale of its own
+        # ties, buds: True, a fifth of the episodes draw each look at a scale of its own; a number, every look at it
+        self.sized = sized if isinstance(sized, bool) else float(sized)
         self.hide = hide  # ties: the tie left out on the shoot meant ("target") or on the other shoots ("others")
         self.applied, self.variation = False, {}
 
@@ -129,7 +132,7 @@ class Scenario:
             + (f"@{self.prob:g}" if self.prob < 1 else "")
             + ("+undrawn" if self.undrawn else "")
             + (f"+undrawn_{self.hide}" if self.hide else "")
-            + ("+sized" if self.sized else "")
+            + ("+sized" if self.sized is True else f"+size{self.sized:g}" if self.sized else "")
         )
 
     # --------------------------------------------------------------------------------------------------- hooks
@@ -738,9 +741,9 @@ SIZES = tuple(2 ** (k / 4) for k in range(-4, 5))
 SIZED_SHARE = 0.2
 
 
-def _size_name(mesh, k):
-    """The name of mesh `mesh` compiled at SIZES[k]."""
-    return mesh if SIZES[k] == 1.0 else f"{mesh}_size{k}"
+def _size_name(mesh, size):
+    """The name of mesh `mesh` compiled at `size` times its own scale."""
+    return mesh if size == 1.0 else f"{mesh}_size{size:.4f}"
 
 
 class _Sized:
@@ -753,13 +756,16 @@ class _Sized:
 
     sized_meshes: tuple[tuple[str, float], ...] = ()  # (mesh, the scale it is built at)
 
+    @property
+    def sizes(self) -> tuple[float, ...]:
+        """The scales this option draws its looks at."""
+        return () if not self.sized else SIZES if self.sized is True else (self.sized,)
+
     def _build_sizes(self, spec):
-        if not self.sized:
-            return
         for mesh, scale in self.sized_meshes:
-            for k, size in enumerate(SIZES):
+            for size in self.sizes:
                 if size != 1.0:
-                    _add_mesh(spec, _size_name(mesh, k), scale * size, file=mesh)
+                    _add_mesh(spec, _size_name(mesh, size), scale * size, file=mesh)
 
     def _init_sizes(self, env, geoms: dict[str, list[int]]):
         """geoms: per shoot name, the look's geoms, each drawn with one of sized_meshes."""
@@ -768,7 +774,7 @@ class _Sized:
             return
         m = env.model
         self.mesh_sizes = {
-            int(m.mesh(name).id): [int(m.mesh(_size_name(name, k)).id) for k in range(len(SIZES))]
+            int(m.mesh(name).id): {size: int(m.mesh(_size_name(name, size)).id) for size in self.sizes}
             for name, _ in self.sized_meshes
         }
         self.size_base = {
@@ -786,13 +792,14 @@ class _Sized:
         for g, (mesh, rbound, aabb) in self.size_base.items():
             m.geom_dataid[g], m.geom_rbound[g], m.geom_aabb[g] = mesh, rbound, aabb
         sizes = [1.0] * len(shoots)
-        if rng.random() < SIZED_SHARE:
+        if self.sized is not True:  # one scale for every look
+            sizes = [self.sized] * len(shoots)
+        elif rng.random() < SIZED_SHARE:
             sizes = [SIZES[int(k)] for k in rng.integers(len(SIZES), size=len(shoots))]
         for n, size in zip(shoots, sizes, strict=True):
-            k = SIZES.index(size)
             for g in self.size_geoms[n]:
                 mesh, rbound, aabb = self.size_base[g]
-                m.geom_dataid[g] = self.mesh_sizes[mesh][k]
+                m.geom_dataid[g] = self.mesh_sizes[mesh][size]
                 m.geom_rbound[g], m.geom_aabb[g] = rbound * size, aabb * size
         return {"sizes": sizes}
 
@@ -1334,6 +1341,12 @@ def parse(spec) -> list[Scenario]:
         sized = "sized" in options
         if sized:
             options.remove("sized")
+        for option in [o for o in options if o.startswith("size") and o != "sized"]:
+            try:
+                sized = float(option[len("size") :])
+            except ValueError:
+                raise ValueError(f"{part}+{option}: +size<scale>, e.g. +size0.5") from None
+            options.remove(option)
         if set(options) - {"undrawn", "undrawn_target", "undrawn_others"} or len(options) > 1:
             raise ValueError(
                 f"unknown option in {part}+{'+'.join(options)}: one of +undrawn, +undrawn_target, +undrawn_others "

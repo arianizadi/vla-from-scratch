@@ -311,10 +311,10 @@ def test_attribute_targets_are_class_indices_with_unreadable_first_and_none_wher
 def test_the_config_takes_attributes_only_with_both_cameras_and_v2_eyes_keep_their_weights():
     config = _config(attributes=["bud", "tie"])
     assert E.EyesConfig.from_json(config.to_json()) == config
-    for bad in (dict(attributes=["tag"]), dict(attributes=["tie", "tie"]), dict(attributes=["tie"], cameras=["front"])):
+    for bad in (dict(attributes=["tag"]), dict(attributes=["tie", "tie"])):
         with pytest.raises(ValueError):
             _config(**bad)
-    _config(attributes=["tie"], cameras=["plant", "wrist"])  # the plant crop is the front camera's
+    _config(attributes=["tie"], cameras=["plant"])  # one camera: a probe of what it can read
     # a v2 config (written before attributes) still reads, and its eyes have the same weights as before
     old = json.loads(_config().to_json())
     del old["attributes"]

@@ -308,6 +308,16 @@ def note_agreement(written: str, correct: str) -> dict:
     return {k: " ".join(a.get(k, "").split()) == " ".join(b[k].split()) for k in reasoning.NOTE_FIELDS if k in b}
 
 
+def cut_place(env, name) -> dict:
+    """Where the jaws were when shoot `name` was cut (just after the control step that cut it): the gripper's centre
+    from the shoot's axis as grown, in mm, across it and along it from where it leaves the main stem."""
+    a, d = env.shoot_axis(name)
+    v = env.tcp_pos() - a
+    along = float(v @ d)
+    across = float(np.linalg.norm(v - along * d))
+    return dict(shoot=name, across_mm=round(1000 * across, 1), along_mm=round(1000 * along, 1))
+
+
 def swap_shoot(env, seed):
     """For the test that the text matters: a shoot the instruction does not mean, chosen per seed."""
     others = [n for n in env.active if n not in env.targets]
@@ -466,6 +476,13 @@ def main():
         "--random_start",
         action="store_true",
         help="start every episode from a random gripper pose above the table instead of the home pose",
+    )
+    ap.add_argument(
+        "--swap_target",
+        action="store_true",
+        help="v3, on a situation that picks one shoot by its look (ties): the shoot to cut is another one, chosen per "
+        "seed (swap_shoot), named to the fast level by its place; the episode is solved when that shoot is cut and "
+        "no other. Tells a fast level that follows its sub-goal from one that goes for the shoot with the look",
     )
     ap.add_argument(
         "--clear_start",
@@ -673,6 +690,7 @@ def main():
         image_size=args.image_size,
     )
     v3 = args.slow_level == "v3"
+    assert not args.swap_target or (v3 and args.program == "gold"), "--swap_target is for --slow_level v3, gold"
     assert not (args.random_start and args.clear_start), "--random_start or --clear_start, not both"
     assert args.clearance is None or args.clear_start, "--clearance is for --clear_start"
     if not v3:
@@ -829,6 +847,13 @@ def main():
         elif starter is not None:
             obs, start_yaw = random_start(env, starter, seed)
         history, queue, frames, trace = FrameHistory(obs, offsets), [], [], []
+        swapped_from = None  # --swap_target: the shoots the situation meant, before the swap
+        if args.swap_target:
+            assert len(env.targets) == 1, f"--swap_target needs a situation that means one shoot, not {env.targets}"
+            swapped_from, env.targets = list(env.targets), [swap_shoot(env, seed)]
+            env.target = env.targets[0]
+        env.swapped_from = swapped_from
+        cut_places = []  # v3: where the jaws were on each shoot they cut
         if slow is not None:  # v2: the episode's program and an empty memory; its own frames, for eyes that look back
             slow.reset()
             slow_history, recovery = FrameHistory(obs, slow.offsets), None
@@ -988,7 +1013,10 @@ def main():
                 else:
                     done = done or slow.done
             if cut_before is not None:
-                cut_order += sorted(set(env.cut) - cut_before)
+                new_cuts = sorted(set(env.cut) - cut_before)
+                cut_order += new_cuts
+                if v3:
+                    cut_places += [cut_place(env, name) for name in new_cuts]
             if turn is not None:
                 angle = env.plate_angle()
                 turn["turned"] += abs(angle - turn["plate"])
@@ -1082,6 +1110,9 @@ def main():
                     if env.scenarios
                     else {}
                 ),
+                # v3: where the jaws were at each cut; --swap_target: the shoot the situation meant before the swap
+                **(dict(cut_places=cut_places) if v3 else {}),
+                **(dict(swapped_from=swapped_from) if swapped_from is not None else {}),
                 # architecture v2: what the slow level decided, and how its memory compared with the simulator
                 **(dict(v2=slow.record(info)) if slow is not None else {}),
             )

@@ -57,8 +57,10 @@ from dataclasses import dataclass, replace
 import numpy as np
 
 from .program import (
+    _NAMED,
     OUT_OF_ORDER,
     Complete,
+    Cut,
     Execute,
     NeedObservation,
     Plan,
@@ -841,6 +843,10 @@ class SlowLevel:
         self.gold = None if task is None else from_task(task)
         if self.v3:
             self.gold = from_scenario(env)  # a reasoning task's own, or the situation's
+            swapped = getattr(env, "swapped_from", None)
+            if swapped is not None:  # eval.py --swap_target: the shoot to cut is named by its place, not by its look
+                (shoot,) = env.targets
+                self.gold = Cut(_NAMED[_position_name(env.active.index(shoot), len(env.active))])
             self._stem = self._setup()
         self.written, self._see_s, self._write_s = None, [], []
         if self.source == "gold":

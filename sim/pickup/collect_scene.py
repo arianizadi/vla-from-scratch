@@ -95,11 +95,19 @@ class SceneRecorder:
     collected here were made without keep_streams."""
 
     def __init__(
-        self, out, env, crop: bool = True, stride: int = 4, keep_streams: bool = False, attributes: bool | None = None
+        self,
+        out,
+        env,
+        crop: bool = True,
+        stride: int = 4,
+        keep_streams: bool = False,
+        attributes: bool | None = None,
+        attribute_views: bool = False,
     ):
         assert env.image_size == IMAGE_SIZE, f"the dataset's images are {IMAGE_SIZE} pixels, not {env.image_size}"
         self.out, self.env, self.stride, self.keep_streams = Path(out), env, stride, keep_streams
         self.attributes = attributes  # scene_truth's: None, where a situation draws them; True, on every frame
+        self.attribute_views = attribute_views  # scene_truth's views: which camera can read each attribute
         self.crop = PlantCrop(env, size=IMAGE_SIZE, zoom=CROP_ZOOM) if crop else None
         self.records: list[dict] = []
         (self.out / "episodes").mkdir(parents=True, exist_ok=True)
@@ -119,7 +127,7 @@ class SceneRecorder:
             columns[c].append(jpeg(obs[c]))
         if self.crop is not None:
             columns["plant"].append(jpeg(self._crop()))
-        columns["scene"].append(scene_truth(env, attributes=self.attributes).to_json())
+        columns["scene"].append(scene_truth(env, attributes=self.attributes, views=self.attribute_views).to_json())
 
     def _crop(self):
         if not self.keep_streams:
@@ -208,7 +216,12 @@ def _worker(args):
     )
     expert = ScriptedExpert(env, seed=worker_id)
     recorder = SceneRecorder(
-        out_dir, env, crop=options["crop"], stride=options["stride"], attributes=options["attributes"] or None
+        out_dir,
+        env,
+        crop=options["crop"],
+        stride=options["stride"],
+        attributes=options["attributes"] or None,
+        attribute_views=options["attribute_views"],
     )
     try:
         for seed in seeds:
@@ -255,6 +268,12 @@ def main(argv=None):
         help="every frame's truth with each part's tie, sick and bud (architecture v3), also on plants no situation "
         "dresses",
     )
+    ap.add_argument(
+        "--attribute_views",
+        action="store_true",
+        help="with --attributes: each part also says which camera (front, wrist) can read each attribute, for "
+        "measuring eyes that look through one camera",
+    )
     ap.add_argument("--max_steps", type=int, default=None, help="episode limit (default: the task's)")
     args = ap.parse_args(argv)
     assert args.task in TASKS and TASKS[args.task].get("plant"), f"{args.task}: only plant tasks have a scene"
@@ -272,6 +291,7 @@ def main(argv=None):
         leaf_fix=args.leaf_fix,
         max_steps=args.max_steps,
         attributes=args.attributes,
+        attribute_views=args.attribute_views,
     )
     seeds = list(range(args.seed, args.seed + args.episodes))
     workers = min(args.workers, len(seeds))
@@ -293,6 +313,7 @@ def main(argv=None):
         leaf_fix=args.leaf_fix,
         max_steps=args.max_steps,
         **({"attributes": True} if args.attributes else {}),
+        **({"attribute_views": True} if args.attribute_views else {}),
     )
     episodes, successes, frames = meta["episodes"], meta["successes"], meta["frames"]
     print(f"wrote {episodes} episodes ({successes} successes) / {frames} frames to {out} in {time.time() - t0:.0f}s")
