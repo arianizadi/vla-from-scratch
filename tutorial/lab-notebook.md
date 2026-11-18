@@ -1115,6 +1115,29 @@ was never drawn (a parked distractor resting on the floor counted as touching th
 through to lighting; fixed, not re-run. Like the visual-variation run above, variation that the frames learn well
 still breaks the closed loop, so robustness needs another route than more looks in the demonstrations.
 
+**A pretrained image encoder keeps half its success when the look changes.** The named-shoot policies of step 9
+include two with a pretrained vision-language backbone (`vla_qwen_tokens_reactive_named4k_2500k`, seeds 42 and 43:
+Qwen3-VL-2B, trained 2.5M samples). Their report card against the from-scratch ViT policy (`dp_vit_lang_reactive`), final
+averaged weights, 100 layouts per cell, successes on `prune_named`:
+
+| Policy | Samples | plain | lighting (/test) | camera (/test) | bench (/test) | Visual mean, share of plain kept |
+|---|---|---|---|---|---|---|
+| Qwen3-VL backbone, seed 42 | 2.5M | 21 | 14 (9) | 7 (11) | 10 (14) | 10.8, 52% |
+| Qwen3-VL backbone, seed 43 | 2.5M | 22 | 13 (5) | 10 (8) | 14 (16) | 11.0, 50% |
+| From-scratch ViT, seed 42 | 2.5M | 22 | 5 (0) | 4 (6) | 6 (1) | 3.7, 17% |
+| From-scratch ViT, seed 42 (`dp_vit_lang_reactive_named4k_20m`) | 20M | 53 | 11 (1) | 9 (5) | 25 (19) | 11.7, 22% |
+| From-scratch ViT, seed 43 | 20M | 62 | 9 (2) | 9 (5) | 22 (20) | 11.2, 18% |
+| From-scratch ViT, seed 44 | 20M | 67 | 7 (1) | 9 (8) | 8 (8) | 6.8, 10% |
+
+At the same plain score (21-22) the pretrained backbone solves 65-66 of the 600 visual episodes against 22 for the
+from-scratch ViT, and under grow lights never seen in training (lighting/test) 9 and 5 against 0-2 for every
+from-scratch run. The pretrained policies were only trained to 2.5M samples, so they do not yet do the task well: in
+absolute visual successes they match the 20M from-scratch runs. Under test now, with the same demonstrations and
+recipe as `dp_vit_lang_frames_1s_prune2k_leaffix_20m` (20M samples, seed 42): the small policy on a frozen pretrained
+image encoder in place of its own ViT (the Qwen3-VL vision tower's 196 patch features per image, on plain and on
+paired demonstrations; DINOv2-B with registers at 224 and at 448 pixels), and the from-scratch policy with image
+augmentation (shift, brightness, contrast, white balance, colour overlays that keep the colour cues).
+
 **Aim drills.** Seven motor drills on the bare table (`tutorial/aim-range.md`: touch, touch along a pin, stop on,
 follow, flick between, press, pinch; the expert solves each at 499-500/500), as practice for the arm. Co-trained with
 pruning (75% pruning, 25% drills, `dp_vit_lang_reactive_prune2k_aim8k_co27m`): 22/100 on pruning (66 on the drills),
