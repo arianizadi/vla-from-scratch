@@ -1310,6 +1310,55 @@ What the pieces show:
   validation layouts and 118 and 105 on evaluation layouts (simulator's scene), 141 with resets, below the seed-43
   sub-goal fast level. A frame from a second earlier does not help a fast level that is strong without it.
 
+## Architecture v3: the language, the truth with attributes, the plan (steps 1 to 3)
+
+Design: `tutorial/architecture-v3.md`; what was built and where it departs from the design is under "As built" there.
+No GPU. Step 1: v3's language (`CutFrom`, `Then`, `Nothing`, `Take`, `Count`; `tie,any`, `sick,no`, `tag`) beside
+v2's, which stays the default of the writer's constraint; stages, equivalence over the orders of cuts, and each
+situation's own program (`program.from_scenario`, which selects `env.targets`, in order for `order`, on 300 layouts
+of each situation). Step 2: the simulator's truth with a tie, sick leaves and a bud per part, "unreadable" where no
+camera's rays reach the place, `+undrawn` for the paired control, and the census. Step 3: the memory's rules for
+attributes, the plan over the worlds the unknown facts allow (`program.WorldPlan`), and the supervisor's look, home
+move and cut gate, tested with scripted percepts; for v2's programs the decisions are v2's.
+
+**The census (E14)**: the scripted expert on 1000 validation layouts per situation (seeds from 900,000), no images,
+a look every 8 control steps; each shoot counts once per attribute (2490 shoots per situation). Readable means a
+camera's rays reach the tie's place, a leaf, or the tip and the place of a bud. Starting at the home pose, as v3's
+evaluations will start:
+
+| Situation: attribute | Front or wrist, first look | before the first cut | never | Front camera, first look | before the first cut | never |
+|---|---|---|---|---|---|---|
+| ties: tie | 95.2% | 100.0% | 0.0% | 84.7% | 97.0% | 3.0% |
+| sick: sick (sick) | 99.6% | 100.0% | 0.0% | 96.5% | 99.4% | 0.4% |
+| sick: sick (healthy) | 100.0% | 100.0% | 0.0% | 97.2% | 98.6% | 1.4% |
+| buds: bud (a bud) | 100.0% | 100.0% | 0.0% | 94.0% | 95.8% | 4.2% |
+| buds: bud (no bud) | 99.8% | 100.0% | 0.0% | 93.4% | 99.7% | 0.3% |
+| prune: tie | 95.1% | 100.0% | 0.0% | 85.0% | 92.9% | 0.9% |
+| prune: sick | 100.0% | 100.0% | 0.0% | 97.1% | 99.6% | 0.4% |
+| prune: bud | 99.9% | 100.0% | 0.0% | 93.6% | 99.7% | 0.3% |
+
+From the demonstrations' random starts (the expert then solves 721 to 770 of 1000: a start in the plant ends an
+episode early, and with it the looks it would have had):
+
+| Situation: attribute | Front or wrist, first look | before the first cut | never | Front camera, first look | before the first cut | never |
+|---|---|---|---|---|---|---|
+| ties: tie | 87.1% | 96.4% | 3.6% | 81.6% | 91.4% | 8.6% |
+| sick: sick (sick) | 95.3% | 98.0% | 2.0% | 93.0% | 96.8% | 3.1% |
+| sick: sick (healthy) | 95.1% | 98.3% | 1.7% | 93.3% | 96.5% | 3.5% |
+| buds: bud (a bud) | 93.5% | 98.5% | 1.5% | 90.4% | 94.5% | 5.5% |
+| buds: bud (no bud) | 92.7% | 96.4% | 3.6% | 89.5% | 95.3% | 4.7% |
+| prune: tie | 87.5% | 96.3% | 3.7% | 81.9% | 88.5% | 7.1% |
+| prune: sick | 95.3% | 97.6% | 2.4% | 93.3% | 96.6% | 3.4% |
+| prune: bud | 92.9% | 96.8% | 3.2% | 89.8% | 95.9% | 4.1% |
+
+"Never" is never while the shoot was on the plant. What it says: from the home pose, with both cameras, 95% to 100%
+of attributes can be read at the first look and all of them before the first cut, so on the simulator's scene the
+plan's looks will be rare and rungs 3 and 4 will rest on reading, not on looking. The tie is the hardest (95%, its
+place hidden by the stem or the flower). The front camera alone misses 3% to 15% at the first look and up to 4.2% for
+the whole time a shoot is on the plant: the wrist camera, which sees the plant from above at the home pose, closes
+that gap, so the eyes of step 6 need it. From random starts the arm is often in the way: 87% to 95% at the first look
+with both cameras, and 1.5% to 3.7% never. The expert solved 995 to 997 of 1000 layouts of each situation from home.
+
 ## Throughput
 
 | Model | Machine A (RTX 4090) | Machine B (L40S) |

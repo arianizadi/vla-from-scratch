@@ -4,9 +4,10 @@
 and 165 of 200 when it is not, and what it still loses is the fast level's. This document designs the next step:
 reasoning that v2's four task kinds do not ask for (telling a sick shoot from a healthy one, not acting when nothing is
 to be done, cutting in a given order, turning the plant to look before deciding, counting), and the smallest change to
-each of v2's five parts that carries it. It is a design and a plan of work for implementation agents. Nothing in it is
-built. A number is v2's own (from the [lab notebook](lab-notebook.md) or from architecture-v2.md) unless it is marked as
-computed for this document, and every expectation is marked as a prediction.
+each of v2's five parts that carries it. It is a design and a plan of work for implementation agents. Steps 1 to 3
+of the plan are built ("As built: steps 1 to 3", after the plan); nothing else is. A number is v2's own (from the
+[lab notebook](lab-notebook.md) or from architecture-v2.md) unless it is marked as computed for this document, and
+every expectation is marked as a prediction.
 
 ## In short
 
@@ -685,6 +686,59 @@ slow level without errors on validation layouts: `reason_mix`, `prune`, the situ
 on the evaluation layouts with the setting fixed beforehand, both seeds, training and held-out frames.
 *Done when:* the notebook has a section for v3, this document has its "First results" with every prediction answered,
 and the roadmap says where it stands.
+
+## As built: steps 1 to 3
+
+Steps 1 to 3 are in `sim/pickup/program.py`, `scene.py`, `scenarios.py`, `census.py` and `slow_level.py`, with their
+tests. Nothing of v2 changes by default: v2's language stays the default of `parse`, the acceptor and `equivalent`, so
+v2's writer is constrained as before; `program.Plan` is v2's plan and stays what a v2 program runs with; the truth of a
+scene without a situation that draws attributes is byte for byte what it was (checked on 300 frames of 100 episodes);
+a v2 record has no new field. The census (E14) is in the [lab notebook](lab-notebook.md). Where this design left a
+choice open, or could not be followed as written, the simplest faithful option was taken:
+
+- **Two languages.** v3's language is a separate grammar (`GRAMMAR_V3`, `parse(text, "v3")`, `next_chars(prefix,
+  "v3")`) and v2's is kept for v2's writer, whose output a larger grammar would change. A node holds to v3's bounds
+  (three deep), so the one test of v2 that built a three-deep selection and expected it refused now checks that v2's
+  `parse` refuses it; every other test of v2 passes unchanged.
+- **Then** takes two statements and nests to the right, `Then(a,Then(b,c))`, never `Then(Then(a,b),c)`, so that a
+  sequence has one spelling. "The branch of an If is any statement but an If" is read as "has no If anywhere in it".
+  `tie,any` is a tie of any colour; the `tag` pairs are in the language, but the truth does not write a tag until the
+  hidden-tag situation exists (step 10).
+- **The plan of v3 is a class of its own**, `program.WorldPlan`; the supervisor uses it for a program outside v2's
+  language, or when told (`v3=True`). "A shoot that every world cuts next" is a part in the open stage of every world
+  (inside a stage the order is free), the one of them that needs the least turning. A fact is asked for when its value
+  changes the outcomes the worlds allow; where only two facts together decide, the first one read that can be seen.
+  For v2's programs the decisions are v2's plan's (2000 scripted sequences of the plan, 200 through the memory and the
+  supervisor), but where v2 held for a fact that cannot change the outcome: there the world plan acts. `rebinds` counts
+  changes of the stages every world agrees on.
+- **A fact that cannot be had.** An attribute of a part already cut that was never read can no longer be seen; if it
+  decides, the plan says `Failed` ("cannot see the tie of the lowest shoot") at once, not after a look.
+- **The look's bound** is one full turn of the plate, measured from the memory's bearings (the median change of the
+  parts seen at two looks in a row), or 360 control steps (two turns at the buttons' speed) where the plate does not
+  turn, as under `--inspect hold`, which would otherwise wait for ever. A look that ran out is final.
+- **The verdict** keeps the sub-goal "stop" inside the supervisor and sets `Decision.home`; the runner (step 4) takes
+  the arm home on it in place of telling the fast level "stop". The home move has its attempt in the ledger, confirmed
+  when the runner reports the arm at the home pose (`step(..., home=True)`).
+- **The gate** is `slow_level.cut_gate(jaws, height, among, parts, authorised)`: a command below the cutting width
+  among the shoots is allowed only where the nearest remembered part by height (within 1.75 cm) is the part authorised
+  and faces the robot within 45 degrees. A veto is counted once per run of control steps and asks for a reset within
+  the resets allowed (shared with rule e). The memory's heights are where a shoot leaves the stem, and the jaws close
+  2 to 5 cm out along a shoot that rises, so the height the runner passes has to be mapped onto the stem from the
+  kinematics; step 4 measures that mapping before it turns the gate on.
+- **The memory**: a sighting that says the part is cut reads none of its attributes (a stub has none), and an
+  UNREADABLE class or a probability under `p_min` neither counts nor breaks a row. The three rules of E17 are
+  `attribute_rule` "last", "row" (the default) and "angles" (a row whose readings span 30 degrees of bearing).
+- **Where an attribute is seen** (`scene.attribute_views`): a tie's place is three points on the shoot's axis around
+  `TIE_AT` (two must be seen), a bud's three points out along the axis from the tip, where a bud stands or would stand
+  (two must be seen), sick leaves the centre of any leaf as drawn. A leaf is the shoot's own only for its own sickness:
+  in front of the tip it hides a bud as anything else would. The truth writes attributes where a situation that draws
+  them applies (or when asked: `scene_truth(env, attributes=True)`); `scene_truth(env, full=True)` is the second
+  oracle (every part shown, every attribute and the card's colour given).
+- **Undrawn** is a spec option, `ties+undrawn`, `sick+undrawn`, `buds+undrawn`: the episode, its draw and its targets
+  are the drawn one's; a bud undrawn is neither seen nor touched, and its shoot keeps the two leaves posed as with a
+  bud.
+- **The census** starts at the home pose (clear of the plant, as v3's evaluations will start; the new start option is
+  step 4's) on validation layouts, and once more from the demonstrations' random starts.
 
 ## Risks
 
