@@ -192,3 +192,33 @@ def test_dino_is_frozen_and_left_out_of_checkpoints(tiny_dino):
 def test_the_qwen_tower_is_not_pooled(tiny):
     with pytest.raises(ValueError, match="not pooled"):
         ViTBackboneWrapper(ViTBackboneParams(img_size=64, hidden_dim=16, frozen_tower=str(tiny), frozen_tower_pool=2))
+
+
+@pytest.fixture(scope="module")
+def tiny_dino3(tmp_path_factory) -> Path:
+    """A tiny random DINOv3 (patches of 16, 4 registers, rotary positions), with an image processor of its own."""
+    path = tmp_path_factory.mktemp("tiny_dinov3")
+    torch.manual_seed(0)
+    config = transformers.DINOv3ViTConfig(
+        hidden_size=24, num_hidden_layers=2, num_attention_heads=2, intermediate_size=48, patch_size=16,
+        num_register_tokens=4,
+    )  # fmt: skip
+    transformers.DINOv3ViTModel(config).save_pretrained(path)
+    transformers.BitImageProcessor(image_mean=MEAN, image_std=STD).save_pretrained(path)
+    return path
+
+
+def test_dino3_tokens_are_its_pooled_patches_without_class_and_registers(tiny_dino3):
+    torch.manual_seed(0)
+    params = ViTBackboneParams(
+        img_size=64, hidden_dim=16, text_tokens=4, text_vocab_size=50, frozen_tower=str(tiny_dino3), frozen_tower_pool=2
+    )
+    backbone = ViTBackboneWrapper(params).eval()
+    x01 = torch.rand(2, 3, 64, 64)
+    with torch.no_grad():
+        normed = (x01 - torch.tensor(MEAN).view(1, 3, 1, 1)) / torch.tensor(STD).view(1, 3, 1, 1)
+        hidden = backbone._model.tower(pixel_values=normed).last_hidden_state
+    assert hidden.shape[1] == 1 + 4 + 16  # class token, registers, 4 x 4 patches
+    grid = hidden[:, 5:].reshape(2, 2, 2, 2, 2, 24).mean(dim=(2, 4)).reshape(2, 4, 24)
+    assert torch.allclose(backbone._model.tokens((x01 - 0.5) / 0.5), grid, atol=1e-5)
+    assert not any(".tower." in key for key in backbone.state_dict())

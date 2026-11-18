@@ -99,6 +99,7 @@ def _worker(args):
         scenario,
         leaf_fix,
         park_reset,
+        action_noise,
         takeover,
     ) = args  # takeover: None, or this worker's policy server and the range the handover step K is drawn from
     env = PickupEnv(task, scenario=scenario, leaf_fix=leaf_fix, park_reset=park_reset)
@@ -138,6 +139,7 @@ def _worker(args):
             if kind == "none" and drifts:
                 kind = "drift"
         disturbance = Disturbance(env, kind, step=step, distance=distance, seed=seed, speed=speed)
+        noise = ActionNoise(seed, action_noise)
         frames = {c: [] for c in CAMERAS}
         states, actions, step_notes = [], [], []
         if writer is not None:
@@ -152,9 +154,9 @@ def _worker(args):
             for c in CAMERAS:
                 frames[c].append(_jpeg(obs[c]))
             states.append(obs["state"])
-            actions.append(action)
+            actions.append(action)  # the expert's own command is the label, also when another one is executed
             disturbance.update(action)
-            obs, done, info = env.step(action)
+            obs, done, info = env.step(noise.apply(action) if len(actions) > hold_steps else action)
         if not info["success"]:
             results.append(dict(seed=seed, success=False, **handover, after_handover=_ending(info)))
             continue
@@ -199,6 +201,29 @@ def _worker(args):
         conn.close()
     env.close()
     return results
+
+
+class ActionNoise:
+    """DART-style noise on the commands the expert executes (--action_noise): the arm's seven joint targets get a
+    smooth random offset (an AR(1) process with correlation CORR from one control step to the next and a stationary
+    standard deviation of `sigma` radians); the gripper command is left alone. The arm is pushed off the expert's path
+    and the recorded label stays the expert's own command, so the demonstrations show the way back. Drawn from the
+    episode's seed, so a dataset can be rebuilt."""
+
+    CORR = 0.9
+    ARM = 7
+
+    def __init__(self, seed: int, sigma: float):
+        self.sigma, self.rng, self.offset = sigma, np.random.default_rng([seed, 13]), np.zeros(self.ARM)
+
+    def apply(self, action: np.ndarray) -> np.ndarray:
+        if self.sigma <= 0:
+            return action
+        fresh = self.rng.normal(0.0, self.sigma * np.sqrt(1 - self.CORR**2), self.ARM)
+        self.offset = self.CORR * self.offset + fresh
+        executed = np.array(action, dtype=np.float64, copy=True)
+        executed[: self.ARM] += self.offset
+        return executed.astype(np.asarray(action).dtype)
 
 
 def _reason_record(env, writer):
@@ -336,6 +361,14 @@ def main():
         "such data should be evaluated with eval.py --leaf_fix",
     )
     ap.add_argument(
+        "--action_noise",
+        type=float,
+        default=0.0,
+        help="DART-style demonstrations: the arm's executed joint targets get smooth random offsets of this standard "
+        "deviation (radians; ActionNoise) while the expert's own commands are recorded as the actions, so the data "
+        "shows recoveries from states a policy's own small errors lead to. 0: none",
+    )
+    ap.add_argument(
         "--park_reset",
         action="store_true",
         help="put an unused side shoot back as built at every reset (PickupEnv(park_reset=True)), so that an episode "
@@ -396,6 +429,7 @@ def main():
                 args.scenario,
                 args.leaf_fix,
                 args.park_reset,
+                args.action_noise,
             )
             chunks = [
                 (args.task, jobs[i :: args.workers], str(out), i, *extra, _takeover(args, i))
@@ -478,6 +512,7 @@ def main():
         **({"scenario": args.scenario} if args.scenario else {}),
         **({"leaf_fix": True} if args.leaf_fix else {}),
         **({"park_reset": True} if args.park_reset else {}),
+        **({"action_noise": args.action_noise, "action_noise_corr": ActionNoise.CORR} if args.action_noise else {}),
         takeover=_takeover_summary(args, servers, attempted, kept[len(included) :], endings),
         included=[
             dict(dataset=Path(p).name, episodes=sum(e["source"] == Path(p).name for e in included))

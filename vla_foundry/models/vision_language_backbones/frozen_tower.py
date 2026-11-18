@@ -189,8 +189,8 @@ class FrozenTower(nn.Module):
 
 
 class FrozenViT(FrozenTower):
-    """A frozen self-supervised vision transformer of the DINOv2 kind (DINOv2 with registers): images [N, 3, S, S] as
-    the simple_vlm processor writes them -> [N, (S / p / pool)^2, out_dim].
+    """A frozen self-supervised vision transformer of the DINOv2 kind (DINOv2 with registers, DINOv3): images
+    [N, 3, S, S] as the simple_vlm processor writes them -> [N, (S / p / pool)^2, out_dim].
 
     The model's last hidden states (its final LayerNorm applied) are read; the class token and the register tokens
     take part in the forward pass but are dropped from the spatial grid, which keeps the patch tokens only. pool > 1
@@ -248,7 +248,8 @@ class FrozenViT(FrozenTower):
         x = images * PROCESSOR_STD + PROCESSOR_MEAN
         dtype = next(self.tower.parameters()).dtype
         if self.training and x.is_cuda and not self.compiled:  # as FrozenTower: training only, layer by layer
-            for layer in self.tower.encoder.layer:
+            layers = self.tower.encoder.layer if hasattr(self.tower, "encoder") else self.tower.layer  # DINOv2 / v3
+            for layer in layers:
                 layer.compile()
             self.compiled = True
         with torch.no_grad(), torch.autocast(device_type=x.device.type, enabled=False):

@@ -330,6 +330,7 @@ def main():
     src, out = Path(args.src), Path(args.out)
     info = json.loads((src / "meta" / "info.json").read_text())
     assert not info.get("scenario"), "re-render a dataset collected without scenarios"
+    assert not info.get("action_noise"), "re-render a dataset collected without --action_noise (its replay skips it)"
     all_entries = [json.loads(line) for line in (src / "meta" / "episodes.jsonl").read_text().splitlines()]
     entries = all_entries[: args.episodes] if args.episodes else all_entries
     (out / "tmp").mkdir(parents=True, exist_ok=True)
