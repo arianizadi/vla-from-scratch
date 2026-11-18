@@ -565,3 +565,41 @@ def random_start(env: PickupEnv, expert: ScriptedExpert, seed: int):
     yaw = float(rng.uniform(*START_YAW))
     q = expert.solve_ik(HOME_Q, pos, yaw, iters=200)
     return env.set_arm(q), yaw
+
+
+# Architecture v3 (tutorial/architecture-v3.md, fact 4): a start drawn as random_start draws it, but clear of the plant.
+# The expert, started at random, touches the flower in about a quarter of the episodes, from poses among the shoots and
+# from poses behind the plant (seen from the robot), whose way to the lane in front of it passes the flower. A start is
+# clear when the gripper is at least FRONT in front of the main stem's axis (toward the robot) and at least CLEARANCE
+# from it (seen from above); a draw that is not is drawn again from the same stream. With CLEARANCE the expert solves
+# 98 to 100 of 100 validation layouts of each situation and 291 to 298 of 300 more (calibrate_v3.py --starts; the lab
+# notebook has the table); at 0.12 m, 97 to 98 of 100.
+FRONT = 0.05  # metres
+CLEARANCE = 0.15  # metres
+CLEAR_TRIES = 100
+
+
+def clear_of_plant(env: PickupEnv, pos, clearance: float = CLEARANCE) -> bool:
+    """Is a gripper at `pos` (world, metres) clear of the plant: at least FRONT in front of the main stem's axis (toward
+    the robot, REACH_AZIMUTH) and at least `clearance` from it, seen from above?"""
+    base, up = env.stem_axis()
+    rel = np.asarray(pos, dtype=float) - base
+    flat = rel - up * (rel @ up)
+    toward = np.array([np.cos(REACH_AZIMUTH), np.sin(REACH_AZIMUTH), 0.0])
+    return bool(flat @ toward >= FRONT and np.linalg.norm(flat) >= clearance)
+
+
+def clear_start(env: PickupEnv, expert: ScriptedExpert, seed: int, clearance: float = CLEARANCE):
+    """random_start's draw kept clear of the plant (clear_of_plant): the first of the poses drawn from random_start's
+    own stream whose gripper is clear, its first draw when that one is; the home pose if none of CLEAR_TRIES is.
+    Returns (observation, yaw offset) like random_start; expects env.reset(seed) to have been called."""
+    rng = np.random.default_rng([seed, 13])  # random_start's stream: a clear first draw is random_start's pose
+    for _ in range(CLEAR_TRIES):
+        pos = np.array([rng.uniform(*START_X), rng.uniform(*START_Y), rng.uniform(*START_Z)])
+        yaw = float(rng.uniform(*START_YAW))
+        q = expert.solve_ik(HOME_Q, pos, yaw, iters=200)
+        expert.ik_data.qpos[:7] = q
+        mujoco.mj_kinematics(env.model, expert.ik_data)
+        if clear_of_plant(env, expert.ik_data.site_xpos[env.tcp_id], clearance):
+            return env.set_arm(q), yaw
+    return env.set_arm(env.data.qpos[:7].copy()), 0.0
