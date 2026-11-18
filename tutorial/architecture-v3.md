@@ -5,7 +5,8 @@ and 165 of 200 when it is not, and what it still loses is the fast level's. This
 reasoning that v2's four task kinds do not ask for (telling a sick shoot from a healthy one, not acting when nothing is
 to be done, cutting in a given order, turning the plant to look before deciding, counting), and the smallest change to
 each of v2's five parts that carries it. It is a design and a plan of work for implementation agents. Steps 1 to 3 of
-the plan are built, and step 4's code, whose runs wait for a GPU ("As built", after the plan); nothing else is. A number
+the plan are built, and step 4 with its runs (E13), the runner's fixes after them and the fast level's fine-tune on
+the ties ("As built", after the plan); nothing else is. A number
 is v2's own (from the [lab notebook](lab-notebook.md) or from architecture-v2.md) unless it is marked as computed for
 this document, and every expectation is marked as a prediction.
 
@@ -764,6 +765,52 @@ choice open, or could not be followed as written, the simplest faithful option w
   attributes stays "row" (on the simulator's scene the rules cannot differ); P1 holds; the ties cost the fast level 66
   and 109 episodes of 200, so it is fine-tuned on the looks before rung 3 is reported (P8), and the gate is measured on
   `ties` after that; yellow leaves and buds cost it nothing measurable.
+
+**After E13** (the notebook has the tables). Three things the runner did wrong in E13, fixed with v2 unchanged:
+
+- **The home move kept clear of the plant** (`slow_level.HomeMove`, `eval.py --home_move clear`, the default). The home
+  pose holds the gripper above the plant, and the straight line in joint space that a reset ends with swept the hand
+  through the flower from some clear starts (3 of 200 `nothing_to_do` episodes, the same starts on 2 `sick` plants).
+  The move now makes the takeover's back-out where it is needed, then goes in straight lines of the gripper: back to
+  the lane in front of the plant and up to the home pose's height, across to the home pose, and the last 10 control
+  steps to the home joint angles. `--home_move line` is E13's.
+- **A look that turns the plate** (`--inspect turn`, `slow_level.Look`). A missing fact used to be held for, and
+  nothing turned the plate: a stub never seen held the plan to the end of the episode (9 of 200 `nothing_to_do`), and
+  every attribute hidden from the clear start ran out of its bound. The runner now turns the plate for a look by the
+  move the expert makes to turn it (over the button that turns the shoot toward the robot the shorter way, pressed and
+  held), the slow level looking at every control step, and lets go when the fact is read; the bound is the design's
+  (one full turn, then `Failed`). An inventory of fewer than two parts is in v3 a look of the same kind, with the same
+  bound ("cannot see the whole plant"); v2 holds for it as before. The fast level is never asked to show a shoot.
+- **A `Failed` verdict is not solved.** Where no shoot was meant, the situation's rule (no cut, the arm home) scored a
+  look that ran out as solved (7 `buds` and 2 `sick` episodes of 200). An episode whose verdict is `Failed` is now a
+  failure whatever the rule says; the record keeps the rule's verdict (`rule_success`), and the summary counts the
+  episodes the rule alone would have scored solved (`failed_rule_solved`).
+
+**The ties, diagnosed.** The fast level is not disturbed by ties on the plant but by the tie on the shoot it is sent
+to cut, and by its colour; the sub-goal is the same text whatever is drawn, so the clash is visual. With every tie
+drawn but the one on the shoot meant, it solves 158 and 170 of 200 (171 and 169 with none drawn, 105 and 60 with all);
+with only the tie on the shoot meant, 101 (seed 43). A red tie on the shoot meant, the red of the red flower, leaves 13
+and 3 of 45 solved, a yellow one 44 and 38 of 54. In the episodes lost the plate turns on past the shoot named: the
+fast level does not take a shoot with a tie for one in reach.
+
+**The fine-tune** for rung 3 followed step 11's recipe on the looks alone: 1500 demonstrations of `ties`
+(`ties_1500_rs_tail10`: the scripted expert, random starts, a tail of 10, `--park_reset`, a sub-goal column written
+as the expert's notes would write it, `notes.SubgoalWriter`), and the seed-43 fast level fine-tuned from its averaged
+weights on `reason_mix_8k_rs_tail10` and `ties_1500_rs_tail10` (0.7 and 0.3 of each batch, the old normalisation),
+3M samples at a peak learning rate of 2e-4 (`dp_vit_lang_reactive_subgoal_reason8k_ties_ft3m_seed43`). On the E13
+grid with the fixed runner it solves 177 of 200 `ties` episodes (the fast level as it was: 118; the fine-tuned one
+with the ties undrawn: 191, so a tie now costs 14, inside P8's 15), and nothing regressed: `prune` 161 (164 as it
+was), `order` 241 of 300 (245), `sick` 176 (175), `buds` 182 (183), `nothing_to_do` 200 (200), and v2 on
+`reason_mix` 182 (170). It cut a shoot not meant in 2 of 200 `ties`
+episodes, at the gate's threshold, so the gate stays off there too. Fact 6 did not recur: the old demonstrations kept
+most of each batch, at a lower learning rate, for 3M samples. Rung 3 can now be reported on this fast level; the
+second seed was not fine-tuned.
+
+**Next, per the plan: step 6, the eyes** (E16), whose four attribute outputs are what the rungs 3 and 4 runs above took
+from the simulator. The census says the wrist camera is needed: the front camera alone misses 3% to 15% of attributes
+at the first look and up to 4.2% for as long as a shoot is on the plant, and the wrist camera closes that gap. So the
+eyes are trained with both cameras and with the plant crop on `scene_tend_12k`, and step 7 then runs all of v3 on
+rungs 1 to 4 over this fast level, with `--inspect turn` (its rollouts are the ones `scene_policy_tend_2k` records).
 
 ## Risks
 

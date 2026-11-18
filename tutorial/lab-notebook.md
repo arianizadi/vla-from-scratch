@@ -1519,6 +1519,102 @@ What E13 shows:
 70 runs, 9,450 episodes, on one L40S in 2.25 hours of wall time (4 to 24 runs sharing it; the runs' own wall times add
 to 27.5 hours).
 
+### After E13: the runner fixed, the ties diagnosed, the fast level fine-tuned on them
+
+Design: architecture-v3.md, "After E13". Three fixes to the runner, each with its tests (v2's runs unchanged): the home
+move goes back to the lane in front of the plant, up and across, not in a straight line in joint space
+(`--home_move clear`, the default; `line` is E13's); a missing fact, an attribute or a shoot never seen, is looked for
+by turning the plate with the expert's press of a button while the slow level looks at every control step
+(`--inspect turn`), within the design's bound of one full turn; and an episode whose verdict is `Failed` is not solved,
+whatever the situation's rule says (`rule_success` keeps the rule's verdict). Every run below starts clear of the
+plant, on the simulator's scene with the task's program, up to two resets, the gate off, on evaluation layouts (seeds
+from 1,000,000).
+
+**The fixes, on the cells they touch** (the fast levels as they were; E13's runner, then the fixed one; E13 counted
+with a `Failed` verdict as a failure in brackets):
+
+| Situation | Seed 43: E13 | fixed | Seed 44: E13 | fixed | What changed |
+|---|---|---|---|---|---|
+| `nothing_to_do` | 188 | **200** | 188 | **200** | the 9 stubs never seen found by a turn (9 looks, none ran out); the 3 home moves that touched the flower clear |
+| `sick` | 172 (170) | 175 | 165 (163) | 167 | no shoot meant: 62 of 62 with both (E13 60, 58 without the `Failed`); 9 looks, none ran out |
+| `buds` | 183 (176) | 183 | 180 (173) | 183 | no shoot meant: 54 of 54 with both (E13 53, 46 without the `Failed`); 13 looks, none ran out |
+| `ties` | 105 | 118 | 60 | 64 | the 16 ties hidden from the clear start read after a turn (22 looks, none ran out) |
+
+No episode ends on `Failed` any more in these eight runs. What is left is the fast level's: on `sick` and `buds` time
+on a cut (9 to 27 episodes) and the flower touched (3 to 6); on `ties`, the ties.
+
+**The ties, diagnosed.** In 137 of the 176 `ties` episodes E13 lost, the plate turned more than a full turn. Two
+questions: is it the ties as things in view, or the sub-goal ("cut the middle shoot") clashing with a shoot that looks
+different? The sub-goal's text is the same whatever is drawn, so the runs vary only what is drawn, on E13's episodes
+(E13's runner, `ties+undrawn_target`: every tie but the one on the shoot meant; `ties+undrawn_others`: only that one):
+
+| What is drawn | Seed 43 | Seed 44 | lost with more than a full turn |
+|---|---|---|---|
+| every tie (E13) | 105 | 60 | 45 and 94 |
+| only the tie on the shoot meant | 101 | | 53 |
+| every tie but the one on the shoot meant | 158 | 170 | 5 and 1 |
+| no tie (E13) | 171 | 169 | 1 and 1 |
+
+On plants where every shoot has a tie (mode `colour`), ties on the other shoots alone cost 10 and 1 of 103 (81 and 88
+against 91 and 89 undrawn); the tie on the shoot meant costs the rest. And it depends on its colour (E13, both seeds;
+episodes solved by the colour of the tie on the shoot meant):
+
+| Tie on the shoot meant | drawn | undrawn |
+|---|---|---|
+| red (0.85, 0.10, 0.10), the red flower's colour | 13 of 90 | 74 of 90 |
+| white | 35 of 104 | 90 of 104 |
+| blue | 42 of 98 | 82 of 98 |
+| yellow, nearest the plant's own greens and yellows | 75 of 108 | 94 of 108 |
+
+So it is visual and local: given a sub-goal for a shoot that carries a tie, the fast level does not take that shoot
+for one in reach and turns the plate on past it, most of all when the tie is red. Not the instruction or the
+sub-goal: they are the same text in every row.
+
+**The fine-tune.** `ties_1500_rs_tail10`: 1500 demonstrations of `ties` kept of 2074 tried (the scripted expert from
+random starts, a tail of 10, `--park_reset`, seeds from 300,000; 311,670 frames; collected and preprocessed in about 20
+minutes with 48 processes, 51 GB of shards), its sub-goal column written as the expert's notes would write it
+(`notes.SubgoalWriter`: the shoot the expert goes for, by its position on the plant as found; "stop" in the tail).
+The seed-43 fast level fine-tuned from its averaged weights on `reason_mix_8k_rs_tail10` and `ties_1500_rs_tail10`,
+0.7 and 0.3 of each batch, with `reason_mix_8k_rs_tail10`'s normalisation, 3M samples, a peak learning rate of 2e-4
+with its cosine schedule (`dp_vit_lang_reactive_subgoal_reason8k_ties_ft3m_seed43`, final averaged weights; one hour
+on an L40S that evaluations shared). Evaluated on the E13 grid with the fixed runner (`--inspect turn`, the home move
+clear), and the fast level as it was under the same runner where step 1 had not re-run a cell:
+
+| Situation (rung) | Seed 43 as it was: E13 | the runner fixed | **fine-tuned on ties** |
+|---|---|---|---|
+| `prune` | 159 | 164 | 161 |
+| `order` (1), of 300 | 247 | 245 | 241 |
+| `order`: from the top down, of 100 | 75 | 76 | 77 |
+| `order`: from the bottom up, of 100 | 80 | 84 | 77 |
+| `order`: a pair, of 100 | 92 | 85 | 87 |
+| `nothing_to_do` (2) | 188 | 200 | 200 |
+| `ties` (3) | 105 | 118 | **177** |
+| `ties`, the look undrawn | 171 | 192 | 191 |
+| `ties`, the whole state | 124 | | 179 |
+| `sick` (4) | 172 | 175 | 176 |
+| `buds` (4) | 183 | 183 | 182 |
+| `reason_mix`, v2's slow level | 170 | (v2 unchanged) | 182 |
+
+- **Rung 3 is open.** 177 of 200 `ties` episodes against 118 with the same runner, and 191 with the ties undrawn: a
+  tie now costs the fast level 14 episodes in 200, inside P8's 15 (74 under the same runner before the fine-tune; 66
+  and 109 in E13). By the colour of the tie on
+  the shoot meant: red 41 of 45 (13 before), white 44 of 52, blue 45 of 49, yellow 47 of 54. One lost episode in 23
+  turns more than a full turn (44 of 82 before). It cut a shoot not meant in 2 of 200 (8 before): at the gate's
+  threshold (more than 2 in 200), so the gate stays off on `ties` too. With the whole state, 179.
+- **Nothing regressed.** `order` 241 of 300 against 245 and 247, `sick` 176, `buds` 182, `nothing_to_do` 200, and v2 on
+  `reason_mix` 182 of 200 against 170 for the same slow level over the fast level as it was (from the same clear
+  starts; per kind 46 of 49 exclusion, 44 of 49 ordinal, 52 of 57 conditional, 40 of 45 hidden): fact 6 did not
+  recur, with the old data at 0.7 of each batch, a lower learning rate and 3M samples. `prune` 161 of 200 against
+  164 under the same runner. The fine-tuned fast level asks for more resets on `prune` and `order` (80 in 200 `prune`
+  episodes against 51; 50, 55 and 44 per 100 `order` episodes by mode against 29, 35 and 27) and solves as many.
+- **Single runs of 200.** The `order` modes move by up to 7 in 100 between E13 and the fixed runner, with the same
+  fast level and fixes that change little there (one look in 300 episodes): the noise to read the rest against.
+
+Runs: 27 (8 re-runs of the fixed cells, 3 of the diagnosis, 16 of the grid), 4,800 episodes, in
+`results/pickup/e13b/`. Two L40S GPUs for 3.3 hours of wall time in all: one for 1.95 hours (the collection's
+rendering, the fine-tune's hour, the re-runs and the diagnosis), the other for 1.4 hours (the grid, 15 runs at once);
+the runs' own wall times add to 10.3 hours.
+
 ## Throughput
 
 | Model | Machine A (RTX 4090) | Machine B (L40S) |
