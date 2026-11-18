@@ -1386,6 +1386,130 @@ the nearest shoot is the one cut in all 821, within 0.8 cm (the band is 1.75 cm,
 that shut for anything else (on the way to a button) are at least 15.7 cm from the axis, so "among the shoots" is
 within 8 cm of the stand's axis and below the flower. A closed gripper pressing a button is not shutting jaws.
 
+### E13: v3 over the fast level as it is, on rungs 1 to 4
+
+v3's slow level with each situation's own program (`--program gold`), on the simulator's scene (`--scene truth`: what
+the cameras show) or its whole state (`--scene full`: every part and attribute from the first look), over the sub-goal
+fast level as it is (`dp_vit_lang_reactive_subgoal_reason8k_20m`, final averaged weights, seed 43 and its repetition
+seed 44), every episode from a start clear of the plant, up to two resets, a missing attribute held for
+(`--inspect hold`: nothing turns the plate for it), the gate off unless marked. "Look undrawn" is the same episode
+with the ties, yellow leaves or buds not drawn (the program and the truth's readings unchanged), so it measures what
+seeing them costs the fast level. `sim/pickup/scripts/e13.sh`; 70 runs, 9,450 episodes.
+
+**Validation layouts first** (seed 43; episodes solved of 100 layouts a cell, `order` 50 per mode), to fix the
+setting:
+
+| Situation (rung) | The scene | The whole state | The look undrawn | The scene, gate on |
+|---|---|---|---|---|
+| `prune` | 83 | 89 | | 83 |
+| `order` (1), of 150 | 131 | 129 | | 126 |
+| `nothing_to_do` (2) | 95 | 98 | | |
+| `ties` (3) | **52** | 65 | 85 | |
+| `sick` (4) | 91 | 91 | 88 | |
+| `buds` (4) | 93 | 94 | 89 | |
+
+**The decisions, taken there:**
+
+- **The gate stays off.** Its rule (architecture-v3.md, rule f) was to keep it where the fast level cuts a shoot its
+  sub-goal did not name in more than 2 episodes of 200. Without the gate it did so in none of 250 `prune` and `order`
+  episodes (no wrong shoot, no cut out of order). What the gate would have vetoed was mostly jaws shutting between two
+  parts or at a shoot already cut or cut in its turn later (`prune`: 86 of 95 such commands, in 22 episodes, 15 of
+  them solved), and each veto asks for a reset: with the gate on the resets rise from 18 to 48 in `prune` and episodes
+  solved do not (83 and 83; `order` 131 and 126 of 150).
+- **The memory's rule for attributes stays "row"**: on the simulator's scene a reading is never wrong, so the rules
+  cannot differ here; E17 compares them on the eyes.
+- **Ties need the fast level fine-tuned before rung 3** (P8 refuted for ties): with the same layouts, targets and
+  readings, drawing the ties takes the fast level from 85 to 52 of 100. The yellow leaves (91 against 88) and the buds
+  (93 against 89) cost nothing that 100 episodes can show.
+
+**Evaluation layouts** (episodes solved of 200 a cell; `order` 100 per mode, 300 in all), both fast levels, the
+setting above, the gate run as well where E13 asks for it:
+
+| Situation (rung) | Seed 43: the scene | the whole state | the look undrawn | gate on | Seed 44: the scene | the whole state | the look undrawn | gate on |
+|---|---|---|---|---|---|---|---|---|
+| `prune` | 159 | 167 | | 163 | 169 | 170 | | 157 |
+| `order` (1), of 300 | 247 | 246 | | 244 | 245 | 248 | | 223 |
+| `order`: from the top down, of 100 | 75 | 82 | | 74 | 80 | 79 | | 67 |
+| `order`: from the bottom up, of 100 | 80 | 80 | | 82 | 78 | 77 | | 74 |
+| `order`: a pair, of 100 | 92 | 84 | | 88 | 87 | 92 | | 82 |
+| `nothing_to_do` (2) | 188 | 197 | | | 188 | 197 | | |
+| `ties` (3) | **105** | 124 | 171 | | **60** | 71 | 169 | |
+| `sick` (4) | 172 | 178 | 176 | | 165 | 165 | 177 | |
+| `sick`, no shoot meant, of 62 | 60 | 60 | 60 | | 60 | 60 | 60 | |
+| `sick`, one or more meant, of 138 | 112 | 118 | 116 | | 105 | 105 | 117 | |
+| `buds` (4) | 183 | 182 | 186 | | 180 | 189 | 185 | |
+| `buds`, no shoot meant, of 54 | 53 | 54 | 53 | | 53 | 54 | 53 | |
+| `buds`, one or more meant, of 146 | 130 | 128 | 133 | | 127 | 135 | 132 | |
+
+Why episodes were lost, from the episode records (the scene, both fast levels together):
+
+| Cause | `prune` (400) | `order` (600) | `nothing_to_do` (400) | `ties` (400) | `sick` (400) | `buds` (400) |
+|---|---|---|---|---|---|---|
+| the fast level out of time on a cut | 43 | 72 | | 176 | 34 | 15 |
+| the fast level touched the flower | 19 | 24 | | 9 | 9 | 12 |
+| a shoot not meant cut, or cut out of order | | 6 | | 8 | 2 | 2 |
+| held for a shoot never seen (the inventory never completes) | 10 | 6 | 18 | 10 | 10 | 8 |
+| a look ran out ("cannot see the tie of ..."; where no shoot was meant it is scored solved, below) | | | | 32 | 4 | |
+| the home move touched the flower | | | 6 | | 4 | |
+| solved | 328 | 492 | 376 | 165 | 337 | 363 |
+
+What E13 shows:
+
+- **Rung 1 carries over: order costs no more than pruning.** 247 and 245 of 300 `order` episodes (82%) against 159
+  and 169 of 200 `prune` episodes (80% to 85%), with a slow level that makes no error. P1 holds: `prune` is inside
+  140 to 170, and `order` (165 and 163 per 200) is at the top of 120 to 160; chaining sub-goals is not the limit. From
+  the top down is the hardest mode (75 and 80 of 100): the highest shoot, first, is next to the flower (11 of 200
+  touched it, against 4 from the bottom up), and the fast level cut a lower shoot before the named one in 1 and 3
+  episodes of 100 (with one in a pair, the only cuts out of order: 5 of 600).
+- **Rung 2: nothing to do is said at once, and lost to two scripted things.** v3 says `Complete` before any sub-goal
+  in 191 of 200 `nothing_to_do` episodes (P2's bar on the simulator's scene: 190) and solves 188 (the fast level is
+  never asked, so both seeds give the same episodes); with the whole state it says so in 200 and solves 197. The rest:
+  9 episodes in which a stub is never seen and the plan holds for it to the end (nothing turns the plate while it
+  holds), and 3 in which the home move itself touches the flower (the straight line in joint space from a clear start
+  to the home pose passes it; also 2 of 62 `sick` plants with no sick shoot). The reverse error: no `Complete` at the
+  first look on a `prune` plant (0 of 400); 5 of 200 on `ties` and 1 of 200 on `buds`, all withdrawn when the shoot
+  not yet seen came into view.
+- **Rung 3: the ties break the fast level.** 105 and 60 of 200 against 171 and 169 on the same episodes with the ties
+  undrawn: seeing a tie costs 66 and 109 episodes (P8 refuted for ties: more than 30). The episodes it loses run out of
+  time with the plate turning: in 137 of the 176 of them it turned more than a full turn (2 of 10 with the ties
+  undrawn), past the named shoot and round again. It also cut a shoot it was not told to in 8 of 400 episodes (21 of
+  400 with the whole state; 1 undrawn). So the fast level is fine-tuned on the looks before rung 3 is reported, as P8
+  says.
+- **Rung 4: yellow leaves and buds cost the fast level nothing measurable.** `sick` 172 and 165 against 176 and 177
+  undrawn; `buds` 183 and 180 against 186 and 185 (P8 holds for them). Plants with no shoot meant are solved in 60 of
+  62 (`sick`) and 53 of 54 (`buds`) with both seeds; the cuts are what is lost (`sick` 112 and 105 of 138 plants with a
+  shoot meant).
+- **What looking costs** (the scene against the whole state): 16 of 200 `ties` layouts need a look at a tie the
+  cameras do not show from the clear start, 4 `sick` and 7 `buds`; held for (no fast level can yet show a shoot),
+  every one of those looks runs out and ends as `Failed`, "cannot see", as designed. Where no shoot was meant, the
+  situations' success rule (no cut, the arm home) scores that `Failed` as solved: 7 `buds` and 2 `sick` episodes of
+  200 with each fast level are in the table though v3 gave up on them (without them `buds` 176 and 173, `sick` 170
+  and 163). Elsewhere the two oracles are within noise (`prune` 159 and 167, 169 and 170), and `nothing_to_do` loses
+  the 9 stubs never seen.
+- **The gate, on the evaluation layouts too**, takes away the cuts out of order (4 to 0 from the top down) and costs
+  more than it saves: `order` 244 and 223 against 247 and 245, `prune` 163 and 157 against 159 and 169; it doubles the
+  resets (`prune` 91 and 108 against 45 and 50) and from the top down the flower is touched more often (24 against
+  11). It stays off. On `ties` the fast level's wrong cuts are above the gate's threshold (3 of 100 on validation
+  layouts), but the gate was not run there; it is measured again on `ties` after the fine-tuning.
+- **What the fast level costs per rung**, against the scripted expert from the same starts (98 to 100 of 100 on each
+  situation, above): with the whole state, where the slow level has nothing to find, the fast level solves 84% to 85%
+  of `prune`, 82% to 83% of `order`, 98.5% of `nothing_to_do` (all of the loss the home move), 62% and 36% of `ties`,
+  89% and 83% of `sick`, 91% and 95% of `buds`. Most of what it loses is time, a cut not made before the episode
+  ends, and the rest mostly the flower touched.
+- **v2 from the new starts.** v2's slow level on `reason_mix` (the simulator's scene, the task's program, seed 43,
+  training instructions, up to two resets) from starts clear of the plant: 170 of 200. From the home pose the same
+  fast level solved 169 there without resets, 173 to 179 with them on validation layouts, and 178 with them and the
+  eyes (the task's program; 180 with the written one, v2's headline): within about 8 episodes, so v2's behaviour holds
+  from the new starts. It loses 20 episodes to a cut not made in time, 5 to a shoot never seen, 3 to the flower and 2
+  to a wrong shoot.
+- **A miscount found and fixed.** The v3 summary counted the cuts meant of a `sick` or `buds` plant with no shoot meant
+  as every shoot on it, as for pruning, which put those episodes among the `Complete` said wrongly; the records'
+  scenario fields hold the right number and every count above is from them (`slow_level.SlowLevel.situation` now
+  gives 0 there).
+
+70 runs, 9,450 episodes, on one L40S in 2.25 hours of wall time (4 to 24 runs sharing it; the runs' own wall times add
+to 27.5 hours).
+
 ## Throughput
 
 | Model | Machine A (RTX 4090) | Machine B (L40S) |

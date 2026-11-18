@@ -757,7 +757,13 @@ choice open, or could not be followed as written, the simplest faithful option w
   resets allowed, as rule e does.
 - **The runs**: `scripts/e13.sh` runs E13's list through `scripts/eval_v2.sh`, which takes `PICKUP_SLOW_LEVEL=v3`:
   70 runs and about 9,450 episodes (100 per cell on validation layouts, 200 on evaluation layouts, `order` as 100 per
-  mode), about 9.5 GPU-hours at 0.2 per 200 episodes, against the 5.5 counted in the plan.
+  mode), about 9.5 GPU-hours at 0.2 per 200 episodes, against the 5.5 counted in the plan. Run with up to 24 at once
+  on one GPU, they took 2.25 hours of it.
+- **E13's decisions** (the notebook has the tables): the gate stays off (the fast level cut no shoot it was not told
+  to in 250 validation episodes of `prune` and `order`, and with the gate on it solves fewer); the memory's rule for
+  attributes stays "row" (on the simulator's scene the rules cannot differ); P1 holds; the ties cost the fast level 66
+  and 109 episodes of 200, so it is fine-tuned on the looks before rung 3 is reported (P8), and the gate is measured on
+  `ties` after that; yellow leaves and buds cost it nothing measurable.
 
 ## Risks
 
