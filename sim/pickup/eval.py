@@ -595,10 +595,11 @@ def main():
     )
     ap.add_argument(
         "--slow_attribute_rule",
-        choices=["row", "last", "angles"],
+        choices=["row", "last", "angles", "sticky"],
         default="row",
         help="v3: when the memory takes an attribute as known: --slow_stable readings in a row (row), the last "
-        "reading, or a row from angles at least 30 degrees apart (scene.SceneMemory, rule 8)",
+        "reading, a row from angles at least 30 degrees apart, or a row for the first value and a row from such "
+        "angles for any change of it (sticky) (scene.SceneMemory, rule 8)",
     )
     ap.add_argument(
         "--slow_witness",

@@ -56,8 +56,9 @@ NO_ATTRIBUTES = {"tie": "none", "sick": "no", "bud": "no"}
 SEPARATE = 1.5
 # SceneMemory's rules for an attribute (architecture v3): "row" (stable readings in a row, as every fact of v2), "last"
 # (the last reading), "angles" (a row whose readings were taken with the plate at least ANGLES_APART apart: looks from
-# one angle are one witness)
-ATTRIBUTE_RULES = ("row", "last", "angles")
+# one angle are one witness), "sticky" (the first value as "row" makes it known; a value once known changes only as
+# "angles" would: readings in a row from one angle, as with the hand in front of a shoot, do not overturn it)
+ATTRIBUTE_RULES = ("row", "last", "angles", "sticky")
 ANGLES_APART = float(np.radians(30))
 
 
@@ -508,7 +509,8 @@ class SceneMemory:
        not say the part is cut, its class is not UNREADABLE and its probability (p_attributes, if any) is at least
        p_min. Under `attribute_rule` "row" (the default) the attribute is known after `stable` readings in a row of one
        value and changes only after `stable` of another; "last" takes the last reading; "angles" asks of the row that
-       its readings were taken at bearings at least ANGLES_APART apart. A look that cannot read it neither counts nor
+       its readings were taken at bearings at least ANGLES_APART apart; "sticky" is "row" for the first value and
+       "angles" for any change of it. A look that cannot read it neither counts nor
        breaks the row: what a tie showed is kept when it has turned away. Once a part is marked cut its attributes do
        not change (until a revoke unmarks it): a stub read as "no tie" would otherwise move the plan's selection. Every
        counted reading is kept with the part's bearing then (`readings`).
@@ -660,7 +662,9 @@ class SceneMemory:
             known = n >= self.stable
             if self.attribute_rule == "last":
                 known = True
-            elif self.attribute_rule == "angles":
+            elif self.attribute_rule == "angles" or (
+                self.attribute_rule == "sticky" and part.attributes.get(key, value) != value
+            ):
                 known = known and _spread([b for b in bearings if b is not None]) >= ANGLES_APART
             if known:
                 part.attributes[key] = value

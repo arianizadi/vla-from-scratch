@@ -919,6 +919,22 @@ def test_the_last_look_and_two_angles_are_the_other_attribute_rules_and_every_re
         S.SceneMemory(attribute_rule="majority")
 
 
+def test_sticky_takes_the_first_value_from_a_row_and_changes_it_only_from_two_angles():
+    sticky = S.SceneMemory(stable=2, attribute_rule="sticky")
+    for step in range(2):  # the first value: a row, from one angle
+        sticky.update(_scene(_attr_part(0.1, b=0.0, tie="white")), step)
+    assert sticky.parts[0].attributes == {"tie": "white"}
+    for step in range(2, 8):  # the hand in front of the tie: "none" from one angle, many times; it stays white
+        sticky.update(_scene(_attr_part(0.1, b=0.05, tie="none")), step)
+    assert sticky.parts[0].attributes == {"tie": "white"}
+    sticky.update(_scene(_attr_part(0.1, b=0.7, tie="none")), 8)  # the same reading from 37 degrees further round
+    assert sticky.parts[0].attributes == {"tie": "none"}
+    row = S.SceneMemory(stable=2)  # the default rule changes it after any two readings in a row
+    for step, tie in enumerate(("white", "white", "none", "none")):
+        row.update(_scene(_attr_part(0.1, b=0.0, tie=tie)), step)
+    assert row.parts[0].attributes == {"tie": "none"}
+
+
 def test_with_witness_a_part_first_seen_whole_is_cut_only_where_the_jaws_have_shut():
     memory = S.SceneMemory(stable=1, witness=True)
     memory.update(_scene(_attr_part(0.08), _attr_part(0.115)), 0)
