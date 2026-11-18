@@ -733,6 +733,53 @@ def test_the_plant_crop_is_a_larger_view_centred_on_the_stem():
         env.close()
 
 
+def test_the_narrower_crop_is_twice_the_plant_crop_around_the_same_place():
+    """zoom 4 (collect_scene --crop4) renders larger than the model's offscreen buffer: the buffer is made larger. Its
+    window shows the middle of the plant crop's window at twice the size."""
+    env = _env("prune")
+    crop, crop4 = S.PlantCrop(env), S.PlantCrop(env, zoom=4)
+    try:
+        assert env.model.vis.global_.offheight >= 896 and crop4.renderer.height == 896
+        env.reset(seed=SEEDS[0])
+        img, img4 = crop.render().astype(float), crop4.render().astype(float)
+        assert img4.shape == (224, 224, 3)
+        # the narrower crop's window, in the plant crop's pixels (half its render's), is about the middle of the plant
+        # crop; that part of the plant crop scaled up twice looks like the narrower crop
+        (top, left), (top4, left4) = crop.window(), crop4.window()
+        r0, c0 = top4 // 2 - top, left4 // 2 - left
+        assert abs(r0 - 56) <= 2 and abs(c0 - 56) <= 2, (r0, c0)
+        middle = img[r0 : r0 + 112, c0 : c0 + 112].repeat(2, 0).repeat(2, 1)
+        assert np.abs(middle - img4).mean() < 0.5 * np.abs(img - img4).mean()
+    finally:
+        crop.close()
+        crop4.close()
+        env.close()
+
+
+def test_a_crop_window_is_a_third_attribute_view_that_reads_no_more_than_the_front_camera():
+    env = _env("prune")
+    env.close()
+    from sim.pickup.env import PickupEnv
+
+    env = PickupEnv("prune", scenario="buds")
+    crop4 = S.PlantCrop(env, zoom=4)
+    try:
+        outside = 0
+        for seed in range(900_000, 900_010):
+            env.reset(seed=seed)
+            plain = S.scene_truth(env, attributes=True, views=True)
+            windowed = S.scene_truth(env, attributes=True, views=True, windows=(crop4,))
+            for a, b in zip(plain.parts, windowed.parts, strict=True):
+                assert a.attributes == b.attributes  # what can be read is the two cameras' as before
+                for attr, views in b.attribute_views.items():
+                    assert len(views) == 3 and views[:2] == a.attribute_views[attr] and (views[0] or not views[2])
+                    outside += views[0] and not views[2]
+        assert outside > 0, "the narrower crop's window shows every tip the front camera shows"
+    finally:
+        crop4.close()
+        env.close()
+
+
 def test_the_collector_writes_the_perception_dataset(tmp_path):
     pq = pytest.importorskip("pyarrow.parquet")
     from PIL import Image
@@ -740,14 +787,16 @@ def test_the_collector_writes_the_perception_dataset(tmp_path):
     _env("reason_mix").close()  # skipped where the simulator or a GL context is missing
     out = tmp_path / "scene"
     command = [sys.executable, "-m", "sim.pickup.collect_scene", "--task", "reason_mix", "--episodes", "2"]
-    command += ["--workers", "1", "--seed", "1000000", "--crop", "--out", str(out)]
+    command += ["--workers", "1", "--seed", "1000000", "--crop", "--crop4", "--out", str(out)]
     run = subprocess.run(command, cwd=REPOSITORY, capture_output=True, text=True, timeout=1800)
     assert run.returncode == 0, run.stderr[-4000:]
     assert run.stdout.strip().splitlines()[-1].startswith("wrote 2 episodes")
 
     meta = json.loads((out / "meta.json").read_text())
-    expected = dict(task="reason_mix", episodes=2, stride=4, cameras=["front", "wrist", "plant"], image_size=224)
-    expected.update(crop_zoom=2, driver="expert", random_start=True, scenario=None, seed=1_000_000)
+    expected = dict(task="reason_mix", episodes=2, stride=4, cameras=["front", "wrist", "plant", "plant4"])
+    expected.update(
+        image_size=224, crop_zoom=2, crop4_zoom=4, driver="expert", random_start=True, scenario=None, seed=1_000_000
+    )
     assert {k: meta[k] for k in expected} == expected
     episodes = [json.loads(line) for line in (out / "episodes.jsonl").read_text().splitlines()]
     assert [e["seed"] for e in episodes] == [1_000_000, 1_000_001]
@@ -755,7 +804,7 @@ def test_the_collector_writes_the_perception_dataset(tmp_path):
     for e in episodes:
         assert e["file"] == f"episodes/ep_{e['seed']:07d}.parquet" and e["task"] == "reason_mix"
         table = pq.read_table(out / e["file"])
-        assert table.column_names == ["step", "front", "wrist", "plant", "scene"]
+        assert table.column_names == ["step", "front", "wrist", "plant", "plant4", "scene"]
         assert table.num_rows == e["frames"] > 0 and str(table.schema.field("step").type) == "int32"
         steps = table.column("step").to_pylist()
         tail = meta["tail_steps"] if e["success"] else 0
@@ -765,7 +814,7 @@ def test_the_collector_writes_the_perception_dataset(tmp_path):
         for cell in table.column("scene").to_pylist():
             scene = S.Scene.from_json(cell)
             assert len(scene.parts) == e["shoots"] and all(len(p.views) == 2 for p in scene.parts)
-        for camera in ("front", "wrist", "plant"):
+        for camera in ("front", "wrist", "plant", "plant4"):
             img = np.asarray(Image.open(io.BytesIO(table.column(camera)[0].as_py())))
             assert img.shape == (224, 224, 3), (camera, img.shape)
 

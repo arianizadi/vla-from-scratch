@@ -22,7 +22,8 @@ ties elsewhere on the plant. `+sized` (ties, buds; it can stand beside an `+undr
 episodes (SIZED_SHARE), each tie or bud at a scale of its own between half and twice its size (SIZES), for the eyes'
 accuracy against the size of what they read (architecture v3, E16); the episode is otherwise the one drawn without it,
 and the variation lists the scale of each shoot's look, lowest shoot first (`sizes`); `+size<x>` draws every look at
-scale x instead (`ties+size0.5556` is a tie at its true size: ties are drawn at TIE_SCALE). The catalogue numbers (B1,
+scale x instead (`ties+size0.5556` is a tie at its true size: ties are drawn at TIE_SCALE), and `+wide` every look of
+every episode at a scale of its own between a quarter and twice its size (WIDE_SIZES). The catalogue numbers (B1,
 A5, ...) are accepted as names. See tutorial/test-situations.md for the catalogue.
 
 A situation that draws something about each shoot that a program can ask for (a tie, sick leaves, a bud) says what it
@@ -116,10 +117,11 @@ class Scenario:
         assert hide in (None, "target", "others") and (hide is None or self.partial_undraw), (self.name, hide)
         assert not (undrawn and hide), "+undrawn leaves every look out: not with +undrawn_target or +undrawn_others"
         assert not sized or self.can_size, f"{self.name} has no look to draw at other sizes"
-        assert isinstance(sized, bool) or 0.1 <= float(sized) <= 4, f"{self.name}: a look's scale of {sized}"
+        assert isinstance(sized, bool) or sized == "wide" or 0.1 <= float(sized) <= 4, f"{self.name}: scale {sized}"
         self.mode, self.prob, self.split, self.undrawn = mode, prob, split, bool(undrawn)
-        # ties, buds: True, a fifth of the episodes draw each look at a scale of its own; a number, every look at it
-        self.sized = sized if isinstance(sized, bool) else float(sized)
+        # ties, buds: True, a fifth of the episodes draw each look at a scale of its own; "wide", every episode draws
+        # each look at a scale of its own among WIDE_SIZES; a number, every look at it
+        self.sized = sized if isinstance(sized, bool) or sized == "wide" else float(sized)
         self.hide = hide  # ties: the tie left out on the shoot meant ("target") or on the other shoots ("others")
         self.applied, self.variation = False, {}
 
@@ -132,7 +134,15 @@ class Scenario:
             + (f"@{self.prob:g}" if self.prob < 1 else "")
             + ("+undrawn" if self.undrawn else "")
             + (f"+undrawn_{self.hide}" if self.hide else "")
-            + ("+sized" if self.sized is True else f"+size{self.sized:g}" if self.sized else "")
+            + (
+                "+sized"
+                if self.sized is True
+                else "+wide"
+                if self.sized == "wide"
+                else f"+size{self.sized:g}"
+                if self.sized
+                else ""
+            )
         )
 
     # --------------------------------------------------------------------------------------------------- hooks
@@ -739,6 +749,9 @@ def _leaves_in_use(env, name):
 # is drawn uniformly among them, in SIZED_SHARE of the episodes
 SIZES = tuple(2 ** (k / 4) for k in range(-4, 5))
 SIZED_SHARE = 0.2
+# `+wide`: in every episode each look at a scale of its own among a quarter to twice its size, for eyes whose accuracy
+# against size is not shaped by most of their frames being at one size (ties: 0.45 to 3.6 times a tie's true size)
+WIDE_SIZES = tuple(2 ** (k / 4) for k in range(-8, 5))
 
 
 def _size_name(mesh, size):
@@ -759,7 +772,9 @@ class _Sized:
     @property
     def sizes(self) -> tuple[float, ...]:
         """The scales this option draws its looks at."""
-        return () if not self.sized else SIZES if self.sized is True else (self.sized,)
+        if not self.sized:
+            return ()
+        return SIZES if self.sized is True else WIDE_SIZES if self.sized == "wide" else (self.sized,)
 
     def _build_sizes(self, spec):
         for mesh, scale in self.sized_meshes:
@@ -792,7 +807,9 @@ class _Sized:
         for g, (mesh, rbound, aabb) in self.size_base.items():
             m.geom_dataid[g], m.geom_rbound[g], m.geom_aabb[g] = mesh, rbound, aabb
         sizes = [1.0] * len(shoots)
-        if self.sized is not True:  # one scale for every look
+        if self.sized == "wide":  # every episode, each look at a scale of its own
+            sizes = [WIDE_SIZES[int(k)] for k in rng.integers(len(WIDE_SIZES), size=len(shoots))]
+        elif self.sized is not True:  # one scale for every look
             sizes = [self.sized] * len(shoots)
         elif rng.random() < SIZED_SHARE:
             sizes = [SIZES[int(k)] for k in rng.integers(len(SIZES), size=len(shoots))]
@@ -1341,6 +1358,9 @@ def parse(spec) -> list[Scenario]:
         sized = "sized" in options
         if sized:
             options.remove("sized")
+        if "wide" in options:
+            sized = "wide"
+            options.remove("wide")
         for option in [o for o in options if o.startswith("size") and o != "sized"]:
             try:
                 sized = float(option[len("size") :])

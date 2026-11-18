@@ -16,7 +16,8 @@ Layout:
   <out>/episodes.jsonl         one line per episode: file, seed, task, frames, steps, success, shoots (and how it ended)
   <out>/episodes/ep_<seed:07d>.parquet
                                one row per recorded frame: step (int32, the control step), front and wrist (JPEG bytes,
-                               224 x 224), plant (the plant crop, with --crop) and scene (the truth, Scene.to_json)
+                               224 x 224), plant (the plant crop, with --crop), plant4 (the narrower crop at four
+                               times the size, with --crop4) and scene (the truth, Scene.to_json)
 
 Only plant tasks have a scene. Held-out tasks are allowed: the labels do not depend on the instruction.
 
@@ -48,6 +49,7 @@ from .scene import PlantCrop, scene_truth
 
 IMAGE_SIZE = 224
 CROP_ZOOM = 2  # the plant crop: the front camera rendered at twice the size, the plant's window cut out
+CROP4_ZOOM = 4  # the narrower crop (plant4, --crop4): at four times the size, about 0.85 mm per pixel at the plant
 CAMERAS = ("front", "wrist")
 
 
@@ -76,7 +78,8 @@ def _ending(info, stopped=False) -> str:
 
 
 def _table(columns: dict) -> pa.Table:
-    types = {"step": pa.int32(), "front": pa.binary(), "wrist": pa.binary(), "plant": pa.binary(), "scene": pa.string()}
+    types = {"step": pa.int32(), "scene": pa.string()}
+    types.update(dict.fromkeys(("front", "wrist", "plant", "plant4"), pa.binary()))
     return pa.table({k: pa.array(v, type=types[k]) for k, v in columns.items()})
 
 
@@ -103,18 +106,22 @@ class SceneRecorder:
         keep_streams: bool = False,
         attributes: bool | None = None,
         attribute_views: bool = False,
+        crop4: bool = False,
     ):
         assert env.image_size == IMAGE_SIZE, f"the dataset's images are {IMAGE_SIZE} pixels, not {env.image_size}"
         self.out, self.env, self.stride, self.keep_streams = Path(out), env, stride, keep_streams
         self.attributes = attributes  # scene_truth's: None, where a situation draws them; True, on every frame
         self.attribute_views = attribute_views  # scene_truth's views: which camera can read each attribute
         self.crop = PlantCrop(env, size=IMAGE_SIZE, zoom=CROP_ZOOM) if crop else None
+        self.crop4 = PlantCrop(env, size=IMAGE_SIZE, zoom=CROP4_ZOOM) if crop4 else None  # the narrower crop
         self.records: list[dict] = []
         (self.out / "episodes").mkdir(parents=True, exist_ok=True)
 
     def start(self, seed: int):
         self.seed, self.offset = seed, stride_offset(seed, self.stride)
         plant = {"plant": []} if self.crop is not None else {}
+        if self.crop4 is not None:
+            plant["plant4"] = []
         self.columns = {"step": [], **{c: [] for c in CAMERAS}, **plant, "scene": []}
 
     def due(self) -> bool:
@@ -126,15 +133,20 @@ class SceneRecorder:
         for c in CAMERAS:
             columns[c].append(jpeg(obs[c]))
         if self.crop is not None:
-            columns["plant"].append(jpeg(self._crop()))
-        columns["scene"].append(scene_truth(env, attributes=self.attributes, views=self.attribute_views).to_json())
+            columns["plant"].append(jpeg(self._crop(self.crop)))
+        if self.crop4 is not None:
+            columns["plant4"].append(jpeg(self._crop(self.crop4)))
+        # with the narrower crop, the truth's attribute views add a third: the front camera inside its window
+        windows = (self.crop4,) if self.crop4 is not None and self.attribute_views else ()
+        truth = scene_truth(env, attributes=self.attributes, views=self.attribute_views, windows=windows)
+        columns["scene"].append(truth.to_json())
 
-    def _crop(self):
+    def _crop(self, crop):
         if not self.keep_streams:
-            return self.crop.render()
+            return crop.render()
         streams = [s.rng for s in self.env.scenarios if getattr(s, "rng", None) is not None]
         states = [rng.bit_generator.state for rng in streams]
-        image = self.crop.render()
+        image = crop.render()
         for rng, state in zip(streams, states, strict=True):
             rng.bit_generator.state = state
         return image
@@ -158,12 +170,15 @@ class SceneRecorder:
         return entry
 
     def close(self):
-        if self.crop is not None:
-            self.crop.close()
-            self.crop = None
+        for crop in (self.crop, self.crop4):
+            if crop is not None:
+                crop.close()
+        self.crop = self.crop4 = None
 
 
-def write_listing(out, records: list[dict], task: str, stride: int, crop: bool, **settings) -> dict:
+def write_listing(
+    out, records: list[dict], task: str, stride: int, crop: bool, crop4: bool = False, **settings
+) -> dict:
     """Write episodes.jsonl (`records`, the episodes' lines, by seed) and meta.json: the task, the counts, the stride,
     the cameras, then `settings` in their order. Returns the meta."""
     out, records = Path(out), sorted(records, key=lambda r: r["seed"])
@@ -174,9 +189,10 @@ def write_listing(out, records: list[dict], task: str, stride: int, crop: bool, 
         episodes=len(records),
         frames=sum(r["frames"] for r in records),
         stride=stride,
-        cameras=[*CAMERAS, *(["plant"] if crop else [])],
+        cameras=[*CAMERAS, *(["plant"] if crop else []), *(["plant4"] if crop4 else [])],
         image_size=IMAGE_SIZE,
         crop_zoom=CROP_ZOOM if crop else None,
+        **({"crop4_zoom": CROP4_ZOOM} if crop4 else {}),
         **settings,
         successes=sum(r["success"] for r in records),
     )
@@ -222,6 +238,7 @@ def _worker(args):
         stride=options["stride"],
         attributes=options["attributes"] or None,
         attribute_views=options["attribute_views"],
+        crop4=options.get("crop4", False),
     )
     try:
         for seed in seeds:
@@ -249,6 +266,12 @@ def main(argv=None):
         f"render at {CROP_ZOOM} times the size",
     )
     ap.add_argument(
+        "--crop4",
+        action="store_true",
+        help="also record the narrower crop (plant4): the plant's window of a render at "
+        f"{CROP4_ZOOM} times the size, about 0.85 mm per pixel (architecture v3, E16's third set of views)",
+    )
+    ap.add_argument(
         "--no_random_start",
         action="store_true",
         help="start every episode at the home pose (by default from a random pose above the table, as the "
@@ -271,8 +294,8 @@ def main(argv=None):
     ap.add_argument(
         "--attribute_views",
         action="store_true",
-        help="with --attributes: each part also says which camera (front, wrist) can read each attribute, for "
-        "measuring eyes that look through one camera",
+        help="with --attributes: each part also says which camera (front, wrist; with --crop4 also the front camera "
+        "inside the narrower crop's window) can read each attribute, for measuring eyes that look through one camera",
     )
     ap.add_argument("--max_steps", type=int, default=None, help="episode limit (default: the task's)")
     args = ap.parse_args(argv)
@@ -287,6 +310,7 @@ def main(argv=None):
         tail_steps=args.tail_steps,
         random_start=not args.no_random_start,
         crop=args.crop,
+        crop4=args.crop4,
         scenario=args.scenario,
         leaf_fix=args.leaf_fix,
         max_steps=args.max_steps,
@@ -305,6 +329,7 @@ def main(argv=None):
         args.task,
         args.stride,
         args.crop,
+        args.crop4,
         driver="expert",
         random_start=not args.no_random_start,
         scenario=args.scenario,

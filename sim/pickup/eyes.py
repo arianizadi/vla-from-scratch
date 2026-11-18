@@ -46,7 +46,8 @@ attribute of a cut part. A slot without a part, and a part whose truth has no at
 them), leaves the attribute out of the loss. The truth decides readable by the front and the wrist cameras together:
 eyes meant for the scene memory look through both (the plant crop is the front camera's), and eyes that look through
 one camera (a probe of what that camera can read) are scored only where it can read (eyes_report, with the truth's
-attribute_views). Without attributes the eyes are v2's, weight for weight.
+attribute_views); where the truth says which camera can read an attribute (collect_scene --attribute_views), such eyes
+learn "cannot be read" where their camera cannot read it. Without attributes the eyes are v2's, weight for weight.
 
 What the percept is for. Eyes.decode writes the outputs in the percept form of scene.py: every slot, the lowest first,
 with how sure the eyes are of each field (Scene.from_dict reads it). SceneMemory takes it from there. Eyes.see does
@@ -97,8 +98,17 @@ LOSS_WEIGHTS = {
 P_MIN = 0.7  # evaluate: a reading the scene memory counts is one at least this sure (SceneMemory's p_min)
 HEIGHT_BETA = 0.02  # smooth L1 turns from the squared error to the absolute error here, in 0..1 units: about 2.6 mm
 NO_CLASS = -100  # a flower target that is left out of the loss: a scene whose flower is not known
-# Which of the truth's views (front, wrist) shows what each camera shows: the plant crop is part of the front image
-CAMERA_VIEWS = {"front": 0, "wrist": 1, "plant": 0}
+# Which of the truth's views (front, wrist) shows what each camera shows: the plant crops are parts of the front image
+CAMERA_VIEWS = {"front": 0, "wrist": 1, "plant": 0, "plant4": 0}
+# Which of the truth's attribute views reads what each camera can read (scene_truth's views: front, wrist, then the
+# narrower crop's window where the dataset has it; else the front camera's)
+ATTRIBUTE_VIEWS = {"front": 0, "wrist": 1, "plant": 0, "plant4": 2}
+
+
+def attribute_view(camera: str, views) -> int:
+    """The index in an attribute's views (front, wrist[, plant4]) of what `camera` can read."""
+    j = ATTRIBUTE_VIEWS[camera]
+    return j if j < len(views) else CAMERA_VIEWS[camera]
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 CONFIG_FILE = "eyes_config.json"
@@ -205,8 +215,14 @@ def targets_from_scene(scene: dict, config: EyesConfig) -> dict[str, torch.Tenso
     bearing = [[0.0, 0.0] for _ in range(k)]
     attributes = {name: [NO_CLASS] * k for name in TRUTH_ATTRIBUTES}
     for i, part in enumerate(parts):
+        views = part.get("attr_vis", {})  # which camera can read each attribute, where the truth says
         for name, value in part.get("attr", {}).items():
             if name in attributes:
+                # eyes that look through one camera: what that camera cannot read is unreadable to them
+                if value != UNREADABLE and name in views:
+                    own = [attribute_view(c, views[name]) for c in config.cameras if c in ATTRIBUTE_VIEWS]
+                    if not any(views[name][j] for j in own):
+                        value = UNREADABLE
                 attributes[name][i] = ATTRIBUTE_CLASSES[name].index(value)
         vis = part.get("vis", False)
         exists[i] = 1.0

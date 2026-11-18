@@ -832,6 +832,29 @@ def test_sized_draws_the_same_episode_with_some_looks_at_other_scales(situation)
         S.parse("ties+sizebig")
 
 
+@pytest.mark.parametrize("situation", ["ties", "buds"])
+def test_wide_draws_every_look_of_every_episode_at_a_scale_of_its_own(situation):
+    plain, wide = _env("prune", situation), _env("prune", f"{situation}+wide")
+    try:
+        assert wide.scenarios[0].spec() == f"{situation}+wide"
+        assert S.parse(f"{situation}+undrawn+wide")[0].spec() == f"{situation}+undrawn+wide"
+        drawn = set()
+        for seed in range(40):
+            plain.reset(seed=seed), wide.reset(seed=seed)
+            sizes = wide.scenario_info[situation]["sizes"]
+            assert _layout(plain) == _layout(wide) and plain.targets == wide.targets
+            assert len(sizes) == len(wide.active) and all(min(abs(x - y) for y in S.WIDE_SIZES) < 1e-4 for x in sizes)
+            kind = "_tie" if situation == "ties" else "_bud_body"
+            for name, size in zip(wide.active, sizes, strict=True):
+                g = plain.model.geom(f"{name}{kind}").id
+                assert wide.model.geom_rbound[g] == pytest.approx(plain.model.geom_rbound[g] * size, rel=1e-3)
+            drawn.update(round(x, 4) for x in sizes)
+        assert len(drawn) >= 10 and min(drawn) == pytest.approx(0.25, abs=1e-4)  # a quarter to twice, every episode
+    finally:
+        plain.close()
+        wide.close()
+
+
 @pytest.mark.parametrize(
     "scenario",
     (None, "nothing_to_do", "order", "order_heldout", "ties", "ties_heldout", "sick", "buds", "buds_heldout"),

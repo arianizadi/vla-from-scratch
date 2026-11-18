@@ -306,6 +306,17 @@ def test_attribute_targets_are_class_indices_with_unreadable_first_and_none_wher
     # the lower part (now the first slot) has a red tie and is sick, its tip cannot be seen; the cut one shows nothing
     assert t["tie"].tolist() == [2, 0, E.NO_CLASS]
     assert t["sick"].tolist() == [2, 0, E.NO_CLASS] and t["bud"].tolist() == [0, 0, E.NO_CLASS]
+    # where the truth says which camera can read it: the red tie by the wrist camera only, the sick leaves by both
+    views = {"tie": [False, True], "sick": [True, True], "bud": [False, False]}
+    truth["parts"][1] = {**truth["parts"][1], "attr_vis": views}
+    for cameras, tie in ((["front", "wrist"], 2), (["wrist"], 2), (["front"], 0), (["plant4"], 0), (["plant"], 0)):
+        t = E.targets_from_scene(truth, _config(attributes=["tie", "sick"], cameras=cameras))
+        assert t["tie"].tolist() == [tie, 0, E.NO_CLASS] and t["sick"].tolist() == [2, 0, E.NO_CLASS], cameras
+    # a third view, the narrower crop's window: the tie in the front camera's view but outside that window
+    truth["parts"][1]["attr_vis"] = {"tie": [True, False, False], "sick": [True, True, True]}
+    for cameras, tie in ((["front"], 2), (["plant"], 2), (["plant4"], 0), (["wrist"], 0), (["plant4", "wrist"], 0)):
+        t = E.targets_from_scene(truth, _config(attributes=["tie", "sick"], cameras=cameras))
+        assert t["tie"].tolist() == [tie, 0, E.NO_CLASS] and t["sick"].tolist() == [2, 0, E.NO_CLASS], cameras
 
 
 def test_the_config_takes_attributes_only_with_both_cameras_and_v2_eyes_keep_their_weights():
@@ -411,6 +422,23 @@ def test_evaluate_scores_each_attribute_where_it_can_be_read_and_where_it_cannot
     for key, value in expected.items():
         assert m[key] == pytest.approx(value), (key, m[key])
     assert json.loads(json.dumps(m)) == m
+
+
+def test_calibration_is_the_gap_between_the_probability_said_and_how_often_it_is_right():
+    from sim.pickup.eyes_report import calibration
+
+    def row(p, right):
+        return dict(attribute="bud", truth=2, said=2 if right else 1, p=p)
+
+    # ten rows said at 0.95, nine right: calibrated; ten at 0.6, three right: 0.3 too sure
+    rows = [row(0.95, i < 9) for i in range(10)] + [row(0.6, i < 3) for i in range(10)]
+    c = calibration(rows)
+    assert c["rows"] == 20
+    assert c["ece"] == pytest.approx(0.5 * abs(0.95 - 0.9) + 0.5 * abs(0.6 - 0.3))
+    by = {(b["p_from"], b["p_to"]): b for b in c["bins"]}
+    assert by[(0.5, 0.7)] == dict(p_from=0.5, p_to=0.7, rows=10, mean_p=0.6, acc=0.3)
+    assert by[(0.9, 0.99)]["acc"] == 0.9 and by[(0.0, 0.5)]["rows"] == 0
+    assert calibration([]) == dict(rows=0, ece=None, bins=[])
 
 
 # -------------------------------------------------------------------------------------------- checkpoints, serving

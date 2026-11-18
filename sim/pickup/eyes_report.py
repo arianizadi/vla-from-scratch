@@ -18,7 +18,8 @@ Per part, the counts are those of eyes.evaluate: where the truth says the attrib
 (acc; "cannot be read" is wrong there) and the share called unreadable (missed); where it cannot be read, the share
 called unreadable (unreadable_acc); and the readings the scene memory counts (readable and at least eyes.P_MIN sure),
 with the share of them that are wrong. Rows are also split by whether the part is attached or cut, and where sizes
-were drawn, the parts whose look is at its own size are tallied apart (own_size).
+were drawn, the parts whose look is at its own size are tallied apart (own_size). Per attribute, `calibration` sets the
+probability the eyes give the class they say against how often that class is right (calibration()).
 """
 
 import argparse
@@ -29,7 +30,7 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 
-from .eyes import ATTRIBUTE_CLASSES, NO_CLASS, P_MIN, evaluate, load_eyes
+from .eyes import ATTRIBUTE_CLASSES, ATTRIBUTE_VIEWS, NO_CLASS, P_MIN, attribute_view, evaluate, load_eyes
 from .eyes_data import SceneFrames, collate
 from .scenarios import TIE_SCALE
 
@@ -38,8 +39,6 @@ from .scenarios import TIE_SCALE
 NOMINAL_PIXELS = {"tie": 6.0, "bud": 5.0}
 # The scale it is drawn at, against the thing's true (modelled) size
 DRAWN_AT = {"tie": TIE_SCALE, "bud": 1.0}
-# Which of the truth's cameras (attribute_views: front, wrist) each of the eyes' views is
-CAMERA_OF = {"front": 0, "plant": 0, "wrist": 1}
 
 
 def _sizes(root: Path) -> dict[str, list[float]]:
@@ -114,6 +113,7 @@ def tally(rows: list[dict]) -> dict:
         for c, value in enumerate(classes[1:], start=1):
             of = [r for r in readable if r["truth"] == c]
             out[f"acc_{value}"] = share([r for r in of if r["said"] == c], of)
+            out[f"n_{value}"] = len(of)
         if name == "tie":  # class 1 is "none": whether there is a tie, and which colour where there is one
             out["presence_acc"] = share(
                 [r for r in readable if r["said"] != 0 and (r["said"] == 1) == (r["truth"] == 1)], readable
@@ -122,6 +122,40 @@ def tally(rows: list[dict]) -> dict:
             out["colour_acc"] = share([r for r in tied if r["said"] == r["truth"]], tied)
             out["tied"] = len(tied)
     return out
+
+
+CALIBRATION_BINS = (0.0, 0.5, 0.7, 0.9, 0.99, 1.0)  # the reliability table's bins of the probability said
+ECE_BINS = 15  # equal-width bins for the expected calibration error
+
+
+def calibration(rows: list[dict]) -> dict:
+    """How far the probability the eyes give their class is from how often that class is right, over every row of one
+    attribute (readable or not, "cannot be read" being a class like the others): the expected calibration error over
+    ECE_BINS equal-width bins (the share of rows in a bin times the gap between its mean probability and its accuracy,
+    summed), and a reliability table over CALIBRATION_BINS (rows, mean probability, accuracy per bin)."""
+    if not rows:
+        return dict(rows=0, ece=None, bins=[])
+    ece = 0.0
+    for b in range(ECE_BINS):
+        lo, hi = b / ECE_BINS, (b + 1) / ECE_BINS
+        group = [r for r in rows if lo < r["p"] <= hi or (b == 0 and r["p"] == 0.0)]
+        if group:
+            conf = sum(r["p"] for r in group) / len(group)
+            acc = sum(r["said"] == r["truth"] for r in group) / len(group)
+            ece += len(group) / len(rows) * abs(conf - acc)
+    bins = []
+    for lo, hi in zip(CALIBRATION_BINS[:-1], CALIBRATION_BINS[1:], strict=True):
+        group = [r for r in rows if lo <= r["p"] < hi or (hi == 1.0 and r["p"] == 1.0)]
+        bins.append(
+            dict(
+                p_from=lo,
+                p_to=hi,
+                rows=len(group),
+                mean_p=None if not group else round(sum(r["p"] for r in group) / len(group), 4),
+                acc=None if not group else round(sum(r["said"] == r["truth"] for r in group) / len(group), 4),
+            )
+        )
+    return dict(rows=len(rows), ece=round(ece, 4), bins=bins)
 
 
 def report(model, root: Path, batch: int = 128, workers: int = 8) -> dict:
@@ -137,19 +171,23 @@ def report(model, root: Path, batch: int = 128, workers: int = 8) -> dict:
     loader = DataLoader(data, batch_size=batch, num_workers=min(workers, len(data.episodes)), collate_fn=batches_of)
     metrics = evaluate(model, loader)
     rows = part_rows(model, loader, _sizes(root))
-    own = sorted({CAMERA_OF[c] for c in config.cameras if c in CAMERA_OF})  # the truth's cameras these eyes look by
+    cameras = [c for c in config.cameras if c in ATTRIBUTE_VIEWS]  # the truth's views these eyes look by
+
+    def own_view(v) -> bool:
+        return any(v[attribute_view(c, v)] for c in cameras)
+
     attributes = {}
     for name in config.attributes:
         mine = [r for r in rows if r["attribute"] == name]
         attached = [r for r in mine if not r["cut"]]
-        entry = dict(all=tally(mine), attached=tally(attached))
+        entry = dict(all=tally(mine), attached=tally(attached), calibration=calibration(mine))
         if any(r["views"] is not None for r in attached):
             # where the truth says which camera can read it: the parts these eyes' own cameras can read, and the parts
             # read by the front camera only, by the wrist camera only, and by both
             def by(test, rows=attached):
                 return tally([r for r in rows if r["views"] is not None and r["truth"] != 0 and test(r["views"])])
 
-            entry["own_cameras"] = by(lambda v: any(v[j] for j in own))
+            entry["own_cameras"] = by(own_view)
             entry["front_only"] = by(lambda v: v[0] and not v[1])
             entry["wrist_only"] = by(lambda v: v[1] and not v[0])
             entry["both"] = by(lambda v: v[0] and v[1])
@@ -162,7 +200,7 @@ def report(model, root: Path, batch: int = 128, workers: int = 8) -> dict:
             entry["own_size"] = tally([r for r in mine if r["size"] is None or r["size"] == 1.0])
             entry["by_size"] = {}
             for size, group in sorted(by_size.items()):
-                seen = [r for r in group if r["views"] is not None and any(r["views"][j] for j in own)]
+                seen = [r for r in group if r["views"] is not None and own_view(r["views"])]
                 entry["by_size"][str(size)] = dict(
                     tally(group),
                     true_scale=round(size * DRAWN_AT.get(name, 1.0), 3),

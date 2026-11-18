@@ -86,7 +86,7 @@ class Part:
     # cannot show it (scene_truth with attributes)
     attributes: dict[str, str] = field(default_factory=dict)
     p_attributes: dict[str, float] = field(default_factory=dict)  # percepts: the probability of each class given
-    # truth with attribute_views: which cameras (front, wrist) can read each attribute now
+    # truth with attribute_views: which cameras (front, wrist, then any crop's window) can read each attribute now
     attribute_views: dict[str, tuple[bool, ...]] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -225,6 +225,23 @@ class _Camera:
         return hit < 0 or int(self._geom[0]) in own or hit >= dist - tol
 
 
+class _Window:
+    """The front camera as a crop of it shows it (a PlantCrop's window, where it is now): a point is seen when the
+    camera sees it and it falls inside the window. The narrower crop (zoom 4) leaves out some shoots' tips that the
+    front camera shows."""
+
+    def __init__(self, camera: _Camera, crop: "PlantCrop"):
+        self.camera, self.crop = camera, crop
+        self.top, self.left = crop.window()
+
+    def sees(self, point, own: set[int], tol: float = SURFACE_TOL) -> bool:
+        x, y, _ = self.camera.project(point)
+        full = self.crop.size * self.crop.zoom
+        col, row = (x + 1) / 2 * full, (y + 1) / 2 * full
+        inside = self.left <= col < self.left + self.crop.size and self.top <= row < self.top + self.crop.size
+        return inside and self.camera.sees(point, own, tol)
+
+
 def _part_points(env, name: str) -> np.ndarray:
     """Points along what is on the plant of shoot `name` (world frame, n x 3)."""
     from .env import CUT_GAP, CUT_MID, SHOOT_R, SHOOT_SPLIT
@@ -330,7 +347,7 @@ def drawn_attributes(env) -> dict[str, dict[str, str]]:
     return out
 
 
-def scene_truth(env, attributes: bool | None = None, full: bool = False, views: bool = False) -> Scene:
+def scene_truth(env, attributes: bool | None = None, full: bool = False, views: bool = False, windows=()) -> Scene:
     """The scene as the simulator knows it (env: a PickupEnv of a plant task, in the state the cameras show now): one
     Part per shoot of the plant, lowest first, cut or not, with which cameras show it (views: front, wrist), the
     flower's colour and the card.
@@ -341,7 +358,8 @@ def scene_truth(env, attributes: bool | None = None, full: bool = False, views: 
     whole state, hidden facts included (architecture v3's second oracle): every part is shown by both cameras, every
     attribute is its value, cut or not, and the card's colour is given whichever way it faces. `views` (with
     attributes, not full): each part also says which cameras can read each attribute (Part.attribute_views), for
-    measuring eyes that look through one camera."""
+    measuring eyes that look through one camera; `windows` (PlantCrop objects) add a view per crop after those two,
+    the front camera inside that crop's window (_Window), for eyes that look through a crop alone."""
     from .env import REACH_AZIMUTH, STEM_BASE, _wrap_angle
 
     assert env.plant_task, f"{env.task} has no plant"
@@ -361,8 +379,8 @@ def scene_truth(env, attributes: bool | None = None, full: bool = False, views: 
         if attributes and full:
             values = dict(drawn[name])
         elif attributes:
-            readable = attribute_views(env, name, (front, wrist))
-            values = {attr: drawn[name][attr] if any(readable[attr]) else UNREADABLE for attr in TRUTH_ATTRIBUTES}
+            readable = attribute_views(env, name, (front, wrist, *(_Window(front, crop) for crop in windows)))
+            values = {attr: drawn[name][attr] if any(readable[attr][:2]) else UNREADABLE for attr in TRUTH_ATTRIBUTES}
         parts.append(
             Part(
                 height=float(env.shoots[name]["origin"][2] - STEM_BASE),
@@ -382,16 +400,21 @@ class PlantCrop:
     """The front camera's view narrowed onto the plant: what a crop of a higher-resolution camera image shows.
 
     The front camera is rendered at size * zoom pixels (by a renderer of its own, made once; plant models have an
-    offscreen buffer of 960 x 540), and the size x size window centred on the main stem, CROP_HEIGHT above its base, is
-    cut out, moved inward where it would leave the image. With zoom 2 the plant is about twice as large as in the front
-    image. No camera is added to the model, so everything else renders as without it. The scenarios' image hooks are
-    applied as to the front camera's own image (env.get_obs), before the crop."""
+    offscreen buffer of 960 x 540, made larger where the render needs it), and the size x size window centred on the
+    main stem, CROP_HEIGHT above its base, is cut out, moved inward where it would leave the image. With zoom 2 the
+    plant is about twice as large as in the front image (the plant crop), with zoom 4 four times (the narrower crop,
+    about 0.85 mm per pixel). No camera is added to the model, so everything else renders as without it. The
+    scenarios' image hooks are applied as to the front camera's own image (env.get_obs), before the crop."""
 
     def __init__(self, env, size: int = 224, zoom: int = 2):
         import mujoco
 
         assert env.plant_task, f"{env.task} has no plant"
         self.env, self.size, self.zoom = env, size, zoom
+        # a render larger than the model's offscreen buffer (zoom 4: 896 x 896) needs a larger one; a renderer's buffer
+        # is made with it, so the renderers made before keep theirs
+        visual = env.model.vis.global_
+        visual.offwidth, visual.offheight = max(visual.offwidth, size * zoom), max(visual.offheight, size * zoom)
         self.renderer = mujoco.Renderer(env.model, size * zoom, size * zoom)
 
     def window(self) -> tuple[int, int]:
