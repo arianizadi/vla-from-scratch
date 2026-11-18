@@ -1359,6 +1359,33 @@ the whole time a shoot is on the plant: the wrist camera, which sees the plant f
 that gap, so the eyes of step 6 need it. From random starts the arm is often in the way: 87% to 95% at the first look
 with both cameras, and 1.5% to 3.7% never. The expert solved 995 to 997 of 1000 layouts of each situation from home.
 
+### Step 4's runner, built and measured on CPU (no fast level yet)
+
+`eval.py --slow_level v3` runs v3's slow level over a served fast level: the situation's own program
+(`--program gold`), the simulator's scene or its whole state (`--scene truth|full`), a look held for or shown
+(`--inspect`), the home move on a verdict, the cut gate at every control step (`--gate`; off, it only records), starts
+clear of the plant (`--clear_start`), and a v3 section in results.json by situation, mode, shoots and cuts meant. Two
+settings were measured with the scripted expert (`calibrate_v3.py`, validation layouts):
+
+**Starts clear of the plant.** From the demonstrations' random starts the expert touches the flower in a quarter of the
+episodes, from poses among the shoots and from poses behind the plant, whose way to the lane in front of it passes the
+flower. A start is kept when the gripper is at least 5 cm in front of the stem's axis (toward the robot) and at least
+the clearance from it, seen from above; otherwise it is drawn again from the same stream. Expert successes per 100
+layouts:
+
+| Clearance | prune | order | nothing_to_do | ties | sick | buds |
+|---|---|---|---|---|---|---|
+| 0.12 m | 98 | 97 | 98 | 98 | 98 | 98 |
+| **0.15 m** (the setting) | 99 | 98 | 100 | 99 | 100 | 100 |
+| 0.17 m | 99 | 98 | 99 | 99 | 100 | 99 |
+| 0.15 m, 300 more layouts | 294 | 298 | 291 | 297 | 297 | 293 |
+
+**The gate's calibration** (600 expert episodes, 821 cuts): open jaws that shut on a shoot are 2.6 to 4.0 cm from the
+stem's axis and 0.3 to 1.8 cm (median 1.0) above where that shoot leaves the stem. With the jaws' height less 1.0 cm
+the nearest shoot is the one cut in all 821, within 0.8 cm (the band is 1.75 cm, half the least spacing). Open jaws
+that shut for anything else (on the way to a button) are at least 15.7 cm from the axis, so "among the shoots" is
+within 8 cm of the stand's axis and below the flower. A closed gripper pressing a button is not shutting jaws.
+
 ## Throughput
 
 | Model | Machine A (RTX 4090) | Machine B (L40S) |

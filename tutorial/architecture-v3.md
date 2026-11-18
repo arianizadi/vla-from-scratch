@@ -4,10 +4,10 @@
 and 165 of 200 when it is not, and what it still loses is the fast level's. This document designs the next step:
 reasoning that v2's four task kinds do not ask for (telling a sick shoot from a healthy one, not acting when nothing is
 to be done, cutting in a given order, turning the plant to look before deciding, counting), and the smallest change to
-each of v2's five parts that carries it. It is a design and a plan of work for implementation agents. Steps 1 to 3
-of the plan are built ("As built: steps 1 to 3", after the plan); nothing else is. A number is v2's own (from the
-[lab notebook](lab-notebook.md) or from architecture-v2.md) unless it is marked as computed for this document, and
-every expectation is marked as a prediction.
+each of v2's five parts that carries it. It is a design and a plan of work for implementation agents. Steps 1 to 3 of
+the plan are built, and step 4's code, whose runs wait for a GPU ("As built", after the plan); nothing else is. A number
+is v2's own (from the [lab notebook](lab-notebook.md) or from architecture-v2.md) unless it is marked as computed for
+this document, and every expectation is marked as a prediction.
 
 ## In short
 
@@ -687,7 +687,7 @@ on the evaluation layouts with the setting fixed beforehand, both seeds, trainin
 *Done when:* the notebook has a section for v3, this document has its "First results" with every prediction answered,
 and the roadmap says where it stands.
 
-## As built: steps 1 to 3
+## As built: steps 1 to 4
 
 Steps 1 to 3 are in `sim/pickup/program.py`, `scene.py`, `scenarios.py`, `census.py` and `slow_level.py`, with their
 tests. Nothing of v2 changes by default: v2's language stays the default of `parse`, the acceptor and `equivalent`, so
@@ -739,6 +739,25 @@ choice open, or could not be followed as written, the simplest faithful option w
   bud.
 - **The census** starts at the home pose (clear of the plant, as v3's evaluations will start; the new start option is
   step 4's) on validation layouts, and once more from the demonstrations' random starts.
+
+**Step 4's code** (`eval.py --slow_level v3`, `slow_level.SlowLevel`, `expert.clear_start`, `calibrate_v3.py`,
+`scripts/e13.sh`; the measurements are in the notebook):
+
+- **The start clear of the plant** is not a distance alone: from starts behind the plant (seen from the robot) the
+  expert's way to the lane in front of it passes the flower however far out they are. A start is kept when the
+  gripper is at least 5 cm in front of the stem's axis and at least 15 cm from it, seen from above; the expert then
+  solves 98 to 100 of 100 validation layouts of each situation (291 to 298 of 300 more).
+- **The gate's reading of the jaws**: the jaws' height above the stem's base less 1.0 cm is the height of the shoot
+  they close on (measured on 821 expert cuts: within 0.8 cm, the right shoot in every one), and they are among the
+  shoots within 8 cm of the stand's axis (as built, without the episode's jitter) and below the flower. A command shuts
+  the jaws when it is below the cutting width and they are open more than 0.3; a gripper already shut, as it is to
+  press a button, is not shutting, and without that the gate would stop every press.
+- **The episode's end on a verdict**: once the verdict has stood for v2's time and the arm has been home for a second
+  (`scenarios.HOME_HOLD`), so that the home move is part of what is measured; a veto asks for a reset within the
+  resets allowed, as rule e does.
+- **The runs**: `scripts/e13.sh` runs E13's list through `scripts/eval_v2.sh`, which takes `PICKUP_SLOW_LEVEL=v3`:
+  70 runs and about 9,450 episodes (100 per cell on validation layouts, 200 on evaluation layouts, `order` as 100 per
+  mode), about 9.5 GPU-hours at 0.2 per 200 episodes, against the 5.5 counted in the plan.
 
 ## Risks
 
