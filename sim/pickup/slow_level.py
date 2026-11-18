@@ -905,12 +905,14 @@ class SlowLevel:
         """What the episode asks, for results.json's v3 section: the situation (the scenario that sets the task, else
         the task), its mode, the shoots on the plant and the cuts meant."""
         env = self.env
-        name, mode = env.task, None
+        name, mode, chooses = env.task, None, False
         for scenario in env.scenarios:
             variation = env.scenario_info.get(scenario.name, {})
             if scenario.changes_task and variation.get("applied"):
                 name, mode = scenario.name, variation.get("mode")
-        if env.reason:
+                # ties, sick, buds ("targets") and order ("ordered"): env.targets is the shoots meant, perhaps none
+                chooses = bool(env.flags & {"targets", "ordered"})
+        if env.reason or chooses:
             meant = len(env.targets)
         elif name.startswith("nothing_to_do"):
             meant = 0

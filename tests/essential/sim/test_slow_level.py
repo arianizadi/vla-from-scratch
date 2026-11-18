@@ -1741,6 +1741,32 @@ def test_a_clear_start_is_random_start_s_draw_kept_out_of_the_plant():
         env.close()
 
 
+def test_the_cuts_meant_of_a_situation_that_picks_shoots_are_its_targets_and_may_be_none():
+    """sick and buds can mean no shoot at all (env.targets empty): the record says 0 cuts meant there, not every
+    shoot on the plant, as plain pruning would."""
+    pytest.importorskip("mujoco")
+    from sim.pickup import slow_level as L3
+    from sim.pickup.env import PANDA_XML, PickupEnv
+
+    if not PANDA_XML.exists():
+        pytest.skip("Franka model not fetched (sim/pickup/scripts/fetch_assets.sh)")
+    env = PickupEnv("prune", scenario="buds")
+    try:
+        slow, none_meant = L3.SlowLevel(env, v3=True), 0
+        for seed in range(900_000, 900_030):
+            env.reset(seed=seed)
+            situation = slow.situation()
+            assert situation["situation"] == "buds" and situation["cuts_meant"] == len(env.targets)
+            none_meant += not env.targets
+        assert none_meant > 0  # every shoot with a bud: nothing to cut
+        env.close()
+        env = PickupEnv("prune")
+        env.reset(seed=900_000)
+        assert L3.SlowLevel(env, v3=True).situation()["cuts_meant"] == len(env.active)  # pruning: every shoot
+    finally:
+        env.close()
+
+
 def test_the_v3_summary_counts_by_situation_mode_shoots_and_cuts_meant():
     def episode(situation, mode, shoots, meant, success, **v3):
         counters = dict(
