@@ -34,6 +34,20 @@ episode; when the fast level has gone for a shoot it cannot reach it takes the a
 failed) has stood for a while. Each episode records what it decided (per_episode[i]["v2"]), and results.json counts
 its false completions apart from the successes.
 
+--slow_level v3 is architecture v3's slow level (tutorial/architecture-v3.md): v2's, with the program evaluated in every
+world the unknown facts allow, in stages (program.WorldPlan). --program gold is then the program of the situation the
+episode draws (program.from_scenario: prune, order, nothing_to_do, ties, sick, buds and their held-out frames) as well
+as a reasoning task's; --scene full gives it the simulator's whole state (every attribute, the card, every part) where
+--scene truth gives what the cameras show. A fact about one shoot that is missing is held for (--inspect hold) or shown
+(--inspect show), bounded by one full turn of the plate; on a verdict the arm is taken home by the scripted move of a
+reset and held there, and the episode ends once the verdict has stood and the arm has been home for a second; the cut
+gate (--gate) checks every control step's command to the jaws against the part the plan authorised, and without --gate
+what it would have stopped is recorded only. results.json's v3 section counts the episodes by situation, mode, shoots
+and cuts meant (slow_level.summary_v3).
+
+--clear_start starts every episode from a pose drawn as --random_start draws it but clear of the plant
+(expert.clear_start, --clearance), as architecture v3's evaluations start.
+
 --scenario applies test situations (scenarios.py: lighting, camera, wind, bump, sticky, nothing_to_do, order, ...) on
 top of the task; each episode records what its scenarios drew, and results.json counts the outcomes by variation.
 Episodes of the same seeds with and without a scenario have the same layouts.
@@ -449,6 +463,19 @@ def main():
         action="store_true",
         help="start every episode from a random gripper pose above the table instead of the home pose",
     )
+    ap.add_argument(
+        "--clear_start",
+        action="store_true",
+        help="start every episode from a pose drawn as --random_start draws it, kept clear of the plant "
+        "(expert.clear_start), as architecture v3's evaluations start",
+    )
+    ap.add_argument(
+        "--clearance",
+        type=float,
+        default=None,
+        help="with --clear_start: metres from the main stem's axis (seen from above) a start must keep below the top "
+        "of the flower (default expert.CLEARANCE)",
+    )
     # Reasoning tasks (see the module's docstring)
     ap.add_argument(
         "--notes",
@@ -510,15 +537,45 @@ def main():
     # Architecture v2 (see the module's docstring and slow_level.py)
     ap.add_argument(
         "--slow_level",
-        choices=["none", "v2"],
+        choices=["none", "v2", "v3"],
         default="none",
-        help="v2: the slow level of architecture v2 gives the served policy its sub-goals as its instruction",
+        help="v2: the slow level of architecture v2 gives the served policy its sub-goals as its instruction; v3: that "
+        "of architecture v3 (see the module's docstring)",
     )
     ap.add_argument(
         "--scene",
-        choices=["truth", "eyes"],
+        choices=["truth", "eyes", "full"],
         default="truth",
-        help="v2: what its scene memory takes, the simulator's truth or the percepts of the eyes on --slow_port",
+        help="v2: what its scene memory takes, the simulator's truth or the percepts of the eyes on --slow_port; v3 "
+        "also full, the simulator's whole state",
+    )
+    # Architecture v3 (see the module's docstring and slow_level.py)
+    ap.add_argument(
+        "--inspect",
+        choices=["hold", "show"],
+        default="hold",
+        help="v3: a fact about one shoot that is missing: hold (the fast level has no such skill yet), or give the "
+        "fast level 'show the <position> shoot'",
+    )
+    ap.add_argument(
+        "--gate",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="v3: the cut gate keeps the jaws at the cutting width when they would shut among the shoots anywhere but "
+        "at the part authorised, and asks for a reset. Off (the default): what it would stop is recorded only",
+    )
+    ap.add_argument(
+        "--slow_attribute_rule",
+        choices=["row", "last", "angles"],
+        default="row",
+        help="v3: when the memory takes an attribute as known: --slow_stable readings in a row (row), the last "
+        "reading, or a row from angles at least 30 degrees apart (scene.SceneMemory, rule 8)",
+    )
+    ap.add_argument(
+        "--slow_witness",
+        action="store_true",
+        help="v3: a part first seen whole is marked cut only where the jaws have shut at its height since "
+        "(scene.SceneMemory, rule 9)",
     )
     ap.add_argument(
         "--program",
@@ -603,13 +660,26 @@ def main():
         park_reset=args.park_reset,
         image_size=args.image_size,
     )
-    if args.slow_level == "v2":  # checked before any server is reached
+    v3 = args.slow_level == "v3"
+    assert not (args.random_start and args.clear_start), "--random_start or --clear_start, not both"
+    assert args.clearance is None or args.clear_start, "--clearance is for --clear_start"
+    if not v3:
+        assert args.scene != "full", "--scene full is architecture v3's oracle: use --slow_level v3"
+        assert (args.inspect, args.gate, args.slow_attribute_rule, args.slow_witness) == (
+            "hold",
+            False,
+            "row",
+            False,
+        ), "--inspect, --gate, --slow_attribute_rule and --slow_witness are for --slow_level v3"
+    if args.slow_level in ("v2", "v3"):  # checked before any server is reached
         assert env.plant_task, "--slow_level v2 reads a plant: it needs a plant task"
         assert not args.expert, "--slow_level v2 gives its sub-goals to a served policy: drop --expert"
         assert args.subgoals == "none", "--slow_level v2 is the slow level: it needs --subgoals none"
         assert args.notes != "reasoner" and not args.reason_check, "--slow_level v2 is the slow level: no reasoner"
-        assert args.program == "writer" or env.reason, "--program gold is a reasoning task's own: use a reason_* task"
-        assert (args.scene, args.program) == ("truth", "gold") or args.slow_port is not None, (
+        assert args.program == "writer" or env.reason or v3, (
+            "--program gold is a reasoning task's own: use a reason_* task (or --slow_level v3, for a situation's)"
+        )
+        assert args.scene != "eyes" and args.program == "gold" or args.slow_port is not None, (
             "--scene eyes and --program writer are served by slow_server.py: give its --slow_port"
         )
         assert args.recover >= 0 and args.patience >= 1, "--recover must be 0 or more and --patience 1 or more"
@@ -657,7 +727,7 @@ def main():
         check_server(reasoner_info, args.reasoner_port, args.expect_reasoner_run, None, None)
         assert reasoner_info.get("reasons"), "the server on --reasoner_port does not write notes"
     assert args.subgoals == "none" or env.reason, "--subgoals needs a reasoning task"
-    assert not args.aim or args.subgoals != "none" or args.slow_level == "v2", (
+    assert not args.aim or args.subgoals != "none" or args.slow_level in ("v2", "v3"), (
         "--aim is the aim of a sub-goal: it needs --subgoals or --slow_level v2"
     )
     expert = conn = None
@@ -690,12 +760,13 @@ def main():
 
         pilot = ScriptedExpert(env, seed=0)
     starter = None
-    if args.random_start:
-        from .expert import ScriptedExpert, random_start
+    if args.random_start or args.clear_start:
+        from .expert import CLEARANCE, ScriptedExpert, clear_start, random_start
 
         starter = ScriptedExpert(env, seed=0)  # for its inverse kinematics only
+        clearance = CLEARANCE if args.clearance is None else args.clearance
     slow = recovery = None  # --slow_level v2: the slow level, and a recovery in progress (slow_level.Recovery)
-    if args.slow_level == "v2":
+    if args.slow_level in ("v2", "v3"):
         from . import slow_level
 
         served = args.scene == "eyes" or args.program == "writer"
@@ -713,7 +784,24 @@ def main():
             revoke=args.slow_revoke,
             aim=args.aim,
             resets=args.resets,
+            **(
+                dict(
+                    v3=True,
+                    inspect=args.inspect,
+                    gate=args.gate,
+                    attribute_rule=args.slow_attribute_rule,
+                    witness=args.slow_witness,
+                )
+                if v3
+                else {}
+            ),
         )
+    home_hold = None  # v3: the command that holds the arm at the home pose, jaws open
+    if v3:
+        from .env import HOME_Q
+        from .scenarios import HOME_HOLD
+
+        home_hold = np.append(HOME_Q, slow_level.JAWS_OPEN).astype(np.float32)
     # --aim: a sub-goal goes to the served policy with what its shoot needs (the note's aim, or the scene memory's)
     goal_of = reasoning.aimed_subgoal if args.aim else reasoning.subgoal
 
@@ -723,12 +811,15 @@ def main():
     for ep in range(args.episodes):
         seed = args.seed_start + ep
         obs, start_yaw = env.reset(seed=seed), 0.0
-        if starter is not None:
+        if starter is not None and args.clear_start:
+            obs, start_yaw = clear_start(env, starter, seed, clearance)
+        elif starter is not None:
             obs, start_yaw = random_start(env, starter, seed)
         history, queue, frames, trace = FrameHistory(obs, offsets), [], [], []
         if slow is not None:  # v2: the episode's program and an empty memory; its own frames, for eyes that look back
             slow.reset()
             slow_history, recovery = FrameHistory(obs, slow.offsets), None
+            homing, at_home = False, 0  # v3: the home move made for the verdict that stands; control steps at home
         if recorder is not None:
             recorder.start(seed)
         wrong_object = False  # a non-target object was lifted at any point in the episode
@@ -785,10 +876,20 @@ def main():
                 subgoal = goal_of(held) or subgoal
             if slow is not None and fresh and recovery is None:  # v2: it looks where the policy needs a new chunk
                 decision = slow.tick(obs, slow_history)
-                if decision.recover:  # nothing has progressed for long: a scripted move first, then the policy
-                    recovery = slow_level.Recovery(env, then_home=decision.detail == "reset")
+                if decision.home:  # v3: a verdict: the arm goes home by the reset's scripted move, and stays there
+                    if not homing and not slow.at_home(obs["state"]):
+                        recovery = slow_level.Recovery(env, then_home=True)
+                    else:
+                        queue = [home_hold.copy()]
+                    homing = True
+                elif decision.recover:  # nothing has progressed for long: a scripted move first, then the policy
+                    homing = False
+                    recovery = slow_level.Recovery(env, then_home=decision.detail in ("reset", "veto"))
                 elif decision.subgoal is None:  # hold the command the robot is under for one step, then look again
+                    homing = False
                     queue = [env.last_action.copy()]
+                else:  # the verdict withdrawn: the fast level starts again from where the arm is (home)
+                    homing = False
             if expert is not None:
                 queue = [expert.act()]
             elif pilot is not None and env.steps < args.expert_prefix:
@@ -840,6 +941,8 @@ def main():
             if ep < args.videos:
                 frames.append(np.concatenate([obs["front"], obs["wrist"]], axis=1))
             action = queue.pop(0)
+            if v3 and expert is None:  # rule f: every command to the jaws, whoever gives it
+                action = slow.check_cut(action, obs["state"])
             if ep < args.traces:
                 trace.append(trace_step(env, obs, action))
             probe.update(action)  # before the disturbance: the first close is judged on the scene it was aimed at
@@ -849,7 +952,11 @@ def main():
             history.push(obs)
             if slow is not None:  # v2: its frames; and the episode ends once its verdict has stood (slow.done)
                 slow_history.push(obs)
-                done = done or slow.done
+                if v3:  # v3: and the arm has been home for HOME_HOLD control steps (a second)
+                    at_home = at_home + 1 if homing and recovery is None and slow.at_home(obs["state"]) else 0
+                    done = done or (slow.done and at_home >= HOME_HOLD)
+                else:
+                    done = done or slow.done
             if cut_before is not None:
                 cut_order += sorted(set(env.cut) - cut_before)
             if turn is not None:
@@ -1025,6 +1132,7 @@ def main():
         flow_steps=args.flow_steps,
         noise=args.noise,
         random_start=args.random_start,
+        **(dict(clear_start=dict(clearance=clearance)) if args.clear_start else {}),
         interventions=dict(
             expert_prefix=args.expert_prefix,
             prefix_target=args.prefix_target if args.expert_prefix else None,
@@ -1058,6 +1166,7 @@ def main():
             else {}
         ),
         **(dict(v2=dict(settings=slow.settings(), **slow_level.summary(episodes))) if slow is not None else {}),
+        **(dict(v3=slow_level.summary_v3(episodes)) if v3 else {}),
         **(dict(record_scene=recorded) if recorded is not None else {}),
         per_episode=episodes,
     )

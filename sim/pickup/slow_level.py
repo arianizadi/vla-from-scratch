@@ -66,6 +66,7 @@ from .program import (
     WorldPlan,
     cannot_see,
     equivalent,
+    from_scenario,
     from_task,
     in_language,
     parse,
@@ -75,7 +76,7 @@ from .reasoning import aim_of, aimed, subgoal_target
 from .scene import PlantCrop, Scene, SceneMemory, _position_name, scene_truth
 
 KINDS = ("execute", "need_observation", "complete", "failed")  # what a decision can be
-SCENES = ("truth", "eyes")  # where the percepts come from
+SCENES = ("truth", "eyes", "full")  # where the percepts come from (full: the simulator's whole state, v3)
 PROGRAMS = ("gold", "writer")  # where the program comes from: the task's own, or the language model's
 STOP = "stop"  # the sub-goal of Complete and Failed
 SHOW = "show the label"  # the sub-goal of the card not read yet
@@ -103,6 +104,7 @@ STILL = math.radians(
 DEFAULTS = dict(
     truth=dict(stable=1, give_up=40, unseen=False, revoke=0),
     eyes=dict(stable=3, give_up=80, unseen=True, revoke=3),
+    full=dict(stable=1, give_up=40, unseen=False, revoke=0),
 )
 # The resets SlowLevel allows where none are given (rule e), whatever its percepts come from: a fast level that is
 # given the sub-goal alone goes for a shoot it cannot reach in about one episode in ten, and with up to two resets v2
@@ -127,6 +129,15 @@ HOME = "home"  # the ledger's entry for the home move that follows a verdict
 JAWS_CUTTING = sum(JAWS_CUT) / 2  # rule f: the jaws a veto leaves at the cutting width
 GATE_BAND = 0.0175  # rule f: metres; the jaws are at the part whose height is nearest, within half the least spacing
 FACING = FAR  # rule f: the part authorised faces the robot within this
+# Where the jaws are, for the gate (SlowLevel.check_cut): the robot's own kinematics and two constants of the setup.
+# Measured with the scripted expert on 600 validation layouts (calibrate_v3.py --gate; the lab notebook has the table):
+# open jaws that shut on a shoot (821 cuts) are 2.6 to 4.0 cm from the stem's axis and 0.3 to 1.8 cm (median 1.0)
+# above where that shoot leaves the stem, so that the height less GATE_OFFSET is within 0.8 cm of the shoot's own and
+# nearest to it in every one; open jaws that shut for anything else (to press a button) are at least 15.7 cm away
+GATE_OFFSET = 0.010  # metres: the jaws' height above the stem's base, less this, is the height of the shoot they hold
+GATE_AXIS = 0.08  # metres: jaws this near the stem's axis (seen from above) and below the flower are among the shoots
+GATE_OPEN = 0.3  # jaws open more than this (1 open, 0 shut) are shut by a command below the cutting width
+HOME_JOINTS = 0.05  # radians: the arm is at the home pose when every joint is this near it
 
 
 @dataclass(frozen=True)
@@ -697,6 +708,11 @@ class SlowLevel:
     p_min, patience, max_recoveries, aim: the Supervisor's
     resets          the Supervisor's; None: RESETS (2), or 0 with `aim`. 0: the rule is off
     truth           what gives the simulator's truth (default scene.scene_truth); a stand-in for tests
+    v3              architecture v3 (eval.py --slow_level v3): the Supervisor's v3 rules; "gold" is then the program of
+                    the situation the episode draws (program.from_scenario), on prune and its situations as on a
+                    reasoning task; the scene may be "full" (the simulator's whole state: scene_truth full=True);
+                    `tick` tells the supervisor whether the arm is at the home pose, and `check_cut` is the cut gate
+    inspect, gate, attribute_rule, witness: the Supervisor's (v3)
 
     reset() after env.reset (and any random start); tick(obs, history) at every look; record(info) at the end of an
     episode; close() at the end of the evaluation. `offsets` are the frame offsets the eyes look at: a `history` (an
@@ -719,11 +735,22 @@ class SlowLevel:
         aim: bool = False,
         resets: int | None = None,
         truth=None,
+        v3: bool = False,
+        inspect: str = "hold",
+        gate: bool = False,
+        attribute_rule: str = "row",
+        witness: bool = False,
     ):
         assert scene in SCENES, f"scene {scene!r}: one of {SCENES}"
         assert program in PROGRAMS, f"program {program!r}: one of {PROGRAMS}"
         assert env.plant_task, "the slow level reads a plant: it needs a plant task"
-        assert program == "writer" or env.reason, "the gold program is a reasoning task's own: it needs a reason_* task"
+        assert program == "writer" or env.reason or v3, (
+            "the gold program is a reasoning task's own: it needs a reason_* task (or v3, for a situation's)"
+        )
+        assert scene != "full" or v3, "the whole state (scene full) is v3's oracle"
+        self.v3, self.inspect, self.gate = bool(v3), inspect, bool(gate)
+        self.attribute_rule, self.witness = attribute_rule, bool(witness)
+        self._stem: tuple | None = None  # (where the stand's axis is, how high the stem's base): the gate's constants
         self.env, self.scene, self.source, self.server = env, scene, program, server
         given = dict(stable=stable, give_up=give_up, unseen=unseen, revoke=revoke)
         chosen = {name: DEFAULTS[scene][name] if value is None else value for name, value in given.items()}
@@ -777,6 +804,9 @@ class SlowLevel:
         env = self.env
         task = getattr(env, "reason_task", None) if env.reason else None
         self.gold = None if task is None else from_task(task)
+        if self.v3:
+            self.gold = from_scenario(env)  # a reasoning task's own, or the situation's
+            self._stem = self._setup()
         self.written, self._see_s, self._write_s = None, [], []
         if self.source == "gold":
             assert self.gold is not None, "no reasoning task drawn yet: reset the slow level after env.reset"
@@ -796,6 +826,17 @@ class SlowLevel:
             revoke=self.revoke,
             aim=self.aim,
             resets=self.resets,
+            **(
+                dict(
+                    v3=True,
+                    inspect=self.inspect,
+                    gate=self.gate,
+                    attribute_rule=self.attribute_rule,
+                    witness=self.witness,
+                )
+                if self.v3
+                else {}
+            ),
         )
         plan = self.supervisor.plan
         self.meaning = None if self.gold is None else plan is not None and equivalent(plan.program, self.gold)
@@ -808,11 +849,75 @@ class SlowLevel:
         """One look at the scene now (`obs`: the newest observation; `history`: frames to reach back to, for eyes that
         look at earlier ones). Returns the decision, and compares the memory with the simulator for the record."""
         assert self.supervisor is not None, "reset() the slow level after env.reset, before the first look"
-        percept = self.truth(self.env) if self.scene == "truth" else self._see(obs, history)
+        if self.scene == "eyes":
+            percept = self._see(obs, history)
+        else:
+            percept = self.truth(self.env, full=True) if self.scene == "full" else self.truth(self.env)
         state = None if obs is None else obs.get("state")  # the robot's own: seven joints and the jaws' opening
-        decision = self.supervisor.step(percept, int(self.env.steps), jaws=None if state is None else float(state[7]))
+        jaws = None if state is None else float(state[7])
+        home = self.at_home(state) if self.v3 else None
+        decision = self.supervisor.step(percept, int(self.env.steps), jaws=jaws, home=home)
         self._compare()
         return decision
+
+    # ------------------------------------------------------------------------------------------- v3: the runner
+    def _setup(self) -> tuple:
+        """The gate's two constants of the setup: where the stand's axis is (as built, without the episode's jitter)
+        and how high the main stem's base is."""
+        from .env import STAND_XY
+
+        base, _ = self.env.stem_axis()
+        return np.array(STAND_XY, dtype=float), float(base[2])
+
+    @staticmethod
+    def at_home(state) -> bool | None:
+        """The arm at the home pose, from its own joint angles (None where they are not known)."""
+        if state is None:
+            return None
+        from .env import HOME_Q
+
+        return bool(np.max(np.abs(np.asarray(state[:7], dtype=float) - HOME_Q)) <= HOME_JOINTS)
+
+    def jaws_place(self) -> tuple[float, bool]:
+        """(the height on the stem the jaws are at, whether they are among the shoots), from the gripper's position
+        (the robot's forward kinematics) and the setup's constants: the jaws' height above the stem's base less
+        GATE_OFFSET, and among the shoots within GATE_AXIS of the stand's axis and below the top of the flower."""
+        from .env import STEM_H
+
+        axis, base = self._stem if self._stem is not None else self._setup()
+        tcp = self.env.tcp_pos()
+        height = float(tcp[2] - base)
+        among = float(np.linalg.norm(tcp[:2] - axis)) < GATE_AXIS and height < STEM_H
+        return height - GATE_OFFSET, among
+
+    def check_cut(self, action, state=None) -> np.ndarray:
+        """Rule f at one control step: `action` with the jaws' command the gate allows (Supervisor.check_cut). The
+        jaws count as shutting when the command is below the cutting width and they are open (`state`, the robot's
+        own, more than GATE_OPEN; open where it is not given)."""
+        action = np.array(action, dtype=np.float32)
+        height, among = self.jaws_place()
+        jaws_open = state is None or float(state[7]) > GATE_OPEN
+        command = self.supervisor.check_cut(float(action[7]), height, among and jaws_open, int(self.env.steps))
+        action[7] = command
+        return action
+
+    def situation(self) -> dict:
+        """What the episode asks, for results.json's v3 section: the situation (the scenario that sets the task, else
+        the task), its mode, the shoots on the plant and the cuts meant."""
+        env = self.env
+        name, mode = env.task, None
+        for scenario in env.scenarios:
+            variation = env.scenario_info.get(scenario.name, {})
+            if scenario.changes_task and variation.get("applied"):
+                name, mode = scenario.name, variation.get("mode")
+        if env.reason:
+            meant = len(env.targets)
+        elif name.startswith("nothing_to_do"):
+            meant = 0
+        else:
+            meant = len(env.targets) if env.targets else len(env.active)
+        undrawn = any(s.undrawn for s in env.scenarios)
+        return dict(situation=name, mode=mode, shoots=len(env.active), cuts_meant=meant, undrawn=undrawn)
 
     def _see(self, obs: dict, history) -> Scene:
         """The eyes' percept: the images under the keys the server listed, as JPEG bytes."""
@@ -877,6 +982,7 @@ class SlowLevel:
             see_ms=_median_ms(self._see_s),
             write_ms=_median_ms(self._write_s),
             **record,
+            **(dict(situation=self.situation()) if self.v3 else {}),
         )
 
     def settings(self) -> dict:
@@ -893,6 +999,19 @@ class SlowLevel:
             give_up=self.give_up,
             **(dict(aim=True) if self.aim else {}),  # absent where it is off, as it was before there was one
             **(dict(resets=self.resets) if self.resets else {}),
+            **(
+                dict(
+                    v3=True,
+                    inspect=self.inspect,
+                    gate=self.gate,
+                    attribute_rule=self.attribute_rule,
+                    witness=self.witness,
+                    gate_offset=GATE_OFFSET,
+                    gate_axis=GATE_AXIS,
+                )
+                if self.v3
+                else {}
+            ),
             server=self.info,
         )
 
@@ -1020,4 +1139,55 @@ def summary(episodes: list[dict]) -> dict:
             attempts=len(attempts), **{outcome: sum(e["outcome"] == outcome for e in attempts) for outcome in OUTCOMES}
         ),
         repeated_targets=sum(any(n > 1 for n in parts.values()) for parts in targeted),
+    )
+
+
+def summary_v3(episodes: list[dict]) -> dict:
+    """results.json's v3 section (tutorial/architecture-v3.md, "What is reported"), from eval.py's per-episode records
+    of --slow_level v3: in all, and by situation, by situation and mode, by the shoots on the plant and by the cuts
+    meant: episodes, successes, wrong cuts (a shoot not meant, or out of order, without damage) and the episodes cut out
+    of order, damage, false completions, Complete said before any sub-goal (where nothing was to be cut, and where
+    something was: the reverse error), the home pose reached on a verdict, looks asked and their turn, looks that ran
+    out of their bound, episodes that ended holding for an attribute, vetoes of the gate (episodes and in all) and
+    resets, and the control steps per solved episode."""
+    rows = [(e, e["v2"]) for e in episodes if e.get("v2") is not None and "v3" in e["v2"]]
+
+    def counts(group):
+        solved = [e for e, _ in group if e["success"]]
+        return dict(
+            episodes=len(group),
+            successes=len(solved),
+            wrong_cuts=sum(bool(e["wrong_object"]) and e.get("damaged") is None for e, _ in group),
+            out_of_order=sum(bool(e.get("out_of_order")) for e, _ in group),
+            damaged=sum(e.get("damaged") is not None for e, _ in group),
+            false_complete=sum(bool(r["false_complete"]) for _, r in group),
+            complete_without_action=sum(
+                bool(r["v3"]["complete_without_action"]) and r["situation"]["cuts_meant"] == 0 for _, r in group
+            ),
+            complete_without_action_wrongly=sum(
+                bool(r["v3"]["complete_without_action"]) and r["situation"]["cuts_meant"] > 0 for _, r in group
+            ),
+            home_reached=sum(r["v3"]["home_reached"] is not None for _, r in group),
+            looks_asked=sum(r["v3"]["looks_asked"] for _, r in group),
+            look_turn=round(sum(r["v3"]["look_turn"] for _, r in group), 4),
+            look_failed=sum(r["v3"]["look_failed"] is not None for _, r in group),
+            ended_holding_for_attribute=sum(bool(r["v3"]["ended_holding_for_attribute"]) for _, r in group),
+            veto_episodes=sum(bool(r["v3"]["vetoes"]) for _, r in group),
+            vetoes=sum(len(r["v3"]["vetoes"]) for _, r in group),
+            resets=sum(r.get("resets", 0) for _, r in group),
+            mean_steps_solved=_mean(e["steps"] for e in solved),
+        )
+
+    def by(key):
+        groups: dict = {}
+        for row in rows:
+            groups.setdefault(str(key(row[1]["situation"])), []).append(row)
+        return {name: counts(group) for name, group in sorted(groups.items())}
+
+    return dict(
+        **counts(rows),
+        by_situation=by(lambda s: s["situation"]),
+        by_mode=by(lambda s: f"{s['situation']}:{s['mode']}"),
+        by_shoots=by(lambda s: s["shoots"]),
+        by_cuts_meant=by(lambda s: s["cuts_meant"]),
     )

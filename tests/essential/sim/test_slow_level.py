@@ -1582,3 +1582,190 @@ def test_for_v2_s_tasks_the_v3_supervisor_decides_as_v2_s_through_the_memory(kin
                 shoot = runs[0].plant.index(a.subgoal) if rng.random() < 0.9 else int(rng.integers(count))
                 for run in runs:
                     run.plant.cut.add(shoot)
+
+
+# ======================================================================================= architecture v3: the runner
+V3_ARGUMENTS = [
+    (["--task", "prune", "--slow_level", "v3", "--scene", "eyes"], "give its --slow_port"),
+    (["--task", "reason_mix", "--slow_level", "v2", "--scene", "full"], "use --slow_level v3"),
+    (["--task", "reason_mix", "--slow_level", "v2", "--gate"], "are for --slow_level v3"),
+    (["--task", "reason_mix", "--slow_level", "v2", "--inspect", "show"], "are for --slow_level v3"),
+    (["--task", "prune", "--slow_level", "v3", "--expert"], "drop --expert"),
+    (["--task", "prune", "--random_start", "--clear_start"], "not both"),
+    (["--task", "prune", "--clearance", "0.2"], "is for --clear_start"),
+]
+
+
+@pytest.mark.parametrize("argv, message", V3_ARGUMENTS)
+def test_the_v3_arguments_are_checked_before_any_server_is_reached(argv, message, tmp_path, monkeypatch):
+    _env("prune").close()
+    from sim.pickup import eval as E
+
+    monkeypatch.setattr(sys, "argv", ["eval.py", "--out", str(tmp_path), *argv])
+    with pytest.raises(AssertionError, match=re.escape(message)):
+        E.main()
+
+
+class HoldingPolicy:
+    """A served policy that holds the arm where it is, jaws open: what the runner does around it is what is tested."""
+
+    def __init__(self):
+        self.sent, self.queries = None, 0
+
+    def send(self, message):
+        self.sent = message
+
+    def recv(self):
+        if self.sent["cmd"] == "info":
+            return dict(checkpoint="runs/holding/checkpoints/ema_1.pt")
+        if self.sent["cmd"] == "shutdown":
+            return {}
+        self.queries += 1
+        hold = [*self.sent["state"][1][:7], 1.0]
+        return dict(actions=[hold] * 8, latency_s=0.0)
+
+    def close(self):
+        pass
+
+
+def _eval_v3(tmp_path, monkeypatch, *argv):
+    _env("prune").close()
+    from sim.pickup import eval as E
+
+    policy = HoldingPolicy()
+    monkeypatch.setattr(E, "connect", lambda port, timeout_s=600: policy)
+    monkeypatch.setattr(sys, "argv", ["eval.py", "--out", str(tmp_path), "--videos", "0", *argv])
+    E.main()
+    return json.loads((tmp_path / "results.json").read_text()), policy
+
+
+def test_on_a_plant_of_stubs_v3_says_complete_without_acting_and_the_arm_goes_home_and_succeeds(tmp_path, monkeypatch):
+    results, policy = _eval_v3(
+        tmp_path, monkeypatch, "--task", "prune", "--scenario", "nothing_to_do", "--slow_level", "v3",
+        "--clear_start", "--episodes", "2", "--seed_start", "900000",
+    )  # fmt: skip
+    assert results["successes"] == 2 and policy.queries == 0  # the fast level was never asked for anything
+    v3 = results["v3"]
+    assert v3["complete_without_action"] == 2 and v3["home_reached"] == 2 and v3["by_situation"]["nothing_to_do"]
+    assert v3["by_cuts_meant"]["0"]["episodes"] == 2 and results["clear_start"]["clearance"] > 0
+    for episode in results["per_episode"]:
+        record = episode["v2"]
+        assert record["gold"] == "Cut(All())" and record["final"] == "complete"
+        # one home move, confirmed at the end (a stub first seen from home withdraws the verdict for a look: a second)
+        assert {e["sub_goal"] for e in record["ledger"]} == {"home"} and record["ledger"][-1]["outcome"] == "confirmed"
+        assert record["situation"] == dict(
+            situation="nothing_to_do",
+            mode="pruned",
+            shoots=episode["v2"]["situation"]["shoots"],
+            cuts_meant=0,
+            undrawn=False,
+        )
+    assert results["v2"]["settings"]["v3"] and results["v2"]["settings"]["gate"] is False
+
+
+def test_v3_runs_a_situation_s_own_program_on_the_whole_state_and_records_what_the_gate_saw(tmp_path, monkeypatch):
+    results, policy = _eval_v3(
+        tmp_path, monkeypatch, "--task", "prune", "--scenario", "ties", "--slow_level", "v3", "--scene", "full",
+        "--clear_start", "--episodes", "2", "--seed_start", "900000", "--max_steps", "40", "--gate",
+    )  # fmt: skip
+    assert policy.queries > 0 and results["successes"] == 0  # a policy that holds cuts nothing
+    for episode in results["per_episode"]:
+        record = episode["v2"]
+        colour = episode["scenario"]["ties"].get("colour")
+        assert record["gold"] in (f"Cut(Filter(tie,{colour},All()))", "Cut(Filter(tie,any,All()))")
+        assert record["outcomes"][-1][1] == "execute"  # the whole state: the ties are known at once, no look
+        assert record["v3"]["looks_asked"] == 0 and record["v3"]["gate"] and record["v3"]["vetoes"] == []
+    assert results["v3"]["by_situation"]["ties"]["episodes"] == 2
+
+
+def test_the_jaws_that_cut_a_shoot_are_at_its_height_among_the_shoots_and_elsewhere_they_are_not():
+    """The gate's calibration on expert episodes: wherever the expert shuts open jaws to cut, the slow level's reading
+    of the jaws' place names the shoot it cuts, among the shoots; at the home pose and on the way to a button, not."""
+    from sim.pickup import slow_level as L3
+    from sim.pickup.expert import ScriptedExpert, clear_start
+
+    env = _env("prune")
+    env.get_obs = lambda: {"state": env.state()}
+    try:
+        slow = L3.SlowLevel(env, v3=True)
+        expert = ScriptedExpert(env, seed=0)
+        checked = 0
+        for seed in range(900_000, 900_004):
+            env.reset(seed=seed)
+            slow.reset()
+            assert not slow.jaws_place()[1]  # the home pose is above the plant, not among the shoots
+            _, yaw = clear_start(env, expert, seed)
+            expert.reset(yaw=yaw)
+            heights = {n: env.shoots[n]["origin"][2] - 0.068 for n in env.active}  # env.STEM_BASE
+            done, gated = False, set()  # the shoots the gate saw open jaws shut at
+            while not done:
+                action = expert.act()
+                height, among = slow.jaws_place()
+                if among and action[7] < L3.JAWS_CUT[0] and env.state()[7] > L3.GATE_OPEN:
+                    nearest = min(heights, key=lambda n: abs(heights[n] - height))
+                    assert abs(heights[nearest] - height) < L3.GATE_BAND
+                    gated.add(nearest)
+                    checked += 1
+                before = set(env.cut)
+                _, done, _ = env.step(action)
+                assert set(env.cut) - before <= gated  # every cut passed the gate, read as its own shoot
+        assert checked > 20
+    finally:
+        env.close()
+
+
+def test_a_clear_start_is_random_start_s_draw_kept_out_of_the_plant():
+    from sim.pickup.expert import FRONT, ScriptedExpert, clear_of_plant, clear_start, random_start
+
+    env = _env("prune")
+    env.get_obs = lambda: {"state": env.state()}
+    try:
+        expert = ScriptedExpert(env, seed=0)
+        same = 0
+        for seed in range(900_000, 900_030):
+            env.reset(seed=seed)
+            random_start(env, expert, seed)
+            drawn = env.tcp_pos()
+            env.reset(seed=seed)
+            clear_start(env, expert, seed)
+            started = env.tcp_pos()
+            assert clear_of_plant(env, started)
+            base, _ = env.stem_axis()
+            assert base[0] - started[0] >= FRONT - 1e-6  # in front of the plant, toward the robot
+            same += bool(np.allclose(drawn, started) and clear_of_plant(env, drawn))
+            env.reset(seed=seed)
+            clear_start(env, expert, seed)
+            assert np.allclose(env.tcp_pos(), started)  # the same every time
+        assert 0 < same < 30  # a clear first draw is random_start's own
+    finally:
+        env.close()
+
+
+def test_the_v3_summary_counts_by_situation_mode_shoots_and_cuts_meant():
+    def episode(situation, mode, shoots, meant, success, **v3):
+        counters = dict(
+            complete_without_action=False,
+            home_reached=None,
+            looks_asked=0,
+            look_turn=0.0,
+            look_failed=None,
+            ended_holding_for_attribute=False,
+            vetoes=[],
+        )
+        asked = dict(situation=situation, mode=mode, shoots=shoots, cuts_meant=meant, undrawn=False)
+        record = dict(false_complete=False, resets=0, v3=counters | v3, situation=asked)
+        return dict(success=success, wrong_object=False, damaged=None, steps=100, v2=record)
+
+    episodes = [
+        episode("nothing_to_do", "pruned", 3, 0, True, complete_without_action=True, home_reached=50),
+        episode("sick", "sick", 3, 2, False, complete_without_action=True, home_reached=60),
+        episode("sick", "sick", 2, 1, True, looks_asked=1, look_turn=1.5, vetoes=[dict(step=3)]),
+        dict(success=True, v2=None),  # not a v3 episode
+    ]
+    out = L.summary_v3(episodes)
+    assert out["episodes"] == 3 and out["successes"] == 2 and out["complete_without_action"] == 1
+    assert out["complete_without_action_wrongly"] == 1 and out["home_reached"] == 2
+    assert out["looks_asked"] == 1 and out["veto_episodes"] == 1 and out["vetoes"] == 1
+    assert out["by_situation"]["sick"]["episodes"] == 2 and out["by_mode"]["sick:sick"]["successes"] == 1
+    assert set(out["by_shoots"]) == {"2", "3"} and out["by_cuts_meant"]["0"]["episodes"] == 1
+    json.dumps(out)
