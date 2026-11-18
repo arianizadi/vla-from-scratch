@@ -47,11 +47,27 @@ At each step a plan says one of four things:
   Complete()                      every shoot meant is cut: stop
   Failed(reason)                  the program names a shoot the plant does not have, or a shoot that was to stay is cut
 
+v3's language (tutorial/architecture-v3.md, GRAMMAR_V3; parse, next_chars and is_complete with language "v3") adds
+five constructs and three attribute pairs, and is v2's language and more:
+
+  stmt := ... | CutFrom(end,sel) | Then(stmt,stmt) | Nothing()
+  sel  := ... | Take(k,pick,sel)          pick: top, bottom, any
+  cond := ... | Count(cmp,n,sel)          cmp: exactly, more, fewer; n 0 to 3
+  attr,value: also tie,any, sick,no and tag,<colour>
+
+Except, Filter and Take nest at most three deep, a Then holds at most three statements (written to the right), and an
+If's branch is any statement with no If in it. A v3 program evaluates to stages, sets of shoots in the order in which
+they are to be cut (`stages_on`); two programs are equivalent in v3 when they allow the same sequences of cuts on every
+plant with attributes (`equivalent_v3`). The situations built on prune have programs of their own (`from_scenario`).
+v2's language stays the default everywhere, so that v2's writer and its runs are what they were; a node holds to v3's
+bounds, and `in_language` says whether a program is also one of v2.
+
 This module is pure Python.
 """
 
 import dataclasses
 import functools
+import itertools
 import math
 import re
 from dataclasses import dataclass, field
@@ -65,11 +81,12 @@ class ProgramError(ValueError):
 
 
 class NeedsObservation(Exception):
-    """Evaluating a program needs a fact that is not known yet: `what` is "flower", "label" or an attribute's name."""
+    """Evaluating a program needs a fact that is not known yet: `what` is "flower", "label" or an attribute's name;
+    for an attribute, `index` is the shoot's (from the lowest up) where the evaluation says it (v3's evaluation)."""
 
-    def __init__(self, what: str):
+    def __init__(self, what: str, index: int | None = None):
         super().__init__(f"the {what} is not known yet")
-        self.what = what
+        self.what, self.index = what, index
 
 
 def _require(ok: bool, message: str) -> None:
@@ -78,14 +95,38 @@ def _require(ok: bool, message: str) -> None:
 
 
 # --------------------------------------------------------------------------------------------------------- the language
-RANKS = tuple(reasoning.ORDINALS)  # (1, 2, 3): the k of Rank(k,end)
+RANKS = tuple(reasoning.ORDINALS)  # (1, 2, 3): the k of Rank(k,end) and of Take(k,pick,sel)
 ENDS = reasoning.ENDS  # ("top", "bottom")
 COLOURS = reasoning.FLOWERS
-# What a Filter can ask about a shoot, and the values it can name. No task sets any yet: they are for the test
-# situations with gardener's ties, sick shoots and buds (tutorial/test-situations.md).
+# What a Filter can ask about a shoot, and the values it can name, in v2's language: no v2 task sets any. They are for
+# the test situations with gardener's ties, sick shoots and buds (tutorial/test-situations.md).
 ATTRIBUTES = {"tie": ("red", "blue", "yellow", "white"), "sick": ("yes",), "bud": ("yes", "no")}
 _ATTRIBUTE_VALUES = tuple((attr, value) for attr, values in ATTRIBUTES.items() for value in values)
 MAX_NESTING = 2  # how deep Except and Filter may nest in a selection: what keeps the language finite
+
+# v3's language (tutorial/architecture-v3.md) adds five constructs and three attribute pairs. "tie,any" is a shoot with
+# a tie of any colour; "tag" is the plate of the hidden-tag situation (rung 6, not built yet).
+LANGUAGES = ("v2", "v3")
+ATTRIBUTES_V3 = {
+    "tie": ("red", "blue", "yellow", "white", "any"),
+    "sick": ("yes", "no"),
+    "bud": ("yes", "no"),
+    "tag": ("red", "blue", "yellow", "white"),
+}
+_ATTRIBUTE_VALUES_V3 = tuple((attr, value) for attr, values in ATTRIBUTES_V3.items() for value in values)
+# The values a shoot's attribute has: what the simulator's truth and the scene memory hold (scene.py). The eyes have one
+# class more, "unreadable" (scene.UNREADABLE), which is never a value of the shoot.
+DOMAINS = {
+    "tie": ("none", "red", "blue", "yellow", "white"),
+    "sick": ("no", "yes"),
+    "bud": ("no", "yes"),
+    "tag": ("none", "red", "blue", "yellow", "white"),
+}
+PICKS = ("top", "bottom", "any")  # Take: the k highest, the k lowest, or any k (the plan's choice)
+COMPARISONS = ("exactly", "more", "fewer")  # Count: exactly n shoots, more than n, fewer than n
+COUNTS = (0, 1, 2, 3)  # the n of Count
+MAX_NESTING_V3 = 3  # how deep Except, Filter and Take may nest in a selection of v3
+MAX_THEN = 3  # the statements a Then holds at most
 
 
 @dataclass(frozen=True)
@@ -126,7 +167,7 @@ class Except:
     def __post_init__(self):
         for part in (self.sel, self.without):
             _require(isinstance(part, Sel), f"Except takes two selections, not {_shown(part)}")
-        _require(_nesting(self) <= MAX_NESTING, f"Except and Filter nest at most {MAX_NESTING} deep: {text(self)}")
+        _check_nesting(self)
 
 
 @dataclass(frozen=True)
@@ -139,13 +180,30 @@ class Filter:
     sel: "Sel"
 
     def __post_init__(self):
-        pair_ok = (self.attr, self.value) in _ATTRIBUTE_VALUES
-        _require(pair_ok, f"Filter takes an attribute and a value of ATTRIBUTES, not {self.attr!r}, {self.value!r}")
+        pair_ok = (self.attr, self.value) in _ATTRIBUTE_VALUES_V3
+        _require(pair_ok, f"Filter takes an attribute and a value of ATTRIBUTES_V3, not {self.attr!r}, {self.value!r}")
         _require(isinstance(self.sel, Sel), f"Filter takes a selection, not {_shown(self.sel)}")
-        _require(_nesting(self) <= MAX_NESTING, f"Except and Filter nest at most {MAX_NESTING} deep: {text(self)}")
+        _check_nesting(self)
 
 
-Sel = All | Rank | Middle | ReadLabel | Except | Filter  # a selection: a set of side shoots
+@dataclass(frozen=True)
+class Take:
+    """v3: k shoots of `sel`: the k highest (pick "top"), the k lowest ("bottom"), or any k ("any": the plan's choice,
+    made once, WorldPlan); all of `sel` if it has fewer."""
+
+    k: int
+    pick: str
+    sel: "Sel"
+
+    def __post_init__(self):
+        k_ok = isinstance(self.k, int) and not isinstance(self.k, bool) and self.k in RANKS
+        _require(k_ok, f"Take takes 1, 2 or 3 shoots, not {self.k!r}")
+        _require(self.pick in PICKS, f"Take picks {', '.join(PICKS)}, not {self.pick!r}")
+        _require(isinstance(self.sel, Sel), f"Take takes a selection, not {_shown(self.sel)}")
+        _check_nesting(self)
+
+
+Sel = All | Rank | Middle | ReadLabel | Except | Filter | Take  # a selection: a set of side shoots
 
 
 @dataclass(frozen=True)
@@ -159,6 +217,24 @@ class FlowerIs:
 
 
 @dataclass(frozen=True)
+class Count:
+    """v3: true when `sel` has exactly n shoots ("exactly"), more than n ("more") or fewer than n ("fewer")."""
+
+    cmp: str
+    n: int
+    sel: Sel
+
+    def __post_init__(self):
+        _require(self.cmp in COMPARISONS, f"Count compares {', '.join(COMPARISONS)}, not {self.cmp!r}")
+        n_ok = isinstance(self.n, int) and not isinstance(self.n, bool) and self.n in COUNTS
+        _require(n_ok, f"Count compares with 0, 1, 2 or 3 shoots, not {self.n!r}")
+        _require(isinstance(self.sel, Sel), f"Count takes a selection, not {_shown(self.sel)}")
+
+
+Cond = FlowerIs | Count  # a condition
+
+
+@dataclass(frozen=True)
 class Cut:
     """Cut the shoots `sel` selects."""
 
@@ -169,31 +245,130 @@ class Cut:
 
 
 @dataclass(frozen=True)
-class If:
-    """`yes` if the condition holds, else `no`. A branch is a Cut: an If does not nest."""
+class CutFrom:
+    """v3: cut the shoots `sel` selects one at a time, starting at that end: CutFrom(top,All()) is "from the top
+    down"."""
 
-    cond: FlowerIs
-    yes: Cut
-    no: Cut
+    end: str
+    sel: Sel
 
     def __post_init__(self):
-        _require(isinstance(self.cond, FlowerIs), f"an If tests FlowerIs(colour), not {_shown(self.cond)}")
+        _require(self.end in ENDS, f"CutFrom starts at the top or the bottom, not {self.end!r}")
+        _require(isinstance(self.sel, Sel), f"CutFrom takes a selection, not {_shown(self.sel)}")
+
+
+@dataclass(frozen=True)
+class Nothing:
+    """v3: cut no shoot (the branch of an If that asks for nothing)."""
+
+
+@dataclass(frozen=True)
+class Then:
+    """v3: carry out `first`, then `rest`; a shoot `first` has cut is not asked for again. A Then holds at most MAX_THEN
+    statements, written to the right: Then(a,Then(b,c)), never Then(Then(a,b),c)."""
+
+    first: "Stmt"
+    rest: "Stmt"
+
+    def __post_init__(self):
+        for part in (self.first, self.rest):
+            _require(isinstance(part, Stmt), f"Then takes two statements, not {_shown(part)}")
+        _require(not isinstance(self.first, Then), f"a Then nests to the right, Then(a,Then(b,c)): {text(self)}")
+        _require(_statements(self) <= MAX_THEN, f"a Then holds at most {MAX_THEN} statements: {text(self)}")
+
+
+@dataclass(frozen=True)
+class If:
+    """`yes` if the condition holds, else `no`. v2: the condition is a FlowerIs and a branch is a Cut. v3: the condition
+    is a FlowerIs or a Count, and a branch is any statement with no If in it: an If does not nest."""
+
+    cond: Cond
+    yes: "Stmt"
+    no: "Stmt"
+
+    def __post_init__(self):
+        _require(isinstance(self.cond, Cond), f"an If tests FlowerIs(colour) or Count(...), not {_shown(self.cond)}")
         for branch in (self.yes, self.no):
-            _require(isinstance(branch, Cut), f"an If branch is a Cut, not {_shown(branch)}")
+            _require(isinstance(branch, Stmt), f"an If branch is a statement, not {_shown(branch)}")
+            _require(not _has_if(branch), f"an If branch has no If in it: {text(branch)}")
 
 
-Stmt = Cut | If  # a statement: a whole program
-Node = Stmt | Sel | FlowerIs  # a program or a part of one
-_NODE_TYPES = {kind.__name__: kind for kind in (Cut, If, All, Rank, Middle, Except, Filter, ReadLabel, FlowerIs)}
+Stmt = Cut | If | CutFrom | Then | Nothing  # a statement: a whole program
+Node = Stmt | Sel | Cond  # a program or a part of one
+_NODE_TYPES = {
+    kind.__name__: kind
+    for kind in (Cut, If, All, Rank, Middle, Except, Filter, ReadLabel, FlowerIs, CutFrom, Then, Nothing, Take, Count)
+}
+_V2_TYPES = (Cut, If, All, Rank, Middle, Except, Filter, ReadLabel, FlowerIs)
 
 
 def _nesting(sel: Sel) -> int:
-    """How deep Except and Filter nest in a selection."""
+    """How deep Except, Filter and Take nest in a selection."""
     if isinstance(sel, Except):
         return 1 + max(_nesting(sel.sel), _nesting(sel.without))
-    if isinstance(sel, Filter):
+    if isinstance(sel, Filter | Take):
         return 1 + _nesting(sel.sel)
     return 0
+
+
+def _check_nesting(sel: Sel) -> None:
+    _require(
+        _nesting(sel) <= MAX_NESTING_V3, f"Except, Filter and Take nest at most {MAX_NESTING_V3} deep: {text(sel)}"
+    )
+
+
+def _statements(stmt: Stmt) -> int:
+    """How many statements a Then chain holds (1 for any other statement)."""
+    return _statements(stmt.first) + _statements(stmt.rest) if isinstance(stmt, Then) else 1
+
+
+def _has_if(stmt: Stmt) -> bool:
+    if isinstance(stmt, If):
+        return True
+    return isinstance(stmt, Then) and (_has_if(stmt.first) or _has_if(stmt.rest))
+
+
+def _children(node: Node) -> list:
+    return [getattr(node, f.name) for f in dataclasses.fields(node) if isinstance(getattr(node, f.name), Node)]
+
+
+def _walk(node: Node):
+    """Every node of a program, the program first."""
+    yield node
+    for child in _children(node):
+        yield from _walk(child)
+
+
+def _v2_nesting(sel) -> int:
+    if isinstance(sel, Except):
+        return 1 + max(_v2_nesting(sel.sel), _v2_nesting(sel.without))
+    if isinstance(sel, Filter):
+        return 1 + _v2_nesting(sel.sel)
+    return 0
+
+
+def language_error(node: Node, language: str = "v3") -> str | None:
+    """Why a program (or a part of one) is not in `language`, or None when it is. v3's rules are the nodes' own (a node
+    that breaks them cannot be made); v2's language is v3's without CutFrom, Then, Nothing, Take and Count, with the
+    attribute pairs of ATTRIBUTES, selections nested at most MAX_NESTING deep and an If's branches Cuts."""
+    assert language in LANGUAGES, f"language {language!r}: one of {LANGUAGES}"
+    if language == "v3":
+        return None
+    for part in _walk(node):
+        if not isinstance(part, _V2_TYPES):
+            return f"{type(part).__name__} is not in v2's language"
+        if isinstance(part, Filter) and (part.attr, part.value) not in _ATTRIBUTE_VALUES:
+            return f"Filter takes an attribute and a value of ATTRIBUTES, not {part.attr!r}, {part.value!r}"
+        if isinstance(part, Except | Filter) and _v2_nesting(part) > MAX_NESTING:
+            return f"Except and Filter nest at most {MAX_NESTING} deep: {text(part)}"
+        if isinstance(part, If) and not (isinstance(part.yes, Cut) and isinstance(part.no, Cut)):
+            return f"an If branch is a Cut in v2's language: {text(part)}"
+    return None
+
+
+def in_language(node: Node, language: str = "v2") -> bool:
+    """True when the program (or a part of one) is in `language` ("v2" or "v3")."""
+    return language_error(node, language) is None
 
 
 def _shown(value) -> str:
@@ -212,19 +387,28 @@ def text(node: Node) -> str:
 # a token of its own, which nothing accepts. A digit is a token by itself, so "02" is two tokens and not the number 2:
 # without spaces, the canonical text is the only spelling parse accepts.
 _TOKEN = re.compile(r"[A-Za-z]+|[0-9]|[(),]|\S")
-_MAX_DEPTH = 8  # a program nests at most 5 deep (If, Cut, Except, Except, Rank): stop long before Python's stack does
+# A program of v2 nests at most 5 deep (If, Cut, Except, Except, Rank), one of v3 at most 10 (Then, Then, If, Then,
+# Then, Cut, Except, Except, Except, Rank): stop long before Python's stack does
+_MAX_DEPTH = 12
 
 
-def parse(text: str) -> Stmt:
+def parse(text: str, language: str = "v2") -> Stmt:
     """The program a text writes, in the form `text` writes it; spaces between words are allowed. Raises ProgramError
-    for text that is not a whole program: bad syntax, an unknown word, a value out of range, a selection where a
-    statement belongs (or the other way round), nesting beyond the bounds."""
+    for text that is not a whole program of `language` ("v2", the default, or "v3"): bad syntax, an unknown word, a
+    value out of range, a selection where a statement belongs (or the other way round), nesting beyond the bounds, a
+    construct the language does not have."""
+    assert language in LANGUAGES, f"language {language!r}: one of {LANGUAGES}"
     tokens = _TOKEN.findall(text)
     node, end = _read(tokens, 0, depth=1)
     if end < len(tokens):
         raise ProgramError(f"unexpected {tokens[end]!r} after the program")
-    if not isinstance(node, Stmt):
+    if language == "v2" and not isinstance(node, Cut | If):
         raise ProgramError(f"a program is a Cut or an If, not {type(node).__name__}")
+    if not isinstance(node, Stmt):
+        raise ProgramError(f"a program is a statement, not {type(node).__name__}")
+    error = language_error(node, language)
+    if error is not None:
+        raise ProgramError(error)
     return node
 
 
@@ -290,6 +474,44 @@ def from_task(task: reasoning.Task) -> Stmt:
     if task.kind == "hidden":
         return Cut(ReadLabel())  # the card's colour is not in the program: it is read off the plant
     raise ValueError(f"no program for a task of kind {task.kind!r}")
+
+
+# The programs of the situations built on prune (scenarios.py), by the scenario that sets the task and its mode. An
+# instruction that names a position names it on the whole plant, as the scenario's draw does.
+_SITUATION_PROGRAMS = {
+    ("order", "top_down"): CutFrom("top", All()),
+    ("order", "bottom_up"): CutFrom("bottom", All()),
+    ("ties", "one"): Cut(Filter("tie", "any", All())),
+    ("sick", "sick"): Cut(Filter("sick", "yes", All())),
+    ("buds", "buds"): Cut(Filter("bud", "no", All())),
+    ("nothing_to_do", "pruned"): Cut(All()),
+}
+
+
+def from_scenario(env) -> Stmt:
+    """The program of an episode as `env` (a PickupEnv after reset) has drawn it: a reasoning task's (from_task), else
+    the one of the situation that sets the task (scenarios.py: order, nothing_to_do, ties, sick, buds and their held-out
+    frames), else pruning's, "cut the side shoots off the stem, keep the flower": Cut(All()). Raises ValueError for a
+    task with a named shoot (prune_named), which no program here writes."""
+    if getattr(env, "reason", None):
+        return from_task(env.reason_task)
+    if getattr(env, "named", None):
+        raise ValueError(f"no program for a task with a named shoot ({env.task})")
+    for scenario in getattr(env, "scenarios", ()):
+        variation = env.scenario_info.get(scenario.name, {})
+        if not (scenario.changes_task and variation.get("applied")):
+            continue
+        name = scenario.name.removesuffix("_heldout")
+        mode = variation["mode"]
+        if (name, mode) in _SITUATION_PROGRAMS:
+            return _SITUATION_PROGRAMS[(name, mode)]
+        if (name, mode) == ("ties", "colour"):
+            return Cut(Filter("tie", variation["colour"], All()))
+        if (name, mode) == ("order", "pair"):
+            first, second = variation["order"].split(",")
+            return Then(Cut(_NAMED[first]), Cut(_NAMED[second]))
+        raise ValueError(f"no program for the situation {scenario.name} in mode {mode!r}")
+    return Cut(All())
 
 
 # ----------------------------------------------------------------------------------------------------------- evaluation
@@ -384,12 +606,215 @@ def _outcome(node: Node, count: int, flower: str, label: str | None) -> tuple:
         return ("no such shoot",)
 
 
-def equivalent(a: Node, b: Node) -> bool:
-    """True when two programs (or selections) have the same result on every plant of the benchmark: 2 and 3 shoots,
-    every flower colour, every card colour the count allows and no card. A result is the positions selected, a
-    shoot the plant does not have, or the fact needed. No plant here has attributes, so a Filter over any shoot
-    needs one: two programs that differ only in the value a Filter keeps count as equivalent."""
+def equivalent(a: Node, b: Node, language: str | None = None) -> bool:
+    """True when two programs (or selections) mean the same.
+
+    v2's comparison (language "v2"): the same result on every plant of the benchmark: 2 and 3 shoots, every flower
+    colour, every card colour the count allows and no card. A result is the positions selected, a shoot the plant does
+    not have, or the fact needed. No plant here has attributes, so a Filter over any shoot needs one: two programs that
+    differ only in the value a Filter keeps count as equivalent.
+
+    v3's comparison (language "v3", equivalent_v3): plants with attributes, and the sequences of cuts each program
+    allows. With language None, v2's when both programs are in v2's language (so that what v2's runs recorded stays
+    what it was) and v3's otherwise."""
+    if language is None:
+        language = "v2" if in_language(a, "v2") and in_language(b, "v2") else "v3"
+    if language == "v3":
+        return equivalent_v3(a, b)
     return all(_outcome(a, *plant) == _outcome(b, *plant) for plant in _PLANTS)
+
+
+# ------------------------------------------------------------------------------------------------ evaluation in v3
+# A v3 program evaluates to *stages*: sets of shoots in the order in which they are to be cut. Cut(sel) is one stage,
+# CutFrom one stage per shoot from its end, Then the stages of its first statement and then those of the rest without
+# the shoots already asked for, Nothing none; empty stages are dropped. Inside a stage any order is allowed. A Take with
+# "any" leaves a choice: evaluated alone (stages_on, equivalent_v3) every choice is listed, one list of stages each; a
+# plan (WorldPlan) makes the choice itself, once. Positions and ranks count over the whole plant, cut or not, as in v2.
+@dataclass
+class _Shoots:
+    """What a v3 evaluation reads: the number of shoots, the facts known (None: not yet), each shoot's attributes
+    (lowest first), the card's rule, and `choose`, which makes the choice of a Take with "any": (path of the Take in
+    the program, the shoots it takes from, k, keep) -> the possible choices. `keep` is true where the Take is inside the
+    second selection of an odd number of Excepts: the shoots it takes are kept, not cut. None: every choice."""
+
+    count: int
+    flower: str | None = None
+    label: str | None = None
+    attributes: tuple = ()
+    label_rule: dict = field(default_factory=lambda: dict(reasoning.LABEL_MEANS))
+    choose: object = None
+
+
+def _distinct(items) -> list:
+    out = []
+    for item in items:
+        if item not in out:
+            out.append(item)
+    return out
+
+
+def _matches(attr: str, wanted: str, value: str) -> bool:
+    """A shoot whose attribute `attr` has `value` is one Filter(attr,wanted,...) keeps: "any" keeps every value but
+    "none" (a tie of any colour)."""
+    return value != "none" if wanted == "any" else value == wanted
+
+
+def _alternatives(sel: Sel, plant: _Shoots, path: tuple = (), keep: bool = False) -> list[frozenset]:
+    """The sets of shoots (indices from the lowest up) `sel` can select: one, or one per choice a Take leaves. Reads
+    left to right and raises NeedsObservation at the first fact it lacks, ProgramError for a shoot the plant does not
+    have."""
+    n = plant.count
+    if isinstance(sel, All):
+        return [frozenset(range(n))]
+    if isinstance(sel, Rank):
+        if sel.k > n:
+            raise ProgramError(f"no {reasoning.ORDINALS[sel.k]} shoot from the {sel.end} on a plant with {n}")
+        return [frozenset({reasoning.ordinal_index(sel.k, sel.end, n)})]
+    if isinstance(sel, Middle):
+        if n != 3:
+            raise ProgramError(f"no middle shoot on a plant with {n}")
+        return [frozenset({1})]
+    if isinstance(sel, ReadLabel):
+        if plant.label is None:
+            raise NeedsObservation("label")
+        if plant.label not in plant.label_rule:
+            raise ProgramError(f"a {plant.label} label names no shoot")
+        return _alternatives(_NAMED[plant.label_rule[plant.label]], plant, path, keep)
+    if isinstance(sel, Except):
+        kept = _alternatives(sel.sel, plant, (*path, 0), keep)
+        without = _alternatives(sel.without, plant, (*path, 1), not keep)
+        return _distinct(a - b for a in kept for b in without)
+    if isinstance(sel, Filter):
+        out = []
+        for chosen in _alternatives(sel.sel, plant, (*path, 2), keep):
+            for i in sorted(chosen):
+                if sel.attr not in plant.attributes[i]:
+                    raise NeedsObservation(sel.attr, i)
+            out.append(frozenset(i for i in chosen if _matches(sel.attr, sel.value, plant.attributes[i][sel.attr])))
+        return _distinct(out)
+    # Take
+    out = []
+    for chosen in _alternatives(sel.sel, plant, (*path, 2), keep):
+        if len(chosen) <= sel.k:
+            out.append(chosen)
+        elif sel.pick != "any":
+            ranked = sorted(chosen, reverse=sel.pick == "top")
+            out.append(frozenset(ranked[: sel.k]))
+        elif plant.choose is None:
+            out += [frozenset(c) for c in itertools.combinations(sorted(chosen), sel.k)]
+        else:
+            out += plant.choose(path, chosen, sel.k, keep)
+    return _distinct(out)
+
+
+def _holds(cond: Cond, plant: _Shoots, path: tuple) -> list[bool]:
+    """The values a condition can have (two where a Take's choice decides it)."""
+    if isinstance(cond, FlowerIs):
+        if plant.flower is None:
+            raise NeedsObservation("flower")
+        return [plant.flower == cond.colour]
+    sizes = {len(chosen) for chosen in _alternatives(cond.sel, plant, (*path, 2))}
+    compare = {"exactly": lambda s: s == cond.n, "more": lambda s: s > cond.n, "fewer": lambda s: s < cond.n}
+    return sorted({compare[cond.cmp](size) for size in sizes}, reverse=True)
+
+
+def _stage_lists(stmt: Stmt, plant: _Shoots, path: tuple = ()) -> list[tuple[frozenset, ...]]:
+    """The lists of stages a statement can evaluate to (one per choice it leaves), each a tuple of non-empty sets."""
+    if isinstance(stmt, Cut):
+        return _distinct((chosen,) if chosen else () for chosen in _alternatives(stmt.sel, plant, (*path, 0)))
+    if isinstance(stmt, CutFrom):
+        return _distinct(
+            tuple(frozenset({i}) for i in sorted(chosen, reverse=stmt.end == "top"))
+            for chosen in _alternatives(stmt.sel, plant, (*path, 1))
+        )
+    if isinstance(stmt, Nothing):
+        return [()]
+    if isinstance(stmt, Then):
+        out = []
+        for first in _stage_lists(stmt.first, plant, (*path, 0)):
+            done = frozenset().union(*first)
+            for rest in _stage_lists(stmt.rest, plant, (*path, 1)):
+                out.append(first + tuple(stage - done for stage in rest if stage - done))
+        return _distinct(out)
+    # If
+    out = []
+    for holds in _holds(stmt.cond, plant, (*path, 0)):
+        out += _stage_lists(stmt.yes if holds else stmt.no, plant, (*path, 1 if holds else 2))
+    return _distinct(out)
+
+
+def stages_on(
+    node: Node,
+    count: int,
+    flower: str | None = None,
+    label: str | None = None,
+    attributes: tuple | list | None = None,
+    label_rule: dict | None = None,
+) -> list[tuple[tuple[str, ...], ...]]:
+    """The stages a program (of either language; a selection alone reads as Cut(selection)) evaluates to on a plant of
+    `count` shoots, as positions ("lowest", "middle", "highest"), one list of stages per choice a Take with "any"
+    leaves. `attributes`: per shoot, lowest first, a dict of the attributes known ({"tie": "red", "bud": "no"}). Raises
+    ProgramError for a shoot the plant does not have, NeedsObservation for a fact not given."""
+    rule = dict(reasoning.LABEL_MEANS if label_rule is None else label_rule)
+    known = tuple(dict(a) for a in attributes) if attributes is not None else ({},) * count
+    plant = _Shoots(count, flower, label, known, rule)
+    return [
+        tuple(tuple(reasoning.position_name(i, count) for i in sorted(stage)) for stage in stages)
+        for stages in _stage_lists(_statement(node), plant)
+    ]
+
+
+def _sequences(stage_lists: list[tuple[frozenset, ...]]) -> frozenset[tuple[int, ...]]:
+    """Every order of cuts the stages allow: the stages in turn, each stage's shoots in any order."""
+    out = set()
+    for stages in stage_lists:
+        for orders in itertools.product(*(itertools.permutations(sorted(stage)) for stage in stages)):
+            out.add(tuple(i for order in orders for i in order))
+    return frozenset(out)
+
+
+def _reads(node: Node) -> tuple[bool, bool, frozenset[str]]:
+    """Whether a program can read the flower, the card, and which attributes."""
+    nodes = list(_walk(node))
+    return (
+        any(isinstance(n, FlowerIs) for n in nodes),
+        any(isinstance(n, ReadLabel) for n in nodes),
+        frozenset(n.attr for n in nodes if isinstance(n, Filter)),
+    )
+
+
+def _plants_v3(a: Node, b: Node):
+    """Every plant on which two programs can differ: 2 and 3 shoots; every flower colour if either reads it; every
+    card colour the count allows and no card if either reads the card; every assignment of the attributes either
+    reads."""
+    flower_a, label_a, attrs_a = _reads(a)
+    flower_b, label_b, attrs_b = _reads(b)
+    attrs = sorted(attrs_a | attrs_b)
+    flowers = reasoning.FLOWERS if flower_a or flower_b else (None,)
+    shoot_values = [dict(zip(attrs, values, strict=True)) for values in itertools.product(*(DOMAINS[a] for a in attrs))]
+    for count in (2, 3):
+        labels = (*reasoning.label_options(count), None) if label_a or label_b else (None,)
+        for flower, label in itertools.product(flowers, labels):
+            for attributes in itertools.product(shoot_values, repeat=count):
+                yield _Shoots(count, flower, label, attributes)
+
+
+def _outcome_v3(node: Node, plant: _Shoots) -> tuple:
+    try:
+        return ("cuts", _sequences(_stage_lists(_statement(node), plant)))
+    except NeedsObservation as need:
+        return ("needs", need.what)
+    except ProgramError:
+        return ("no such shoot",)
+
+
+def equivalent_v3(a: Node, b: Node) -> bool:
+    """v3's equivalence: the same sequences of cuts allowed (or the same fact needed, or both name a shoot the plant
+    does not have) on every plant either program can tell apart (_plants_v3): two or three shoots, every flower and
+    card, every assignment of the attributes either reads. CutFrom(top,All()) and Cut(All()) differ; a Take with "any"
+    equals another only if both allow the same choices."""
+    a, b = _statement(a), _statement(b)
+    return all(_outcome_v3(a, plant) == _outcome_v3(b, plant) for plant in _plants_v3(a, b))
 
 
 # ------------------------------------------------------------------------------------ grammar, for constrained decoding
@@ -416,15 +841,57 @@ GRAMMAR: dict[str, list[tuple[str, ...]]] = {
     "<attr,value>": [(f"{attr},{value}",) for attr, value in _ATTRIBUTE_VALUES],
 }
 
-# Every character a program can contain.
-ALPHABET: frozenset[str] = frozenset(
-    char
-    for rules in GRAMMAR.values()
-    for rule in rules
-    for symbol in rule
-    if not symbol.startswith("<")
-    for char in symbol
-)
+
+# v3's language in the same form. A Then is written to the right and holds at most three statements, an If's branch
+# has no If in it, and Except, Filter and Take nest at most three deep. <atom> is a statement that is not a Then,
+# <basic> one that is neither a Then nor an If.
+def _selection_rules_v3(depth: int) -> list[tuple[str, ...]]:
+    rules = [("All()",), ("Rank(", "<k>", ",", "<end>", ")"), ("Middle()",), ("ReadLabel()",)]
+    if depth > 0:
+        inner = f"<sel{depth - 1}>"
+        rules += [
+            ("Except(", inner, ",", inner, ")"),
+            ("Filter(", "<attr,value>", ",", inner, ")"),
+            ("Take(", "<k>", ",", "<pick>", ",", inner, ")"),
+        ]
+    return rules
+
+
+_SEL_V3 = f"<sel{MAX_NESTING_V3}>"
+GRAMMAR_V3: dict[str, list[tuple[str, ...]]] = {
+    "<program>": [("<atom>",), ("Then(", "<atom>", ",", "<then>", ")")],
+    "<then>": [("<atom>",), ("Then(", "<atom>", ",", "<atom>", ")")],
+    "<atom>": [("<basic>",), ("If(", "<cond>", ",", "<branch>", ",", "<branch>", ")")],
+    "<branch>": [("<basic>",), ("Then(", "<basic>", ",", "<branch_then>", ")")],
+    "<branch_then>": [("<basic>",), ("Then(", "<basic>", ",", "<basic>", ")")],
+    "<basic>": [("Cut(", _SEL_V3, ")"), ("CutFrom(", "<end>", ",", _SEL_V3, ")"), ("Nothing()",)],
+    **{f"<sel{depth}>": _selection_rules_v3(depth) for depth in range(MAX_NESTING_V3 + 1)},
+    "<cond>": [("FlowerIs(", "<colour>", ")"), ("Count(", "<cmp>", ",", "<n>", ",", _SEL_V3, ")")],
+    "<k>": [(str(k),) for k in RANKS],
+    "<n>": [(str(n),) for n in COUNTS],
+    "<end>": [(end,) for end in ENDS],
+    "<pick>": [(pick,) for pick in PICKS],
+    "<cmp>": [(cmp,) for cmp in COMPARISONS],
+    "<colour>": [(colour,) for colour in COLOURS],
+    "<attr,value>": [(f"{attr},{value}",) for attr, value in _ATTRIBUTE_VALUES_V3],
+}
+GRAMMARS = {"v2": GRAMMAR, "v3": GRAMMAR_V3}
+
+
+def _alphabet(grammar: dict) -> frozenset[str]:
+    return frozenset(
+        char
+        for rules in grammar.values()
+        for rule in rules
+        for symbol in rule
+        if not symbol.startswith("<")
+        for char in symbol
+    )
+
+
+# Every character a program can contain: of v2's language (ALPHABET) and of each language (ALPHABETS).
+ALPHABET: frozenset[str] = _alphabet(GRAMMAR)
+ALPHABETS = {language: _alphabet(grammar) for language, grammar in GRAMMARS.items()}
 
 # The acceptor reads a prefix one character at a time and keeps every configuration it can be in: the symbols still
 # to be written, first symbol first, where a terminal that is partly written keeps only its rest. Several
@@ -436,48 +903,51 @@ _START = frozenset({("<program>",)})
 
 
 @functools.lru_cache(maxsize=1 << 16)
-def _expanded(configurations: frozenset) -> frozenset:
+def _expanded(configurations: frozenset, language: str = "v2") -> frozenset:
     """The same configurations, each leading nonterminal replaced by its rules until a terminal leads. A
     configuration with nothing left to write (a whole program) has no next character and is dropped."""
+    grammar = GRAMMARS[language]
     out, todo = set(), list(configurations)
     while todo:
         configuration = todo.pop()
         if configuration and configuration[0].startswith("<"):
-            todo.extend(rule + configuration[1:] for rule in GRAMMAR[configuration[0]])
+            todo.extend(rule + configuration[1:] for rule in grammar[configuration[0]])
         elif configuration:
             out.add(configuration)
     return frozenset(out)
 
 
 @functools.lru_cache(maxsize=1 << 16)
-def _step(configurations: frozenset, char: str) -> frozenset:
+def _step(configurations: frozenset, char: str, language: str = "v2") -> frozenset:
     """The configurations after one more character."""
     out = set()
-    for terminal, *rest in _expanded(configurations):
+    for terminal, *rest in _expanded(configurations, language):
         if terminal[0] == char:
             out.add((terminal[1:], *rest) if len(terminal) > 1 else tuple(rest))
     return frozenset(out)
 
 
-def _configurations(prefix: str) -> frozenset:
+def _configurations(prefix: str, language: str = "v2") -> frozenset:
     # Both steps are cached: a decoder that adds one character at a time pays a dictionary lookup per character.
+    assert language in GRAMMARS, f"language {language!r}: one of {LANGUAGES}"
     configurations = _START
     for char in prefix:
         if not configurations:
             break
-        configurations = _step(configurations, char)
+        configurations = _step(configurations, char, language)
     return configurations
 
 
-def is_complete(text: str) -> bool:
-    """True when `text` is a whole program within the bounds, in canonical form (no spaces)."""
-    return () in _configurations(text)
+def is_complete(text: str, language: str = "v2") -> bool:
+    """True when `text` is a whole program of `language` (v2's by default) within its bounds, in canonical form (no
+    spaces)."""
+    return () in _configurations(text, language)
 
 
-def next_chars(prefix: str) -> set[str]:
-    """Every character c such that prefix + c begins some program within the bounds (canonical form). Empty for a
-    prefix that no program begins with, and after a whole program."""
-    return {configuration[0][0] for configuration in _expanded(_configurations(prefix))}
+def next_chars(prefix: str, language: str = "v2") -> set[str]:
+    """Every character c such that prefix + c begins some program of `language` (v2's by default) within its bounds
+    (canonical form). Empty for a prefix that no program begins with, and after a whole program."""
+    return {configuration[0][0] for configuration in _expanded(_configurations(prefix, language), language)}
 
 
 # ------------------------------------------------------------------------------------------------------------- the plan
@@ -493,10 +963,12 @@ class Execute:
 class NeedObservation:
     """A fact the program needs is missing: "plant" (the inventory is not settled), "flower", "label" or an
     attribute's name. `subgoal`: "show the label" for the label (turn the plant until the card faces the front
-    camera), None for the rest (hold)."""
+    camera), None for the rest (hold). WorldPlan: for an attribute, `part` is the part's id and `subgoal` "show the
+    <position> shoot" (turn the plant until that shoot faces the front camera)."""
 
     what: str
     subgoal: str | None
+    part: int | None = None
 
 
 @dataclass(frozen=True)

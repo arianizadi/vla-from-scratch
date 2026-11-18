@@ -269,10 +269,17 @@ def test_programs_beyond_the_depth_bounds_are_rejected():
             P.parse(written)
         assert not P.is_complete(written), written
     two_deep = P.Except(P.Except(P.All(), P.Middle()), P.Middle())
+    # A node holds to v3's bound (three deep: tutorial/architecture-v3.md), and parse and the acceptor to v2's by
+    # default (two deep)
+    for too_deep in (P.Except(two_deep, P.Middle()), P.Filter("bud", "no", two_deep)):
+        with pytest.raises(P.ProgramError):
+            P.parse(P.text(P.Cut(too_deep)))
+        assert not P.in_language(too_deep, "v2") and P.in_language(too_deep, "v3")
+    three_deep = P.Except(two_deep, P.Middle())
     with pytest.raises(P.ProgramError):
-        P.Except(two_deep, P.Middle())
+        P.Except(three_deep, P.Middle())
     with pytest.raises(P.ProgramError):
-        P.Filter("bud", "no", two_deep)
+        P.Filter("bud", "no", three_deep)
     with pytest.raises(P.ProgramError):
         P.If(P.FlowerIs("red"), P.If(P.FlowerIs("pink"), P.Cut(P.All()), P.Cut(P.All())), P.Cut(P.All()))
     # two deep is within the bounds
@@ -711,3 +718,278 @@ def test_a_plan_carried_out_cuts_exactly_the_shoots_the_task_means(kind):
             assert outcome == P.Complete(), (task, outcome)
             assert tuple(memory.position(p.id) for p in memory.parts if p.cut) == task.target_positions
             assert executed == len(task.targets) and plan.rebinds == 0
+
+
+# ================================================================================================= v3's language
+# tutorial/architecture-v3.md, "The program language": CutFrom, Then, Nothing, Take, Count, and the pairs tie,any,
+# sick,no and tag,<colour>. v2's language stays the default of parse and of the acceptor (the tests above).
+ATTRIBUTE_VALUES_V3 = (
+    *ATTRIBUTE_VALUES,
+    ("tie", "any"),
+    ("sick", "no"),
+    *(("tag", colour) for colour in ("red", "blue", "yellow", "white")),
+)
+
+
+def _random_selection_v3(rng, depth):
+    roll = rng.random()
+    if depth > 0 and roll < 0.2:
+        return P.Except(_random_selection_v3(rng, depth - 1), _random_selection_v3(rng, depth - 1))
+    if depth > 0 and roll < 0.35:
+        return P.Filter(*rng.choice(ATTRIBUTE_VALUES_V3), _random_selection_v3(rng, depth - 1))
+    if depth > 0 and roll < 0.5:
+        return P.Take(rng.choice((1, 2, 3)), rng.choice(("top", "bottom", "any")), _random_selection_v3(rng, depth - 1))
+    return rng.choice(LEAVES)
+
+
+def _random_basic(rng):
+    roll = rng.random()
+    if roll < 0.45:
+        return P.Cut(_random_selection_v3(rng, 3))
+    if roll < 0.85:
+        return P.CutFrom(rng.choice(("top", "bottom")), _random_selection_v3(rng, 3))
+    return P.Nothing()
+
+
+def _chain(rng, make):
+    """One statement, or a Then of two or three, written to the right."""
+    statements = [make(rng) for _ in range(rng.choice((1, 1, 2, 3)))]
+    out = statements[-1]
+    for statement in reversed(statements[:-1]):
+        out = P.Then(statement, out)
+    return out
+
+
+def _random_atom(rng):
+    if rng.random() < 0.6:
+        return _random_basic(rng)
+    if rng.random() < 0.5:
+        cond = P.FlowerIs(rng.choice(R.FLOWERS))
+    else:
+        cond = P.Count(rng.choice(("exactly", "more", "fewer")), rng.choice((0, 1, 2, 3)), _random_selection_v3(rng, 3))
+    return P.If(cond, _chain(rng, _random_basic), _chain(rng, _random_basic))
+
+
+def _random_program_v3(rng):
+    return _chain(rng, _random_atom)
+
+
+def _parses_v3(written):
+    try:
+        P.parse(written, "v3")
+    except P.ProgramError:
+        return False
+    return True
+
+
+def test_v3_text_parses_back_to_the_same_program_and_the_acceptor_agrees_with_the_parser():
+    rng = random.Random(10)
+    agreed = {True: 0, False: 0}
+    for _ in range(10_000):
+        program = _random_program_v3(rng)
+        written = P.text(program)
+        assert P.parse(written, "v3") == program and P.is_complete(written, "v3"), written
+        assert P.next_chars(written, "v3") == set()
+        corrupted = _corrupt(written, rng)
+        parses = _parses_v3(corrupted)
+        assert P.is_complete(corrupted, "v3") == parses, corrupted
+        if parses:
+            assert P.text(P.parse(corrupted, "v3")) == corrupted
+        agreed[parses] += 1
+    assert min(agreed.values()) > 300  # both kinds of string were tried
+
+
+def test_v3_every_prefix_allows_its_next_character_and_any_walk_ends_in_a_whole_program():
+    rng = random.Random(11)
+    alphabet = P.ALPHABETS["v3"]
+    for _ in range(300):
+        written = P.text(_random_program_v3(rng))
+        for i in range(len(written)):
+            allowed = P.next_chars(written[:i], "v3")
+            assert written[i] in allowed and allowed <= alphabet, (written, i)
+            assert not P.is_complete(written[:i], "v3"), (written, i)
+    kinds = set()
+    for _ in range(400):
+        written = ""
+        while allowed := P.next_chars(written, "v3"):
+            written += rng.choice(sorted(allowed))
+        program = P.parse(written, "v3")
+        assert P.text(program) == written
+        kinds.add(type(program))
+    assert kinds == {P.Cut, P.If, P.CutFrom, P.Then, P.Nothing}
+
+
+def test_v3_is_v2_and_more_and_v2_stays_the_default():
+    rng = random.Random(12)
+    for _ in range(500):
+        written = P.text(_random_program(rng))
+        assert P.parse(written, "v3") == P.parse(written) and P.is_complete(written, "v3")
+    assert P.ALPHABETS["v3"] > P.ALPHABET and P.ALPHABETS["v2"] == P.ALPHABET
+    assert P.next_chars("", "v3") == {"C", "I", "T", "N"} and P.next_chars("") == {"C", "I"}
+    for written in (
+        "CutFrom(top,All())",
+        "Then(Cut(Rank(1,bottom)),Cut(Rank(1,top)))",
+        "Nothing()",
+        "Cut(Take(1,top,Filter(bud,no,All())))",
+        "If(Count(more,1,Filter(sick,yes,All())),Cut(Take(1,bottom,Filter(sick,yes,All()))),Nothing())",
+        "Cut(Filter(sick,no,All()))",
+        "Cut(Filter(tie,any,All()))",
+        "Cut(Filter(tag,red,All()))",
+        "Cut(Except(Except(Except(All(),Middle()),Middle()),Middle()))",
+        "If(FlowerIs(red),CutFrom(top,All()),Cut(All()))",
+    ):
+        program = P.parse(written, "v3")
+        assert P.text(program) == written and P.is_complete(written, "v3")
+        assert not P.is_complete(written) and not P.in_language(program, "v2")
+        with pytest.raises(P.ProgramError):
+            P.parse(written)
+
+
+def test_v3_rules_keep_the_language_finite():
+    for written in (
+        "Then(Then(Cut(All()),Cut(All())),Cut(All()))",  # a Then nests to the right
+        "Then(Cut(All()),Then(Cut(All()),Then(Cut(All()),Cut(All()))))",  # four statements
+        "If(FlowerIs(red),If(FlowerIs(pink),Cut(All()),Nothing()),Nothing())",  # an If in an If
+        "If(FlowerIs(red),Then(Cut(All()),If(FlowerIs(pink),Cut(All()),Nothing())),Nothing())",
+        "Cut(Except(Except(Except(Except(All(),Middle()),Middle()),Middle()),Middle()))",  # four deep
+        "Cut(Take(1,top,Take(1,top,Take(1,top,Take(1,top,All())))))",
+        "Cut(Take(0,top,All()))",
+        "Cut(Take(4,top,All()))",
+        "Cut(Take(1,middle,All()))",
+        "If(Count(exactly,4,All()),Nothing(),Nothing())",
+        "If(Count(most,1,All()),Nothing(),Nothing())",
+        "Cut(Count(more,1,All()))",
+        "CutFrom(any,All())",
+        "Cut(Filter(tag,any,All()))",
+        "Cut(Filter(sick,maybe,All()))",
+        "Then(Cut(All()))",
+        "Nothing(All())",
+    ):
+        with pytest.raises(P.ProgramError):
+            P.parse(written, "v3")
+        assert not P.is_complete(written, "v3"), written
+    # a Then of three, an If inside a Then, and a Then inside an If are all in the language
+    for written in (
+        "Then(Cut(Rank(1,top)),Then(Cut(Rank(1,bottom)),Nothing()))",
+        "Then(If(FlowerIs(red),Cut(All()),Nothing()),CutFrom(bottom,All()))",
+        "If(FlowerIs(red),Then(Cut(Middle()),CutFrom(top,All())),Nothing())",
+    ):
+        assert P.text(P.parse(written, "v3")) == written and P.is_complete(written, "v3")
+
+
+def _stages(written, count, **facts):
+    return P.stages_on(P.parse(written, "v3"), count, **facts)
+
+
+def test_v3_stages_of_the_situations_programs_and_of_rung_5():
+    assert _stages("CutFrom(top,All())", 3) == [(("highest",), ("middle",), ("lowest",))]
+    assert _stages("CutFrom(bottom,All())", 2) == [(("lowest",), ("highest",))]
+    assert _stages("Then(Cut(Rank(1,bottom)),Cut(Rank(1,top)))", 3) == [(("lowest",), ("highest",))]
+    assert _stages("Cut(All())", 3) == [(("lowest", "middle", "highest"),)]
+    ties = [{"tie": "none"}, {"tie": "red"}, {"tie": "none"}]
+    assert _stages("Cut(Filter(tie,any,All()))", 3, attributes=ties) == [(("middle",),)]
+    assert _stages("Cut(Filter(tie,red,All()))", 3, attributes=ties) == [(("middle",),)]
+    assert _stages("Cut(Filter(tie,blue,All()))", 3, attributes=ties) == [()]  # nothing to cut
+    sick = [{"sick": "yes", "bud": "no"}, {"sick": "no", "bud": "yes"}, {"sick": "yes", "bud": "no"}]
+    assert _stages("Cut(Filter(sick,yes,All()))", 3, attributes=sick) == [(("lowest", "highest"),)]
+    assert _stages("Cut(Filter(sick,no,All()))", 3, attributes=sick) == [(("middle",),)]
+    assert _stages("CutFrom(top,Filter(sick,yes,All()))", 3, attributes=sick) == [(("highest",), ("lowest",))]
+    assert _stages("Cut(Take(1,top,Filter(bud,no,All())))", 3, attributes=sick) == [(("highest",),)]
+    assert _stages("Cut(Take(1,bottom,Filter(bud,no,All())))", 3, attributes=sick) == [(("lowest",),)]
+    assert _stages("Nothing()", 3) == [()]
+    # any two shoots: every choice is listed, and "leave exactly one" keeps any one
+    assert _stages("Cut(Take(2,any,All()))", 3) == [
+        (("lowest", "middle"),),
+        (("lowest", "highest"),),
+        (("middle", "highest"),),
+    ]
+    assert sorted(_stages("Cut(Except(All(),Take(1,any,All())))", 2)) == [(("highest",),), (("lowest",),)]
+    assert _stages("Cut(Take(3,any,All()))", 2) == [(("lowest", "highest"),)]  # all of it if it has fewer
+    counted = "If(Count(more,1,Filter(sick,yes,All())),Cut(Take(1,bottom,Filter(sick,yes,All()))),Nothing())"
+    assert _stages(counted, 3, attributes=sick) == [(("lowest",),)]
+    one_sick = [{"sick": "no"}, {"sick": "yes"}, {"sick": "no"}]
+    assert _stages(counted, 3, attributes=one_sick) == [()]
+    # a Then does not ask again for a shoot its first statement cut
+    assert _stages("Then(Cut(Rank(1,top)),Cut(All()))", 3) == [(("highest",), ("lowest", "middle"))]
+    assert _stages("Then(Cut(All()),CutFrom(top,All()))", 2) == [(("lowest", "highest"),)]
+    # facts are read as in v2: a Filter needs its attribute on every shoot it looks at, and says which
+    with pytest.raises(P.NeedsObservation) as need:
+        _stages("Cut(Filter(bud,no,All()))", 3, attributes=[{"bud": "no"}, {}, {}])
+    assert (need.value.what, need.value.index) == ("bud", 1)
+    with pytest.raises(P.ProgramError):
+        _stages("CutFrom(top,Middle())", 2)
+
+
+def test_v3_equivalence_compares_the_sequences_of_cuts_on_plants_with_attributes():
+    def same(a, b):
+        return P.equivalent(P.parse(a, "v3"), P.parse(b, "v3"), "v3")
+
+    assert not same("CutFrom(top,All())", "Cut(All())")
+    # with no language named, v3's comparison for programs outside v2's language
+    assert not P.equivalent(P.parse("CutFrom(top,All())", "v3"), P.parse("Cut(All())"))
+    assert not same("CutFrom(top,All())", "CutFrom(bottom,All())")
+    assert same("CutFrom(top,Rank(1,top))", "Cut(Rank(1,top))")  # one shoot: one order
+    assert same("Then(Cut(Rank(1,bottom)),Cut(Rank(1,top)))", "Then(CutFrom(top,Rank(1,bottom)),Cut(Rank(1,top)))")
+    assert not same("Then(Cut(Rank(1,bottom)),Cut(Rank(1,top)))", "CutFrom(bottom,Except(All(),Middle()))")
+    assert same("Then(Cut(All()),Cut(Rank(1,top)))", "Cut(All())")
+    assert same("Nothing()", "Cut(Except(All(),All()))")
+    assert same("Cut(Filter(sick,no,All()))", "Cut(Except(All(),Filter(sick,yes,All())))")
+    assert not same("Cut(Filter(tie,red,All()))", "Cut(Filter(tie,blue,All()))")  # v2's comparison has them equal
+    assert P.equivalent(P.parse("Cut(Filter(tie,red,All()))"), P.parse("Cut(Filter(tie,blue,All()))"))
+    assert not P.equivalent(P.parse("Cut(Filter(tie,red,All()))"), P.parse("Cut(Filter(tie,blue,All()))"), "v3")
+    assert not same("Cut(Filter(tie,any,All()))", "Cut(Except(All(),Filter(tie,any,Except(All(),All()))))")
+    assert not same("Cut(Take(1,top,Filter(bud,no,All())))", "Cut(Filter(bud,no,Rank(1,top)))")
+    assert same("Cut(Take(1,top,All()))", "Cut(Rank(1,top))")
+    assert same("Cut(Take(2,any,All()))", "Cut(Take(2,any,All()))")
+    assert not same("Cut(Take(2,any,All()))", "Cut(Take(2,top,All()))")  # any allows more choices
+    assert same(
+        "If(Count(exactly,0,Filter(sick,yes,All())),Nothing(),Cut(Filter(sick,yes,All())))",
+        "Cut(Filter(sick,yes,All()))",
+    )
+    assert not same("Cut(ReadLabel())", "Cut(Middle())")
+    for kind in R.KINDS:  # v2's programs are equivalent to themselves either way
+        for _, _, task in _draws(kind, "heldout", n=20):
+            assert P.equivalent(P.from_task(task), P.from_task(task), "v3")
+
+
+class _Scenario:
+    def __init__(self, name, changes_task=True):
+        self.name, self.changes_task = name, changes_task
+
+
+class _Env:
+    """What from_scenario reads of a PickupEnv."""
+
+    def __init__(self, situation=None, **variation):
+        self.task, self.reason, self.named = "prune", None, None
+        self.scenarios = [] if situation is None else [_Scenario("wind", False), _Scenario(situation)]
+        self.scenario_info = {} if situation is None else {situation: dict(applied=True, **variation), "wind": {}}
+
+
+def test_the_program_of_each_situation_written_out():
+    def written(situation=None, **variation):
+        return P.text(P.from_scenario(_Env(situation, **variation)))
+
+    assert written() == "Cut(All())"
+    assert written("nothing_to_do", mode="pruned") == "Cut(All())"
+    assert written("order", mode="top_down") == "CutFrom(top,All())"
+    assert written("order_heldout", mode="bottom_up") == "CutFrom(bottom,All())"
+    assert written("order", mode="pair", order="lowest,highest") == "Then(Cut(Rank(1,bottom)),Cut(Rank(1,top)))"
+    assert written("order", mode="pair", order="middle,lowest") == "Then(Cut(Middle()),Cut(Rank(1,bottom)))"
+    assert written("ties", mode="colour", colour="red") == "Cut(Filter(tie,red,All()))"
+    assert written("ties_heldout", mode="one") == "Cut(Filter(tie,any,All()))"
+    assert written("sick", mode="sick") == "Cut(Filter(sick,yes,All()))"
+    assert written("buds", mode="buds") == "Cut(Filter(bud,no,All()))"
+    env = _Env("nothing_to_do", mode="pruned")
+    env.scenario_info["nothing_to_do"]["applied"] = False  # nothing_to_do@p in an episode it does not apply to
+    assert P.text(P.from_scenario(env)) == "Cut(All())"
+    env = _Env()
+    env.named = "train"
+    with pytest.raises(ValueError):
+        P.from_scenario(env)
+    env = _Env()
+    env.reason, env.reason_task = (
+        ("ordinal", "train"),
+        R.Task("ordinal", "x", "train", 3, (1,), "x", dict(k=2, end="top")),
+    )
+    assert P.text(P.from_scenario(env)) == "Cut(Rank(2,top))"
