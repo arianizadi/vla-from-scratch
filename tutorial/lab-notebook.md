@@ -1633,6 +1633,201 @@ Runs: 27 (8 re-runs of the fixed cells, 3 of the diagnosis, 16 of the grid), 4,8
 rendering, the fine-tune's hour, the re-runs and the diagnosis), the other for 1.4 hours (the grid, 15 runs at once);
 the runs' own wall times add to 10.3 hours.
 
+### Step 6: the eyes with attributes (E16), the shortcut probe, and v3 on the eyes
+
+Design: architecture-v3.md, "Eyes: four more outputs per part" and "Step 6, as built". The eyes of v2 with three more
+outputs per part slot, each with a class for "cannot be read in this view": `tie` (unreadable, none, red, blue,
+yellow, white), `sick` and `bud` (unreadable, no, yes), one cross-entropy each, trained from scratch on every frame,
+old and new, from the simulator's labels. Every run below is on validation layouts (seeds from 900,000) unless marked,
+from the demonstrations' random starts.
+
+**The data.** `scene_tend` (the design's `scene_tend_12k` without `tags`): the scripted expert on each situation from
+seeds of its own, every fourth control step and the tail, every episode kept, both cameras and the plant crop, every
+frame's truth with attributes: `ties+sized` 2000 episodes (91,348 frames), `sick` 2000 (118,768), `buds+sized` 2000
+(120,641), `reason_mix` 3000 (158,821), `prune` 1000 (108,102), `order` 500 (52,645), `nothing_to_do` 500 (8,800);
+with v2's `scene_reason_mix_6k` and `scene_prune_2k`, 19,000 episodes and 1,193,168 frames. `+sized` draws a fifth of
+the episodes with each tie or bud at a scale of its own, half to twice its drawn size. Validation: `scene_val_tend`,
+1100 episodes and 68,716 frames (`ties` and `buds` 300 each, the others 100). About 16 minutes with 64 processes.
+
+**E16: the eyes alone** (final averaged weights; three seeds of the views chosen, front, wrist and the plant crop;
+each attribute on its own situation's validation frames, over the parts where it can be read and at the size it is
+drawn; "cannot be read" over the parts where it cannot; ECE, the expected calibration error of the probability the
+eyes give their class, over every part):
+
+| Eyes | tie (colour) | tie: cannot be read | sick | sick: cannot be read | bud | bud: cannot be read | counted and wrong | ECE: tie, sick, bud | old outputs: three-shoot count, cut, card |
+|---|---|---|---|---|---|---|---|---|---|
+| front and wrist (`eyes_v3_fw_3m`) | 91.6% (90.6%) | 79.4% | 95.4% | 96.7% | 93.1% | 96.8% | 2.1% to 4.6% | 0.041, 0.021, 0.033 | 99.1%, 99.8%, 99.0% |
+| with the plant crop (`eyes_v3_fwp_3m`, seed 42) | 95.4% (95.0%) | 85.9% | 99.0% | 98.2% | 98.2% | 98.3% | 0.5% to 0.7% | 0.026, 0.005, 0.009 | 99.6%, 99.9%, 99.7% |
+| the same, seed 43 | 95.6% (95.2%) | 86.9% | 99.2% | 98.3% | 98.7% | 98.4% | 0.2% to 0.4% | 0.033, 0.004, 0.008 | 99.4%, 99.9%, 99.9% |
+| the same, seed 44 | 95.2% (94.5%) | 85.3% | 98.3% | 97.9% | 97.8% | 98.3% | 0.7% to 0.9% | 0.026, 0.007, 0.010 | 99.6%, 100%, 99.7% |
+| v2's `eyes_vit_fwp_2m` | | | | | | | | | 99.2%, 99.9%, 100% |
+
+"Counted and wrong": of the readings the memory counts (readable, at least 0.7 sure), the share that is wrong. Each run
+took 35 to 75 minutes on a shared L40S (1500 to 2500 samples per second alone, 700 beside another run and evaluations).
+
+- **The old outputs hold.** On `scene_val_reason_mix` the three-shoot count, cut and the card read 99.6%, 99.9% and
+  99.7% (`eyes_v3_fwp_3m`) against 99.2%, 99.9% and 100% for `eyes_vit_fwp_2m`: within the half point step 6 asks.
+- **P3 is half met.** Sick is read on 99% (P3: 97%) and a bud on 98% with the crop (97%) and 93% from the two
+  cameras (85% to 93%); "cannot be read" on 98% for both. The tie falls short: its colour on 95% of the parts where
+  it can be read (98% asked), and "cannot be read" on 86% (95% asked): a tie whose place the truth calls hidden is
+  often partly in view, and its band is 6 pixels wide. The refutation P3 names (a bud under 90% with the crop) did
+  not happen, so the narrower crop was not needed for the design; it was built for the small-object test below.
+- **Calibrated where it counts.** The probability the eyes give is close to how often they are right (ECE 0.03 for
+  the tie, under 0.01 for sick and bud), but not between 0.7 and 0.99, where the memory counts a reading: a tie said
+  with 0.7 to 0.9 is right in 68% of the parts, with 0.9 to 0.99 in 89% (99.7% above 0.99, where 72% of them are).
+  A higher `p_min` for the tie is a lever not yet tried.
+
+**The small-object test.** Ties are drawn at `TIE_SCALE` 1.8 because at their true size they are 2 to 3 pixels wide in
+the 224-pixel front image; a bud is about 5 by 10. Two questions: does the eyes' accuracy hold at the true size, and
+which view reads how small. The eyes above were trained mostly at the drawn size, so their accuracy falls away from it
+in both directions (the plant crop alone reads a tie's colour at 82% at its true size, 97% at 1.8, 85% at 3.6): that
+measures the training data as much as the image. For a clean measure:
+
+- `+wide`: every tie or bud of every episode drawn at a scale of its own, a quarter to twice its drawn size in 13 steps
+  (ties 0.45 to 3.6 times their true size, buds 0.25 to 2): `scene_tend_ties_wide` and `scene_tend_buds_wide`, 2000
+  episodes each (90,936 and 120,660 frames), validation 300 each, from the same seeds as `scene_tend`;
+- the narrower crop of the design's third set of views (`--crop4`, `plant4`): the front camera at four times the size,
+  about 0.85 mm per pixel, the 224-pixel window around the plant cut out;
+- eyes that look through one view each, trained on the same frames (2M samples, tie and bud only), each learning
+  "cannot be read" where its own view cannot read the attribute (the truth says which camera can; for the narrower
+  crop, the front camera inside its window, which leaves out about a fifth of the buds' places);
+- scored on the parts its view can read: a tie read right with its colour where there is one, a bud said "yes" where
+  there is one.
+
+Two seeds per view, averaged (2M samples each; validation `scene_val_ties_wide` and `scene_val_buds_wide`, 300 + 1000
+episodes each from seeds 900,000 and 910,000, about 2,000 to 8,000 readable part-frames per scale and view; the
+pixel sizes are the front camera's at 224, twice that in the plant crop and four times in the narrower crop):
+
+| A tie's colour, by scale against its true size | 0.45 to 0.54 | 0.64 to 0.76 | **0.9 to 1.07** | 1.27 to 1.51 | 1.8 to 2.14 (drawn) | 2.55 to 3.6 | ECE |
+|---|---|---|---|---|---|---|---|
+| tie band in the 224-pixel front image | 1.5 to 1.8 px | 2.1 to 2.5 px | **3.0 to 3.6 px** | 4.2 to 5.0 px | 6.0 to 7.1 px | 8.5 to 12 px | |
+| front, 224 | 37.2% | 73.1% | **83.2%** | 86.5% | 89.3% | 88.5% | 0.14 |
+| wrist, 224 | 53.9% | 66.8% | **69.5%** | 73.7% | 71.5% | 69.1% | 0.03 |
+| plant crop, 2x | 69.1% | 87.0% | **93.5%** | 93.4% | 94.2% | 94.1% | 0.07 |
+| narrower crop, 4x | 74.1% | 90.9% | **94.8%** | 93.3% | 93.6% | 91.2% | 0.06 |
+
+| A bud said "yes", by scale against its true size | 0.25 to 0.35 | 0.42 to 0.5 | 0.59 to 0.71 | **0.84 to 1.0** | 1.19 to 1.41 | 1.68 to 2.0 | ECE |
+|---|---|---|---|---|---|---|---|
+| bud in the 224-pixel front image (across) | 1.3 to 1.8 px | 2.1 to 2.5 px | 3.0 to 3.5 px | **4.2 to 5.0 px** | 5.9 to 7.1 px | 8.4 to 10 px | |
+| front, 224 | 42.4% | 54.4% | 61.2% | **74.8%** | 84.3% | 90.4% | 0.14 |
+| wrist, 224 | 70.0% | 72.1% | 74.4% | **77.7%** | 78.6% | 73.7% | 0.01 |
+| plant crop, 2x | 40.2% | 66.4% | 82.3% | **94.7%** (97.3% at 1.0) | 95.1% | 97.6% | 0.09 |
+| narrower crop, 4x | 38.3% | 77.8% | 89.5% | **95.6%** | 96.0% | 96.9% | 0.06 |
+
+- **True size fails at 224 and works on the crop.** A true-size tie's colour (0.9 to 1.07 times, 3 to 3.6 pixels
+  wide in the front image) is read on 83% of the parts the front camera can read, on 93.5% in the plant crop and on
+  94.8% in the narrower crop; a true-size bud (1.0) on 78% from the front image, 96% to 97% in the crops.
+- **The smallest scale read reliably** (95%, and as well at every larger scale): a bud from 0.84 times its true size
+  in the narrower crop (95.0% there, 95.6% over 0.84 to 1.0), from about its true size in the plant crop (97.3% at 1.0,
+  95.1% over 1.19 to 1.41), never from the front image (90% at twice its size) or the wrist camera. A tie at no scale
+  in any view: the crops level off at 92% to 95% from 0.9 times its true size up (the narrower crop from 0.76, 92.7%,
+  with a dip to 89% at 2.5), the front image at 85% to 90% from its true size up, so above the true size what limits
+  the tie is not pixels. The same ceiling is in the main eyes (95% at the drawn size): it is the edge of "cannot be
+  read", where a tie whose place the truth calls hidden or seen is half in view.
+- **The wrist camera reads at about 70% whatever the size**: what its rays reach is mostly far off and from above,
+  until the hand is at the shoot. It is in the eyes for the parts the front camera cannot see (the census), not for
+  small things.
+- **What the views cost**: the narrower crop gains on the plant crop only below the true size (a bud at 0.59 to 0.71:
+  89.5% against 82.3%; a tie at 0.64 to 0.76: 90.9% against 87.0%) and leaves about a fifth of the buds' places out
+  of its window. The plant crop is the view that the eyes need for true-size things; the narrower crop is the one
+  for things smaller than these.
+
+With the main runs' eyes trained on true-size ties (`scene_tend_ties` drawn again at 1.0, everything else as
+above), the front and wrist cameras read a true-size tie's colour in 85% of the parts, and with the plant crop 93%
+(`eyes_v3_fw_true_3m`, `eyes_v3_fwp_true_3m`, on the fixed-scale probe sets): the same picture with the views
+together. A true-size tie is out of reach of 224 pixels, and with the crop within a point or two of the crop's
+ceiling.
+
+**The shortcut probe** (the simulator's scene, the task's program, evaluation layouts, 200 episodes each,
+`eval.py --swap_target`: the slow level names another shoot than the one the situation means, chosen per seed). The
+fine-tune's data mixed `colour` (every shoot tied) and `one` (only the shoot meant tied), so the fine-tuned fast
+level might have learned "cut the tied shoot":
+
+| | Mode `one`, sub-goal for an untied shoot | Mode `colour`, sub-goal for a shoot with another colour |
+|---|---|---|
+| fine-tuned on ties (seed 43): cut the shoot named | **176** | 177 |
+| ... cut the tied shoot the situation meant | 2 | 4 |
+| as it was (seed 43): cut the shoot named | 180 | 101 |
+| ... cut the tied shoot the situation meant | 2 | 5 |
+
+No shortcut: sent to an untied shoot on a plant with one tie, the fine-tuned level cuts the shoot named in 176 of 200
+and the tied one in 2, as the level before the fine-tune does (180 and 2). In `colour` mode it cuts the shoot named in
+177 (101 before: the ties on the shoot named stopped it, as diagnosed). So the fine-tune was not redone.
+
+**Cut precision**: where the gripper's centre was, from the shoot's axis as grown, at the control step that cut it
+(`cut_places`, evaluation layouts, the simulator's scene, the task's program):
+
+| | cuts | across the shoot: median | mean | 90th percentile | along it from the stem: median |
+|---|---|---|---|---|---|
+| the scripted expert, `prune` | 501 | 5.9 mm | 6.2 mm | 9.5 mm | 34.6 mm |
+| the scripted expert, `ties` | 197 | 5.8 mm | 6.0 mm | 9.7 mm | 34.2 mm |
+| as it was, `prune` | 451 | 7.9 mm | 8.5 mm | 14.4 mm | 33.3 mm |
+| fine-tuned on ties, `prune` | 437 | 8.2 mm | 8.9 mm | 15.6 mm | 33.5 mm |
+| fine-tuned, `ties`, `one` mode swapped (untied shoot) | 176 | 7.8 mm | 8.3 mm | 13.9 mm | 34.3 mm |
+| fine-tuned, `ties`, `colour` mode swapped (tied shoot) | 177 | 10.5 mm | 11.1 mm | 18.4 mm | 33.9 mm |
+| fine-tuned, `ties` on the eyes | 173 | 9.8 mm | 10.6 mm | 17.6 mm | 33.8 mm |
+
+Both fast levels cut about 2 mm further from the shoot's axis than the expert (whose jaws close 2.6 to 4.0 cm out
+along it, as the gate's calibration found), and the fine-tune did not change that on `prune` (8.2 against 7.9). On a
+shoot with a tie it closes about 2.5 mm further off (10.5 against 7.8): the tie, at `TIE_AT` on the shoot, is where
+the jaws would go.
+
+**v3 on the eyes** (`--scene eyes` with `eyes_v3_fwp_3m`, the task's program, the fine-tuned fast level, up to two
+resets, the gate off, `--inspect turn`). On validation layouts first, to choose the views and the memory's rule:
+
+| Situation | front and wrist, "row" | with the crop, "row" | "last" | "angles" | "sticky" |
+|---|---|---|---|---|---|
+| `prune` | 78 | 78 | | | |
+| `order`, of 150 | 127 | 117 | | | |
+| `nothing_to_do` | 99 | 99 | | | |
+| `ties` | 77 | 85 | 81 | 81 | 87 |
+| `sick` | 75 | 86 | 83 | 82 | 89 |
+| `buds` | 68 | 89 | 77 | 74 | 82 |
+| a wrong shoot cut or `Complete` said wrongly, ties+sick+buds | 43 | 19 | 27 | 13 | 15 |
+
+- **The crop stays**: 260 of 300 on the three situations that read attributes against 220, and half the attribute
+  errors in the memory (26 episodes against 81); `order` (no attribute) 117 against 127 of 150, inside the noise of
+  50-episode cells.
+- **The memory's rule stays "row"** (three readings in a row, as v2's): 260 of 300, "sticky" (a first value from a row,
+  a change only from two angles) 258, "last" 241, "angles" (a row whose readings span 30 degrees) 237. "Angles"
+  cuts the false completes from 13 to 3 but turns the plate for 392 looks against 42 and runs out of time in 46
+  episodes;
+  "sticky" halves the false completes and more than doubles the wrong cuts on `buds` (7 against 3). The
+  rules were compared on these layouts before the evaluation layouts were run.
+
+Then the evaluation layouts, against E13b (the same fast level and runner on the simulator's scene):
+
+| Situation (rung) | simulator's scene (E13b) | **the eyes** | difference | attribute misread (episodes) | wrong shoot cut | `Complete` said wrongly |
+|---|---|---|---|---|---|---|
+| `prune` | 161 | 154 | -7 | 3 | 0 | 0 |
+| `order` (1), of 300 | 241 | 239 | -2 | 6 | 4 | 2 |
+| `order`: from the top down, of 100 | 77 | 78 | +1 | | | |
+| `order`: from the bottom up, of 100 | 77 | 77 | 0 | | | |
+| `order`: a pair, of 100 | 87 | 84 | -3 | | | |
+| `nothing_to_do` (2) | 200 | 199 | -1 | 1 | 0 | 0 |
+| `ties` (3) | 177 | 170 | -7 | 23 | 3 | 11 |
+| `sick` (4) | 176 | 162 | -14 | 14 | 0 | 13 |
+| `buds` (4) | 182 | 166 | **-16** | 19 | 9 | 4 |
+| `reason_mix`, v2's slow level | 182 | 176 | -6 | | | 1 |
+| `reason_mix`, v2's slow level with v2's eyes (`eyes_vit_fwp_2m`) | | 177 | | | | |
+
+- **P5 holds on rungs 1 to 3 and misses rung 4 by one episode.** `buds` loses 16 (P5 allows 15), `sick` 14. The
+  episodes lost to perception are the attribute's: on `buds` 9 wrong shoots cut, 2 false `Complete` and 2 out of time
+  with a bud misread; on `sick` 10 `Complete` said with a sick shoot left; on `ties` 11 `Complete` said and 3 wrong
+  shoots cut. The rest (out of time, the flower touched) is about as often as on the simulator's scene.
+- **No regression where no attribute is read**: `prune`, `order` and `nothing_to_do` within 7, v2's `reason_mix`
+  176 against 182 on the simulator's scene, and 177 with v2's own eyes: the new outputs cost the old task nothing.
+- **What reads wrong**: the memory held a wrong attribute at some look in 7% to 12% of the episodes of the three
+  situations (14 to 23 of 200), each for a median of 13 to 20 looks: the eyes are wrong in runs, not in single
+  frames, which three readings in a row do not filter. On `buds` most of these start at the first look, from the
+  clear start (median control step 27); on `ties` and `sick` after 120 to 165 control steps, with the arm at the
+  plant, states the expert's frames show less: what step 7's frames from the fast level's own rollouts are for.
+
+Runs: 18 perception datasets (the 14 of `scene_tend` and its validation in 16 minutes with 64 processes, the true-size
+ties, the 4 wide sets of the small-object test in 18 minutes), 17 eyes runs (9 on everything, 8 one-view), 39
+closed-loop runs and 5,400 episodes in `results/pickup/e16/`. Two L40S GPUs for 4.9 hours of wall time each (9.8
+GPU-hours held), shared by the eyes' training, the collections' rendering and up to 9 evaluations at once.
+
 ## Throughput
 
 | Model | Machine A (RTX 4090) | Machine B (L40S) |

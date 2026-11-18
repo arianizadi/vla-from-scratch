@@ -688,7 +688,7 @@ on the evaluation layouts with the setting fixed beforehand, both seeds, trainin
 *Done when:* the notebook has a section for v3, this document has its "First results" with every prediction answered,
 and the roadmap says where it stands.
 
-## As built: steps 1 to 4
+## As built: steps 1 to 4, and 6
 
 Steps 1 to 3 are in `sim/pickup/program.py`, `scene.py`, `scenarios.py`, `census.py` and `slow_level.py`, with their
 tests. Nothing of v2 changes by default: v2's language stays the default of `parse`, the acceptor and `equivalent`, so
@@ -806,11 +806,47 @@ episodes, at the gate's threshold, so the gate stays off there too. Fact 6 did n
 most of each batch, at a lower learning rate, for 3M samples. Rung 3 can now be reported on this fast level; the
 second seed was not fine-tuned.
 
-**Next, per the plan: step 6, the eyes** (E16), whose four attribute outputs are what the rungs 3 and 4 runs above took
-from the simulator. The census says the wrist camera is needed: the front camera alone misses 3% to 15% of attributes
-at the first look and up to 4.2% for as long as a shoot is on the plant, and the wrist camera closes that gap. So the
-eyes are trained with both cameras and with the plant crop on `scene_tend_12k`, and step 7 then runs all of v3 on
-rungs 1 to 4 over this fast level, with `--inspect turn` (its rollouts are the ones `scene_policy_tend_2k` records).
+**Step 6, as built** (E16; the notebook has the tables). The eyes read a tie, sick and a bud per part slot, each with
+a class for "cannot be read", trained from scratch on `scene_tend` (the design's `scene_tend_12k` without `tags`:
+11,000 episodes of the situations, `reason_mix` and `prune`; 1.19M frames with v2's) and validated on
+`scene_val_tend` (1100 episodes). Where it departs from the design or adds to it:
+
+- **The views**: front, wrist and the plant crop (`eyes_v3_fwp_3m`, 3M samples; seeds 42, 43, 44), chosen over front
+  and wrist alone on validation layouts in closed loop (260 against 220 of 300 episodes of `ties`, `sick` and `buds`,
+  with a third of the episodes in which the memory held a wrong attribute). The old outputs are within half a point
+  of `eyes_vit_fwp_2m`.
+- **P3** holds for sick (99%) and the bud (98% with the crop, 93% without), and "cannot be read" for both (98%);
+  the tie's colour is read on 95% (98% asked) and its "cannot be read" on 86% (95% asked). `eyes_report` now gives
+  each attribute's calibration: close (an expected calibration error of 0.03 for the tie, under 0.01 for the others)
+  but over-sure between 0.7 and 0.99, where the memory counts a reading.
+- **The small-object test** asked more than whether the resolution is enough at the drawn size: `+wide` draws every
+  tie or bud of every episode at a scale of its own (a quarter to twice its drawn size), `collect_scene --crop4` adds
+  the narrower crop (`plant4`, four times the size, its window a third attribute view in the truth), and eyes that
+  look through one view learn "cannot be read" where that view cannot read. With one-view eyes trained on the same
+  frames at every scale, a tie at its true size (3 pixels wide at 224) is read with its colour on 83% of the parts
+  from the front image, 93.5% in the plant crop and 94.8% in the narrower crop, a true-size bud on 78%, 97% and 96%:
+  true size fails at 224 and works on the crop. A bud is read reliably (95%) from its true size in the plant crop and
+  from 0.84 of it in the narrower crop; a tie at no scale in any view, the crops levelling off at 92% to 95% from 0.9
+  of its true size up, so the tie's limit is not pixels. The wrist camera reads about 70% at every size. The plant
+  crop stays the eyes' third view; the narrower crop is for things smaller than these.
+- **The memory's rule stays "row"**; a fourth rule, "sticky" (a first value from a row, a change only from two angles
+  30 degrees apart), was added for readings that can be wrong and does as well (258 against 260 of 300) without
+  doing better. "Angles" ends most false completes and costs more turning than it saves.
+- **The shortcut probe** (`eval.py --swap_target`): the fast level fine-tuned on ties cuts the shoot its sub-goal
+  names when that is an untied shoot on a plant with one tie (176 of 200; the tied one in 2), so its fine-tune taught
+  it no "cut the tied shoot" and was not redone. Every v3 episode now records where the jaws were at each cut
+  (`cut_places`): both fast levels close about 8 mm from the shoot's axis, the expert 6.
+
+**v3 on the eyes** (evaluation layouts, the task's program, the fine-tuned fast level, the gate off): `prune` 154,
+`order` 239 of 300, `nothing_to_do` 199, `ties` 170, `sick` 162, `buds` 166, v2's `reason_mix` 176, against 161, 241,
+200, 177, 176, 182 and 182 on the simulator's scene. P5 holds on rungs 1 to 3 and misses rung 4 by one episode
+(`buds` 16 down). What perception costs is attribute misreads that last: false `Complete` on `ties` and `sick`,
+wrong shoots on `buds`.
+
+**Next: step 5**, the writer (E15, no GPU), **then step 7**: all of v3 on rungs 1 to 4 with the written program, and
+2000 rollouts of the fast level under v3 recorded (`eval.py --record_scene`) for the eyes to be trained again: the
+misreads that reach the plan last 13 to 20 looks, many of them with the arm at the plant, which the expert's frames
+show less.
 
 ## Risks
 
