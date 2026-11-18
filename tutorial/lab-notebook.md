@@ -1309,6 +1309,15 @@ What the pieces show:
 - **The 1 s memory fast level, second seed** (`dp_vit_lang_frames_1s_subgoal_reason8k_20m_seed43`): 135/200 on
   validation layouts and 118 and 105 on evaluation layouts (simulator's scene), 141 with resets, below the seed-43
   sub-goal fast level. A frame from a second earlier does not help a fast level that is strong without it.
+- **The 1 s memory fast level told its aim** (`dp_vit_lang_frames_1s_aim_reason8k_20m`, seed 42, final averaged weights,
+  200 episodes each), told / not told with the same weights: all of v2 on the eyes, written program, 157/200 and
+  158/200 held out against 131 and 118; on the task's own program 171 and 175 against 135 and 125; simulator's scene,
+  evaluation layouts 169 and 167 against 134 and 139, validation layouts 180 against 136; with up to two resets 174
+  (3 resets in 3 episodes) against 141 (103 resets in 85 episodes). Told the aim it hardly needs a reset, but it does
+  not beat the seed-43 sub-goal fast level with resets (180 and 165), so the headline stays.
+- **The film** (`reasoning-v2`) now shows that headline configuration (v2 on the eyes, written program, memory options,
+  seed-43 sub-goal fast level, up to two resets): five episodes, among them a reset followed by a turn and the cut, and
+  a label read, turned away and remembered.
 
 ## Architecture v3: the language, the truth with attributes, the plan (steps 1 to 3)
 
