@@ -2,7 +2,8 @@
 
 Wraps a standalone ViT and provides patch embeddings as conditioning tokens for the diffusion
 transformer. Optionally (``text_tokens > 0``) the instruction is added as learned token embeddings,
-which makes this a language-conditioned policy that still hands every image patch to the action head.
+which makes this a language-conditioned policy that still hands every image patch to the action head. With
+``frozen_tower`` set, the patch tokens come from a frozen pretrained vision tower instead (frozen_tower.py).
 """
 
 import einops
@@ -10,7 +11,9 @@ import torch
 
 from vla_foundry.models.base_model import BaseModel
 from vla_foundry.models.model_outputs.backbone_output import VisionLanguageBackboneOutput
+from vla_foundry.models.vision_language_backbones.augment import augment_images
 from vla_foundry.models.vision_language_backbones.base import BaseBackboneWrapper
+from vla_foundry.models.vision_language_backbones.frozen_tower import FrozenTower, frozen_encoder
 from vla_foundry.models.vit import ViT
 from vla_foundry.params.model_params import ViTBackboneParams
 
@@ -22,7 +25,15 @@ class ViTBackboneWrapper(BaseBackboneWrapper):
         # Skip BaseBackboneWrapper.__init__ which calls create_model with the wrong type.
         # Instead, initialize BaseModel directly and create the ViT ourselves.
         BaseModel.__init__(self, backbone_params)
-        self._model = ViT(backbone_params)
+        if backbone_params.frozen_tower:  # a frozen pretrained encoder instead (frozen_tower.py)
+            self._model = frozen_encoder(
+                backbone_params.frozen_tower,
+                backbone_params.hidden_dim,
+                backbone_params.img_size,
+                backbone_params.frozen_tower_pool,
+            )
+        else:
+            self._model = ViT(backbone_params)
         self.text_tokens = backbone_params.text_tokens
         if self.text_tokens > 0:
             if backbone_params.text_vocab_size <= 0:
@@ -36,7 +47,7 @@ class ViTBackboneWrapper(BaseBackboneWrapper):
             torch.nn.init.normal_(self.text_position, std=0.02)
 
     def get_conditioning_embeddings_dim(self) -> int:
-        return self._model.model_params.hidden_dim
+        return self.model_params.hidden_dim
 
     def _embed_text(self, input_ids: torch.Tensor, attention_mask: torch.Tensor | None) -> torch.Tensor:
         """[B, L] token ids -> [B, text_tokens, D], independent of how the batch was padded.
@@ -79,7 +90,14 @@ class ViTBackboneWrapper(BaseBackboneWrapper):
                     f"input_ids batch size ({batch_size}); cannot infer images-per-sample."
                 )
             pixel_values = pixel_values.reshape(batch_size, num_images, *pixel_values.shape[1:])
-        embeddings = self._model(pixel_values)  # [B, N, num_patches, hidden_dim]
+        if self.training and self.model_params.augment:
+            if pixel_values.ndim != 5:
+                raise ValueError("augment: the images must come grouped by sample, [B, N, C, H, W]")
+            pixel_values = augment_images(pixel_values)
+        if isinstance(self._model, FrozenTower) and pixel_values.ndim == 5:
+            embeddings = self._model(pixel_values.flatten(0, 1)).unflatten(0, pixel_values.shape[:2])
+        else:
+            embeddings = self._model(pixel_values)  # [B, N, num_patches, hidden_dim]
         # Flatten camera and patch dims into a single sequence
         if embeddings.ndim == 4:
             embeddings = einops.rearrange(embeddings, "b n t d -> b (n t) d")

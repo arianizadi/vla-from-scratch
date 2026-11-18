@@ -276,6 +276,14 @@ class ViTBackboneParams(BackboneParams, ViTParams):
     # things are (patches) and what was asked (text). Needs a tokenizing processor, e.g. simple_vlm.
     text_tokens: int = field(default=0)
     text_vocab_size: int = field(default=0)
+    # A frozen pretrained image encoder in place of the ViT (frozen_tower.py): the name of a vision-language model of
+    # the Qwen-VL kind whose vision tower gives the patch tokens, or of a vision transformer of the DINOv2 kind. Empty:
+    # the ViT, trained from scratch. frozen_tower_pool (DINOv2 kind): average pool x pool patch tokens into one.
+    frozen_tower: str = field(default="")
+    frozen_tower_pool: int = field(default=1)
+    # Vary the images while training (augment.py: shift, brightness, contrast, white balance, a random colour overlay;
+    # the same for all images of a sample). Off when the policy runs.
+    augment: bool = field(default=False)
 
 
 @register_model_params("stable_diffusion")

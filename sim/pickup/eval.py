@@ -501,6 +501,12 @@ def main():
         action="store_true",
         help="draw the plant's leaves where their collision boxes are (as in data from collect.py --leaf_fix)",
     )
+    ap.add_argument(
+        "--image_size",
+        type=int,
+        default=224,
+        help="camera images of this many pixels (square), as the policy was trained on (rerender.py --image_size)",
+    )
     # Architecture v2 (see the module's docstring and slow_level.py)
     ap.add_argument(
         "--slow_level",
@@ -590,7 +596,12 @@ def main():
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     env = PickupEnv(
-        args.task, max_steps=args.max_steps, scenario=args.scenario, leaf_fix=args.leaf_fix, park_reset=args.park_reset
+        args.task,
+        max_steps=args.max_steps,
+        scenario=args.scenario,
+        leaf_fix=args.leaf_fix,
+        park_reset=args.park_reset,
+        image_size=args.image_size,
     )
     if args.slow_level == "v2":  # checked before any server is reached
         assert env.plant_task, "--slow_level v2 reads a plant: it needs a plant task"
@@ -1031,6 +1042,7 @@ def main():
         **(dict(named=_named_summary(episodes)) if env.named else {}),
         **(dict(scenario=_scenario_summary(env, episodes)) if env.scenarios else {}),
         **(dict(leaf_fix=True) if args.leaf_fix else {}),
+        **(dict(image_size=args.image_size) if args.image_size != 224 else {}),
         **(dict(park_reset=True) if args.park_reset else {}),
         **(dict(aim=_aim_summary(episodes)) if getattr(env, "aim", None) else {}),
         **(

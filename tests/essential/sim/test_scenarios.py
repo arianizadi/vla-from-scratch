@@ -584,6 +584,14 @@ def test_a_replay_reproduces_the_states_and_a_look_changes_only_the_images():
         for a, b in zip(again["front"], bench["front"], strict=True):  # the same look for the same scenario seed
             diff = np.abs(np.asarray(Image.open(BytesIO(a))).astype(int) - np.asarray(Image.open(BytesIO(b))))
             assert diff.mean() < 0.05  # (the renderer's own noise of a level in a few pixels, through JPEG)
+        # the plain look at another resolution: the same scene, finer (here coarser, to keep the test quick)
+        small, variation = Replayer(info, image_size=112).render(seed, 7, "plain", frames[:40:10])
+        assert variation == {}
+        for img, src in zip(small["front"], fronts[:40:10], strict=True):
+            decoded = np.asarray(Image.open(BytesIO(img))).astype(int)
+            assert decoded.shape == (112, 112, 3)
+            shrunk = np.asarray(Image.fromarray(src).resize((112, 112), Image.BILINEAR)).astype(int)
+            assert np.abs(decoded - shrunk).mean() < 6.0  # (the same scene; anti-aliasing and JPEG differ)
     finally:
         rec.close()
 

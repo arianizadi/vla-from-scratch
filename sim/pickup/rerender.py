@@ -23,6 +23,9 @@ episode is drawn again (up to RETRIES times, else the copy takes the next look).
 
   python -m sim.pickup.rerender --src data/lerobot/prune_2k_rs_tail10_leaffix --out data/lerobot/<name> \\
       --copies 2 --include_source --collect_workers 32 --workers 32
+
+The look "plain" (no scenario) with --image_size draws the demonstrations again at another resolution, for an encoder
+that reads finer detail (--copies 1 --looks plain --image_size 448).
 """
 
 import argparse
@@ -44,14 +47,16 @@ from .expert import ScriptedExpert, random_start
 # frame to the next) is left out.
 LOOKS = ("lighting:dusk|noon/train", "camera/train", "bench/train", "distractors/train")
 RETRIES = 8
+PLAIN = "plain"  # a look of its own: no scenario (with --image_size, the plain scene at another resolution)
 UNSYNCED = {"table_visual"}  # geoms a look itself sets (the bench hides the table's own top)
 
 
 class Replayer:
     """Replays the episodes of one source dataset (its task, leaf drawing and start) and renders them in looks."""
 
-    def __init__(self, info):
+    def __init__(self, info, image_size=224):
         self.task, self.leaf_fix = info["sim_task"], bool(info.get("leaf_fix"))
+        self.image_size = image_size
         self.park_reset = bool(info.get("park_reset"))
         self.random_start = bool(info.get("random_start"))
         self.env = PickupEnv(self.task, leaf_fix=self.leaf_fix, park_reset=self.park_reset)
@@ -118,7 +123,14 @@ class Replayer:
 
     def look_env(self, spec):
         if spec not in self.looks:
-            look = PickupEnv(self.task, scenario=spec, leaf_fix=self.leaf_fix, park_reset=self.park_reset)
+            scenario = None if spec == PLAIN else spec
+            look = PickupEnv(
+                self.task,
+                scenario=scenario,
+                leaf_fix=self.leaf_fix,
+                park_reset=self.park_reset,
+                image_size=self.image_size,
+            )
             src, dst = self.env.model, look.model  # (every PickupEnv of the task has the same model: same ids)
             # the same bodies, joints and geoms by name (a look's model has more of them, so indices differ)
             bodies = [(b, dst.body(src.body(b).name).id) for b in range(src.nbody)]
@@ -270,9 +282,9 @@ def _render_copies(index, entry, seed, frames, table, out, copies, looks):
 
 
 def _chunk_job(args):
-    src, out, info, worker_id, seeds, by_seed, copies, looks = args
+    src, out, info, worker_id, seeds, by_seed, copies, looks, image_size = args
     global _REPLAYER
-    _REPLAYER = Replayer(info)
+    _REPLAYER = Replayer(info, image_size)
     results = []
     for seed, states, actions, frames in _REPLAYER.collect_chunk(worker_id, seeds, int(info.get("tail_steps", 0))):
         if seed not in by_seed:
@@ -305,7 +317,15 @@ def main():
         required=True,
         help="the --workers the source dataset was collected with (the episodes are re-run in the same chunks)",
     )
+    ap.add_argument(
+        "--image_size",
+        type=int,
+        default=224,
+        help="render the looks at this many pixels (square); with --looks plain, the plain scene at a new size",
+    )
     args = ap.parse_args()
+    if args.include_source and args.image_size != 224:
+        ap.error("--include_source keeps the source's 224-pixel images: it cannot be mixed with another --image_size")
 
     src, out = Path(args.src), Path(args.out)
     info = json.loads((src / "meta" / "info.json").read_text())
@@ -318,7 +338,9 @@ def main():
     t0 = time.time()
     by_seed = {e["seed"]: e for e in entries}
     chunks = collection_rounds(all_entries, info, args.collect_workers)
-    jobs = [(str(src), str(out), info, w, seeds, by_seed, args.copies, args.looks) for w, seeds in chunks]
+    jobs = [
+        (str(src), str(out), info, w, seeds, by_seed, args.copies, args.looks, args.image_size) for w, seeds in chunks
+    ]
     if args.episodes:  # a check on part of the dataset: only the chunks that hold the episodes asked for
         jobs = [j for j in jobs if any(s in by_seed for s in j[4])]
     new = []
@@ -368,8 +390,13 @@ def main():
     counts = {}
     for e in episodes:
         counts[e["look"]] = counts.get(e["look"], 0) + 1
+    features = {
+        k: dict(v, shape=[args.image_size, args.image_size, *v["shape"][2:]]) if k in CAMERAS else v
+        for k, v in info.get("features", {}).items()
+    }
     meta = dict(
         info,
+        **(dict(features=features) if features else {}),
         total_episodes=len(episodes),
         total_frames=index,
         total_tasks=len(tasks),
@@ -378,6 +405,7 @@ def main():
             copies=args.copies,
             looks=args.looks,
             source_included=bool(args.include_source),
+            image_size=args.image_size,
             episodes_by_look=counts,
             redrawn=sum(r["attempts"] > 1 for r in new),
         ),
