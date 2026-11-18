@@ -1138,6 +1138,24 @@ image encoder in place of its own ViT (the Qwen3-VL vision tower's 196 patch fea
 paired demonstrations; DINOv2-B with registers at 224 and at 448 pixels), and the from-scratch policy with image
 augmentation (shift, brightness, contrast, white balance, colour overlays that keep the colour cues).
 
+**A frozen DINOv2 encoder: first real robustness to lighting (interim, checkpoint 6 of 11).** The 1 s memory policy with
+the frozen DINOv2-B (registers) patch tokens at 224 pixels in place of its own ViT (`dp_dinov2_lang_frames_1s_prune2k_leaffix_20m`,
+seed 42), averaged weights at checkpoint 6, 100 layouts per cell:
+
+| Policy | plain | lighting (/test) | camera (/test) | bench (/test) |
+|---|---|---|---|---|
+| From-scratch ViT, 1 s memory (`dp_vit_lang_frames_1s_prune2k_leaffix_20m`, final) | 87 | 3 (0) | 2 (2) | 2 (0) |
+| Frozen DINOv2 at 224 px (checkpoint 6) | **92** | **48 (43)** | **20 (7)** | 1 (0) |
+
+It learns faster than any from-scratch run (59, 77, 88, 88, 91, 92 over checkpoints 1-6, against 9, 50, 64, 82, 82, 87),
+keeps about half its success under the training lights (flicker 22, grow lights 18, noon 6, dusk 2 of the 48) and 43 under
+grow lights never seen in training, where every from-scratch policy scored 0-2. A moved camera costs most of it (20, and
+7 for the larger held-out moves; the failures run out of time), and another bench all of it: the 199 lost episodes all
+run out of time with nothing damaged, as if the policy does not engage at all. Interim results of the other runs: the
+frozen Qwen3-VL tower learns on paired demonstrations (36 and 54 at checkpoints 1-2), where the from-scratch ViT never
+did; augmentation as set stops the from-scratch policy from learning the task (7/100 at the end); DART-style noisy
+demonstrations learn slowly (25 at checkpoint 5); the paired consistency loss had not started to learn at checkpoint 3.
+
 **Aim drills.** Seven motor drills on the bare table (`tutorial/aim-range.md`: touch, touch along a pin, stop on,
 follow, flick between, press, pinch; the expert solves each at 499-500/500), as practice for the arm. Co-trained with
 pruning (75% pruning, 25% drills, `dp_vit_lang_reactive_prune2k_aim8k_co27m`): 22/100 on pruning (66 on the drills),
