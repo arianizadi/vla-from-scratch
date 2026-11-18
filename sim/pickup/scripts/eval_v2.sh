@@ -7,15 +7,17 @@
 #   sim/pickup/scripts/eval_v2.sh <fast_experiment_dir> <task> [episodes] [eval.py args...]
 # Environment variables:
 #   PICKUP_CHECKPOINT / PICKUP_WEIGHTS  the fast policy's checkpoint and weights (as for eval.sh)
-#   PICKUP_SCENE=truth|eyes             what the scene memory takes: the simulator's truth (default) or the eyes'
-#                                       percepts
+#   PICKUP_SLOW_LEVEL=v2|v3             architecture v2's slow level (default) or v3's (tutorial/architecture-v3.md:
+#                                       a situation's own program, the home move, the cut gate with --gate)
+#   PICKUP_SCENE=truth|eyes|full        what the scene memory takes: the simulator's truth (default) or the eyes'
+#                                       percepts; with v3 also full, the simulator's whole state
 #   PICKUP_EYES=<run dir>               the eyes (a train_eyes.py run), for PICKUP_SCENE=eyes
 #   PICKUP_EYES_CHECKPOINT=<k>          their checkpoint number (default: the latest)
 #   PICKUP_EYES_WEIGHTS=ema|raw         their averaged (default) or trained weights
 #   PICKUP_PROGRAM=gold|writer          the program: the task's own (default), or the one a language model writes
 #   PICKUP_WRITER=<model name or path>  that language model, for PICKUP_PROGRAM=writer
 #   PICKUP_WRITER_WEIGHTS=<checkpoint>  a reason_then_act checkpoint whose language model is loaded over it
-#   PICKUP_OUT=<dir>   where results.json goes (default results/pickup/<fast run>/<task>_v2_<scene>_<program>)
+#   PICKUP_OUT=<dir>   where results.json goes (default results/pickup/<fast run>/<task>_<level>_<scene>_<program>)
 # The slow level's own settings are eval.py's: --slow_stable, --slow_p_min, --slow_unseen, --slow_revoke, --slow_give_up,
 # --patience, --recover. With the eyes the memory's two options are on unless told otherwise (slow_level.DEFAULTS); the
 # runs made before that default: --no-slow_unseen --slow_revoke 0 --slow_give_up 40.
@@ -27,8 +29,10 @@ set -euo pipefail
 fast=${1:?fast policy experiment dir}; task=${2:?task}; episodes=${3:-50}
 shift $(( $# < 3 ? $# : 3 ))
 . "$(dirname "$0")/_common.sh"
-scene=${PICKUP_SCENE:-truth}; program=${PICKUP_PROGRAM:-gold}
-case $scene in truth|eyes) ;; *) echo "PICKUP_SCENE must be truth or eyes" >&2; exit 1 ;; esac
+scene=${PICKUP_SCENE:-truth}; program=${PICKUP_PROGRAM:-gold}; level=${PICKUP_SLOW_LEVEL:-v2}
+case $level in v2|v3) ;; *) echo "PICKUP_SLOW_LEVEL must be v2 or v3" >&2; exit 1 ;; esac
+case $scene in truth|eyes) ;; full) [ "$level" = v3 ] || { echo "PICKUP_SCENE=full needs PICKUP_SLOW_LEVEL=v3" >&2; exit 1; } ;;
+  *) echo "PICKUP_SCENE must be truth, eyes or full" >&2; exit 1 ;; esac
 case $program in gold|writer) ;; *) echo "PICKUP_PROGRAM must be gold or writer" >&2; exit 1 ;; esac
 if [ "$scene" = eyes ] && [ -z "${PICKUP_EYES:-}" ]; then
   echo "PICKUP_SCENE=eyes needs PICKUP_EYES=<eyes run dir>" >&2; exit 1
@@ -36,7 +40,7 @@ fi
 if [ "$program" = writer ] && [ -z "${PICKUP_WRITER:-}" ]; then
   echo "PICKUP_PROGRAM=writer needs PICKUP_WRITER=<language model>" >&2; exit 1
 fi
-out=${PICKUP_OUT:-results/pickup/$(basename "$fast")/${task}_v2_${scene}_${program}}
+out=${PICKUP_OUT:-results/pickup/$(basename "$fast")/${task}_${level}_${scene}_${program}}
 mkdir -p "$out"
 expect=(--expect_run "$(basename "$fast")")
 if [ -n "${PICKUP_CHECKPOINT:-}" ]; then
@@ -88,7 +92,7 @@ for log in "${logs[@]}"; do
   done
 done
 "${sim_python[@]}" -m sim.pickup.eval --task "$task" --episodes "$episodes" --port "$port" --out "$out" \
-  "${expect[@]}" --slow_level v2 --scene "$scene" --program "$program" ${sport:+--slow_port "$sport"} \
+  "${expect[@]}" --slow_level "$level" --scene "$scene" --program "$program" ${sport:+--slow_port "$sport"} \
   --shutdown_server "$@"
 wait $server $sserver || true
 trap - EXIT
