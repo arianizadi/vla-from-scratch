@@ -84,8 +84,19 @@ def test_targets_fill_the_slots_from_the_lowest_part_up():
     assert t["bearing"].flatten().tolist() == pytest.approx(expected, abs=1e-6)
     assert int(t["flower"]) == FLOWERS.index("purple") and int(t["label"]) == S.LABELS.index("unreadable")
     assert {k: tuple(v.shape) for k, v in t.items()} == dict(
-        exists=(3,), cut=(3,), visible=(3,), height=(3,), bearing=(3, 2), flower=(), label=()
+        exists=(3,),
+        cut=(3,),
+        visible=(3,),
+        height=(3,),
+        bearing=(3, 2),
+        flower=(),
+        label=(),
+        tie=(3,),
+        sick=(3,),
+        bud=(3,),
     )
+    # a truth without attributes (v2's datasets) leaves every attribute out of the loss
+    assert all(t[a].tolist() == [E.NO_CLASS] * 3 for a in S.TRUTH_ATTRIBUTES)
     # eyes that look through the front camera alone do not see what only the wrist camera shows
     assert E.targets_from_scene(TRUTH, _config(cameras=["front"]))["visible"].tolist() == [0, 0, 0]
     # a flower that is not known is left out of the loss; a plant with more parts than slots is refused
@@ -153,7 +164,8 @@ def test_the_loss_falls_by_more_than_half_when_the_model_overfits_eight_images(o
     assert losses[-1] < 0.5 * losses[0], (losses[0], losses[-1])
     # the loss is the weighted sum of its terms, which loss gives unweighted
     total, terms = model.loss(model(images), targets)
-    assert set(terms) == set(E.LOSS_WEIGHTS) and all(isinstance(v, float) for v in terms.values())
+    v2_terms = set(E.LOSS_WEIGHTS) - set(S.TRUTH_ATTRIBUTES)  # eyes without attributes have v2's terms only
+    assert set(terms) == v2_terms and all(isinstance(v, float) for v in terms.values())
     assert float(total) == pytest.approx(sum(E.LOSS_WEIGHTS[k] * v for k, v in terms.items()), rel=1e-5)
 
 
@@ -261,6 +273,144 @@ def test_evaluate_on_a_hand_made_case():
     for key, value in expected.items():
         assert m[key] == (None if value is None else pytest.approx(value, abs=1e-4)), key
     assert json.loads(json.dumps(m)) == m  # plain numbers, for metrics.jsonl
+
+
+# ------------------------------------------------------------------------------------------ v3: the attributes
+def _attributed(n: int, seed: int = 2) -> list[dict]:
+    """_drawn_scenes with a tie, sick and bud on every part: a cut part's all unreadable, the rest drawn, now and then
+    unreadable."""
+    rng = np.random.default_rng(seed)
+    scenes = _drawn_scenes(n, seed)
+    for scene in scenes:
+        for part in scene["parts"]:
+            classes = E.ATTRIBUTE_CLASSES
+            attr = {a: classes[a][int(rng.integers(len(classes[a])))] for a in S.TRUTH_ATTRIBUTES}
+            part["attr"] = dict.fromkeys(S.TRUTH_ATTRIBUTES, S.UNREADABLE) if part["cut"] else attr
+    return scenes
+
+
+def test_attribute_targets_are_class_indices_with_unreadable_first_and_none_where_nothing_is_known():
+    assert E.ATTRIBUTE_CLASSES == {
+        "tie": ("unreadable", "none", "red", "blue", "yellow", "white"),
+        "sick": ("unreadable", "no", "yes"),
+        "bud": ("unreadable", "no", "yes"),
+    }
+    truth = {
+        **TRUTH,
+        "parts": [
+            {**TRUTH["parts"][0], "attr": {"tie": "unreadable", "sick": "unreadable", "bud": "unreadable"}},
+            {**TRUTH["parts"][1], "attr": {"tie": "red", "sick": "yes", "bud": "unreadable"}},
+        ],
+    }
+    t = E.targets_from_scene(truth, _config(attributes=["tie", "sick", "bud"]))
+    # the lower part (now the first slot) has a red tie and is sick, its tip cannot be seen; the cut one shows nothing
+    assert t["tie"].tolist() == [2, 0, E.NO_CLASS]
+    assert t["sick"].tolist() == [2, 0, E.NO_CLASS] and t["bud"].tolist() == [0, 0, E.NO_CLASS]
+
+
+def test_the_config_takes_attributes_only_with_both_cameras_and_v2_eyes_keep_their_weights():
+    config = _config(attributes=["bud", "tie"])
+    assert E.EyesConfig.from_json(config.to_json()) == config
+    for bad in (dict(attributes=["tag"]), dict(attributes=["tie", "tie"]), dict(attributes=["tie"], cameras=["front"])):
+        with pytest.raises(ValueError):
+            _config(**bad)
+    _config(attributes=["tie"], cameras=["plant", "wrist"])  # the plant crop is the front camera's
+    # a v2 config (written before attributes) still reads, and its eyes have the same weights as before
+    old = json.loads(_config().to_json())
+    del old["attributes"]
+    for name in S.TRUTH_ATTRIBUTES:
+        del old["loss_weights"][name]
+    assert E.EyesConfig(**old) == _config()
+    v2 = set(E.Eyes(_config()).state_dict())
+    v3 = set(E.Eyes(_config(attributes=["tie", "sick", "bud"])).state_dict())
+    assert not any("attribute" in key for key in v2) and v2 < v3
+    assert {key.split(".")[1] for key in v3 - v2} == {"tie", "sick", "bud"}
+
+
+@pytest.fixture(scope="module")
+def overfit_attributes():
+    """overfit, with every attribute read: eight random images, each with fixed targets, until the model knows them."""
+    torch.manual_seed(0)
+    config = _config(attributes=["tie", "sick", "bud"])
+    model = E.Eyes(config)
+    images = torch.rand(8, 2, 3, 32, 32)
+    scenes = _attributed(8)
+    targets = _stack([E.targets_from_scene(s, config) for s in scenes])
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    for _ in range(300):
+        loss, _ = model.loss(model(images), targets)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+    return model.eval(), images, scenes, targets
+
+
+def test_attributes_are_trained_decoded_and_read_by_the_memory(overfit_attributes):
+    model, images, scenes, targets = overfit_attributes
+    out = model(images)
+    assert tuple(out["tie"].shape) == (8, 3, 6) and tuple(out["sick"].shape) == (8, 3, 3)
+    _, terms = model.loss(out, targets)
+    assert set(terms) == set(E.LOSS_WEIGHTS) and max(terms[a] for a in S.TRUTH_ATTRIBUTES) < 0.1, terms
+    for percept, truth in zip(model.decode(out), scenes, strict=True):
+        read = S.Scene.from_dict(percept)
+        assert read.to_dict() == percept
+        for part, true in zip(read.parts, truth["parts"], strict=False):
+            assert part.attributes == true["attr"] and set(part.p_attributes) == set(S.TRUTH_ATTRIBUTES)
+            assert all(0.5 < p <= 1 for p in part.p_attributes.values())
+        # what the memory makes of it: a part seen and not cut has the attributes it can read, after one look
+        memory = S.SceneMemory(stable=1, p_min=0.5)
+        memory.update(read, 0)
+        for remembered in memory.parts:
+            true = min(truth["parts"], key=lambda p: abs(p["h"] - remembered.height))
+            readable = {a: v for a, v in true["attr"].items() if v != S.UNREADABLE}
+            assert remembered.attributes == ({} if true["cut"] else readable), (remembered, true)
+
+
+def test_evaluate_scores_each_attribute_where_it_can_be_read_and_where_it_cannot():
+    config = _config(attributes=["bud"])
+    truths = [
+        {  # three parts: a bud read on the lowest, none on the middle, the highest's tip hidden
+            "parts": [
+                {"h": 0.08, "b": 0.0, "cut": False, "vis": [True, False], "attr": {"bud": "yes"}},
+                {"h": 0.115, "b": 1.0, "cut": False, "vis": [True, True], "attr": {"bud": "no"}},
+                {"h": 0.15, "b": -2.0, "cut": False, "vis": [False, False], "attr": {"bud": "unreadable"}},
+            ],
+            "flower": "red",
+            "label": "none",
+        },
+        {  # two parts, one cut; a truth of v2's (no attributes) on the other
+            "parts": [
+                {"h": 0.09, "b": 3.0, "cut": True, "vis": [True, True], "attr": {"bud": "unreadable"}},
+                {"h": 0.14, "b": -3.0, "cut": False, "vis": [True, False]},
+            ],
+            "flower": "pink",
+            "label": "none",
+        },
+    ]
+    base = {k: torch.zeros(2, 3) for k in ("exists", "cut", "visible", "height")}
+    base.update(bearing=torch.zeros(2, 3, 2), flower=torch.zeros(2, 4), label=torch.zeros(2, 5))
+    # the classes said: unreadable, no, yes; frame 0: yes (sure), yes (unsure: 0.58), no; frame 1: yes (sure), any
+    sure, unsure = [0.0, 0.0, 9.0], [0.0, 0.0, 0.6]
+    bud = torch.tensor([[sure, unsure, [0.0, 9.0, 0.0]], [sure, [9.0, 0.0, 0.0], [9.0, 0.0, 0.0]]])
+    model = _Fixed(config, {**base, "bud": bud})
+    samples = [{"images": torch.full((2, 3, 32, 32), i, dtype=torch.uint8), "scene": t} for i, t in enumerate(truths)]
+    m = E.evaluate(model, [collate([s], config, as_float=False) for s in samples])
+    expected = dict(
+        bud_readable=2,  # the lowest and middle parts of frame 0
+        bud_unreadable=2,  # the hidden tip, the cut part
+        bud_acc=0.5,  # the bud right, the middle's "no" read as "yes"
+        bud_acc_no=0.0,
+        bud_acc_yes=1.0,
+        bud_missed=0.0,
+        bud_unreadable_acc=0.0,  # both read as something
+        bud_false_read=1.0,
+        bud_counted=0.5,  # the unsure "yes" is not counted
+        bud_counted_wrong=0.0,
+        bud_false_read_counted=1.0,
+    )
+    for key, value in expected.items():
+        assert m[key] == pytest.approx(value), (key, m[key])
+    assert json.loads(json.dumps(m)) == m
 
 
 # -------------------------------------------------------------------------------------------- checkpoints, serving

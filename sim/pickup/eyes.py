@@ -38,6 +38,15 @@ Hidden parts. A part is trained on whether a camera shows it or not: the arm, a 
 while, and the eyes learn what is probably there. `visible` says when they see the part rather than guess it, and the
 memory counts only parts that are visible and confident.
 
+Attributes (architecture v3, tutorial/architecture-v3.md: "Eyes: four more outputs per part"). With
+EyesConfig.attributes (tie, sick, bud) every part slot also classifies each attribute of its part, with a class of its
+own for "cannot be read in this view" (scene.UNREADABLE) beside the values a program can ask for (program.DOMAINS):
+the truth's own, which says unreadable where no camera's rays reach where the attribute is to be seen, and for every
+attribute of a cut part. A slot without a part, and a part whose truth has no attributes (a dataset collected before
+them), leaves the attribute out of the loss. The truth decides readable by the front and the wrist cameras together,
+so eyes with attributes look through both (the plant crop is the front camera's). Without attributes the eyes are v2's,
+weight for weight.
+
 What the percept is for. Eyes.decode writes the outputs in the percept form of scene.py: every slot, the lowest first,
 with how sure the eyes are of each field (Scene.from_dict reads it). SceneMemory takes it from there. Eyes.see does
 the whole step for one request, from the JPEG images a client sends (keys as eval.infer_request writes them) to the
@@ -63,14 +72,28 @@ import torch.nn.functional as F
 from PIL import Image
 from torch import nn
 
+from .program import DOMAINS
 from .reasoning import FLOWERS
-from .scene import LABELS
+from .scene import LABELS, TRUTH_ATTRIBUTES, UNREADABLE
 
 PART_FIELDS = ("exists", "cut", "visible", "height", "sin", "cos")  # the six numbers of a part slot
-TARGETS = ("exists", "cut", "visible", "height", "bearing", "flower", "label")  # targets_from_scene's keys
+# Architecture v3: the classes of each attribute a part slot can read, "cannot be read in this view" first
+ATTRIBUTE_CLASSES = {name: (UNREADABLE, *DOMAINS[name]) for name in TRUTH_ATTRIBUTES}
+# targets_from_scene's keys: v2's, then one class index per slot for each attribute
+TARGETS = ("exists", "cut", "visible", "height", "bearing", "flower", "label", *TRUTH_ATTRIBUTES)
 # The loss is a weighted sum of one term per field. The height weighs most: it is a part's identity (the memory matches
 # parts by it, to within 17.5 mm), and its term, an error in 0..1 units, is small next to a cross-entropy.
-LOSS_WEIGHTS = {"exists": 1.0, "cut": 1.0, "visible": 1.0, "height": 5.0, "bearing": 1.0, "flower": 1.0, "label": 1.0}
+LOSS_WEIGHTS = {
+    "exists": 1.0,
+    "cut": 1.0,
+    "visible": 1.0,
+    "height": 5.0,
+    "bearing": 1.0,
+    "flower": 1.0,
+    "label": 1.0,
+    **dict.fromkeys(TRUTH_ATTRIBUTES, 1.0),  # only the attributes the eyes read (EyesConfig.attributes)
+}
+P_MIN = 0.7  # evaluate: a reading the scene memory counts is one at least this sure (SceneMemory's p_min)
 HEIGHT_BETA = 0.02  # smooth L1 turns from the squared error to the absolute error here, in 0..1 units: about 2.6 mm
 NO_CLASS = -100  # a flower target that is left out of the loss: a scene whose flower is not known
 # Which of the truth's views (front, wrist) shows what each camera shows: the plant crop is part of the front image
@@ -111,11 +134,20 @@ class EyesConfig:
     decoder_layers: int = 2
     height_range: tuple[float, float] = (0.05, 0.18)  # metres; heights are learned as 0..1 over this range
     loss_weights: dict[str, float] = field(default_factory=lambda: dict(LOSS_WEIGHTS))
+    attributes: list[str] = field(default_factory=list)  # architecture v3: of TRUTH_ATTRIBUTES; [] are v2's eyes
 
     def __post_init__(self):
         self.cameras = [str(c) for c in self.cameras]
         self.frames = [int(k) for k in self.frames]
         self.height_range = (float(self.height_range[0]), float(self.height_range[1]))
+        self.attributes = [str(a) for a in self.attributes]
+        if set(self.attributes) - set(TRUTH_ATTRIBUTES) or len(set(self.attributes)) != len(self.attributes):
+            raise ValueError(f"attributes {self.attributes}: each once, of {list(TRUTH_ATTRIBUTES)}")
+        if self.attributes and not ({"wrist"} <= set(self.cameras) and {"front", "plant"} & set(self.cameras)):
+            raise ValueError(
+                f"attributes with cameras {self.cameras}: the truth reads them by the front and the wrist cameras "
+                "together, so the eyes need the wrist camera and the front camera or the plant crop"
+            )
         unknown = set(self.loss_weights) - set(LOSS_WEIGHTS)
         if unknown:
             raise ValueError(f"no loss terms {sorted(unknown)}; the terms are {list(LOSS_WEIGHTS)}")
@@ -163,7 +195,9 @@ def targets_from_scene(scene: dict, config: EyesConfig) -> dict[str, torch.Tenso
     elsewhere. Every part is a target whether or not a camera shows it. `visible` is whether one of the cameras the
     eyes look at shows it (the plant crop counts as the front camera): with the front and wrist cameras, any(vis).
     Shapes: exists, cut, visible, height [slots] (height in 0..1 over config.height_range), bearing [slots, 2] (sine,
-    cosine), flower and label [] (class indices; a flower that is not known is NO_CLASS)."""
+    cosine), flower and label [] (class indices; a flower that is not known is NO_CLASS), and per attribute of
+    TRUTH_ATTRIBUTES [slots] (an index of ATTRIBUTE_CLASSES; NO_CLASS for a slot without a part and for a part whose
+    truth has no value for it)."""
     parts = sorted(scene.get("parts", []), key=lambda p: float(p["h"]))
     k = config.slots
     if len(parts) > k:
@@ -172,7 +206,11 @@ def targets_from_scene(scene: dict, config: EyesConfig) -> dict[str, torch.Tenso
     lo, hi = config.height_range
     exists, cut, visible, height = [0.0] * k, [0.0] * k, [0.0] * k, [0.0] * k
     bearing = [[0.0, 0.0] for _ in range(k)]
+    attributes = {name: [NO_CLASS] * k for name in TRUTH_ATTRIBUTES}
     for i, part in enumerate(parts):
+        for name, value in part.get("attr", {}).items():
+            if name in attributes:
+                attributes[name][i] = ATTRIBUTE_CLASSES[name].index(value)
         vis = part.get("vis", False)
         exists[i] = 1.0
         cut[i] = float(bool(part["cut"]))
@@ -188,6 +226,7 @@ def targets_from_scene(scene: dict, config: EyesConfig) -> dict[str, torch.Tenso
         bearing=torch.tensor(bearing),
         flower=torch.tensor(NO_CLASS if flower is None else FLOWERS.index(flower)),
         label=torch.tensor(LABELS.index(scene.get("label", "none"))),
+        **{name: torch.tensor(values) for name, values in attributes.items()},
     )
 
 
@@ -523,11 +562,16 @@ class Eyes(nn.Module):
         self.part_head = nn.Linear(width, len(PART_FIELDS))
         self.flower_head = nn.Linear(width, len(FLOWERS))
         self.label_head = nn.Linear(width, len(LABELS))
+        if config.attributes:  # v3; v2's eyes have no such module, and their checkpoints load as they were
+            self.attribute_heads = nn.ModuleDict(
+                {name: nn.Linear(width, len(ATTRIBUTE_CLASSES[name])) for name in config.attributes}
+            )
 
     def forward(self, images: torch.Tensor) -> dict[str, torch.Tensor]:
         """images [B, V, 3, S, S]: float in 0..1, or uint8 (scaled here, so that a batch can travel to the GPU as
         bytes), V = len(config.views) in that order. Returns logits for exists, cut, visible [B, slots], height in
-        0..1 [B, slots], the bearing's (sine, cosine) [B, slots, 2], and logits for flower [B, 4] and label [B, 5]."""
+        0..1 [B, slots], the bearing's (sine, cosine) [B, slots, 2], logits for flower [B, 4] and label [B, 5], and
+        for each attribute of config.attributes logits [B, slots, len(ATTRIBUTE_CLASSES[name])] under its name."""
         config = self.config
         size, views = config.image_size, len(config.views)
         if images.ndim != 5 or tuple(images.shape[1:]) != (views, 3, size, size):
@@ -544,6 +588,7 @@ class Eyes(nn.Module):
             h = h.float()
             parts = self.part_head(h[:, :k])
             flower, label = self.flower_head(h[:, k]), self.label_head(h[:, k + 1])
+            attributes = {name: self.attribute_heads[name](h[:, :k]) for name in config.attributes}
         return dict(
             exists=parts[..., 0],
             cut=parts[..., 1],
@@ -552,6 +597,7 @@ class Eyes(nn.Module):
             bearing=parts[..., 4:6],
             flower=flower,
             label=label,
+            **attributes,
         )
 
     # ---------------------------------------------------------------------------------------------- the loss
@@ -561,7 +607,8 @@ class Eyes(nn.Module):
         Binary cross-entropy for exists over every slot, and for cut and visible over the slots that hold a part;
         smooth L1 for the height (0..1) and the squared error of (sine, cosine) for the bearing, over the slots that
         hold a part, the bearing only where the part is not cut (a stub's bearing is not asked for); cross-entropy
-        for the flower and the label."""
+        for the flower and the label, and for each attribute of config.attributes over the slots whose part has a
+        value for it (UNREADABLE among them)."""
         device = outputs["exists"].device
         t = {k: targets[k].to(device) for k in TARGETS}
         out = {k: v.float() for k, v in outputs.items()}
@@ -583,6 +630,10 @@ class Eyes(nn.Module):
             flower=F.cross_entropy(out["flower"], t["flower"], ignore_index=NO_CLASS, reduction="sum") / known,
             label=F.cross_entropy(out["label"], t["label"]),
         )
+        for name in self.config.attributes:
+            known = (t[name] != NO_CLASS).sum().clamp(min=1)
+            logits = out[name].flatten(0, 1)
+            terms[name] = F.cross_entropy(logits, t[name].flatten(), ignore_index=NO_CLASS, reduction="sum") / known
         weights = self.config.loss_weights
         return sum(weights[name] * term for name, term in terms.items()), terms
 
@@ -596,8 +647,9 @@ class Eyes(nn.Module):
     @torch.no_grad()
     def decode(self, outputs: dict) -> list[dict]:
         """One percept dict per batch row (scene.py's percept form, which Scene.from_dict reads): every slot, the
-        lowest first, each {"h" (metres), "b", "cut", "vis", "p", "p_cut", "p_vis"} with cut and vis at p >= 0.5, then
-        the most probable flower and card state and their probabilities."""
+        lowest first, each {"h" (metres), "b", "cut", "vis", "p", "p_cut", "p_vis"} with cut and vis at p >= 0.5 (and
+        with attributes "attr", the most probable class of each, and "p_attr", its probability), then the most
+        probable flower and card state and their probabilities."""
         lo, hi = self.config.height_range
         p, p_cut, p_vis = (torch.sigmoid(outputs[k].float()).cpu().tolist() for k in ("exists", "cut", "visible"))
         heights = (lo + outputs["height"].float() * (hi - lo)).cpu().tolist()
@@ -605,6 +657,10 @@ class Eyes(nn.Module):
         bearings = torch.atan2(bearing[..., 0], bearing[..., 1]).cpu().tolist()
         p_flower, flower = (x.cpu().tolist() for x in torch.softmax(outputs["flower"].float(), -1).max(-1))
         p_label, label = (x.cpu().tolist() for x in torch.softmax(outputs["label"].float(), -1).max(-1))
+        read = {  # attribute -> (probabilities [B][slots], classes [B][slots])
+            name: tuple(x.cpu().tolist() for x in torch.softmax(outputs[name].float(), -1).max(-1))
+            for name in self.config.attributes
+        }
         percepts = []
         for i in range(len(p)):
             parts = [
@@ -619,6 +675,10 @@ class Eyes(nn.Module):
                 }
                 for k in range(self.config.slots)
             ]
+            if read:
+                for k, part in enumerate(parts):
+                    part["attr"] = {name: ATTRIBUTE_CLASSES[name][c[i][k]] for name, (_, c) in read.items()}
+                    part["p_attr"] = {name: _r(probs[i][k]) for name, (probs, _) in read.items()}
             percepts.append(
                 {
                     "parts": parts,
@@ -676,6 +736,18 @@ def evaluate(model: Eyes, batches: Iterable[dict]) -> dict:
                              bearing, over the parts a camera shows that are not cut
       flower_acc             over the frames whose flower is known
       label_acc              over all frames; label_acc_card over the frames whose plant has a card (frames_card)
+
+    and for each attribute A of config.attributes, over the parts whose truth has a value for it:
+
+      A_readable             parts it can be read on (the truth is not UNREADABLE); A_unreadable, parts it cannot
+      A_acc                  over the parts it can be read on: the most probable class is the truth (UNREADABLE is
+                             wrong there); A_acc_<value> over those whose truth is <value>
+      A_missed               over the parts it can be read on: called UNREADABLE
+      A_unreadable_acc       over the parts it cannot be read on: called UNREADABLE; A_false_read, called readable
+      A_counted              over the parts it can be read on: a reading the memory counts (readable, at least P_MIN
+                             sure); A_counted_wrong, of those, the share with a value other than the truth's
+      A_false_read_counted   over the parts it cannot be read on: called readable at least P_MIN sure (the truth has
+                             no value there to judge the reading by)
     """
     config = model.config
     k = config.slots
@@ -730,6 +802,24 @@ def evaluate(model: Eyes, batches: Iterable[dict]) -> dict:
             add("label", label_right)
             add("cards", card)
             add("label_card", label_right & card)
+            for name in config.attributes:
+                truth = t[name]
+                probs, said = torch.softmax(out[name].float(), -1).max(-1)
+                labelled, unreadable = truth != NO_CLASS, truth == 0  # class 0 is UNREADABLE
+                readable = labelled & ~unreadable
+                called = said != 0
+                counted = called & (probs >= P_MIN)
+                add(f"{name}_readable", readable)
+                add(f"{name}_unreadable", unreadable)
+                add(f"{name}_right", (said == truth) & readable)
+                add(f"{name}_missed", ~called & readable)
+                add(f"{name}_unread_right", ~called & unreadable)
+                add(f"{name}_counted", counted & readable)
+                add(f"{name}_counted_wrong", counted & readable & (said != truth))
+                add(f"{name}_false_counted", counted & unreadable)
+                for c in range(1, len(ATTRIBUTE_CLASSES[name])):
+                    add(f"{name}_of_{c}", truth == c)
+                    add(f"{name}_right_{c}", (said == c) & (truth == c))
             for name, value in zip(sums, torch.stack(list(sums.values())).tolist(), strict=True):
                 totals[name] = totals.get(name, 0.0) + value
     finally:
@@ -757,6 +847,23 @@ def evaluate(model: Eyes, batches: Iterable[dict]) -> dict:
         label_acc_card=_ratio(total("label_card"), total("cards")),
         frames_card=int(total("cards")),
     )
+    for name in config.attributes:
+        readable, unreadable = total(f"{name}_readable"), total(f"{name}_unreadable")
+        metrics.update(
+            {
+                f"{name}_readable": int(readable),
+                f"{name}_unreadable": int(unreadable),
+                f"{name}_acc": _ratio(total(f"{name}_right"), readable),
+                f"{name}_missed": _ratio(total(f"{name}_missed"), readable),
+                f"{name}_unreadable_acc": _ratio(total(f"{name}_unread_right"), unreadable),
+                f"{name}_false_read": _ratio(unreadable - total(f"{name}_unread_right"), unreadable),
+                f"{name}_counted": _ratio(total(f"{name}_counted"), readable),
+                f"{name}_counted_wrong": _ratio(total(f"{name}_counted_wrong"), total(f"{name}_counted")),
+                f"{name}_false_read_counted": _ratio(total(f"{name}_false_counted"), unreadable),
+            }
+        )
+        for c, value in enumerate(ATTRIBUTE_CLASSES[name][1:], start=1):
+            metrics[f"{name}_acc_{value}"] = _ratio(total(f"{name}_right_{c}"), total(f"{name}_of_{c}"))
     return metrics
 
 

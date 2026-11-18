@@ -760,6 +760,54 @@ def test_undrawn_draws_the_same_episode_without_its_look(situation):
         S.parse("ties+unseen")
 
 
+@pytest.mark.parametrize("situation", ["ties", "buds"])
+def test_sized_draws_the_same_episode_with_some_looks_at_other_scales(situation):
+    plain, sized = _env("prune", situation), _env("prune", f"{situation}+sized")
+    try:
+        assert sized.scenarios[0].spec() == f"{situation}+sized" and sized.scenarios[0].sized
+        assert S.parse(f"{situation}+undrawn+sized")[0].spec() == f"{situation}+undrawn+sized"
+        kinds = {"ties": ("_tie",), "buds": ("_bud_body", "_bud_sepals")}[situation]
+        rescaled = 0
+        for seed in range(60):
+            a, b = plain.reset(seed=seed), sized.reset(seed=seed)
+            v = dict(sized.scenario_info[situation])
+            sizes = v.pop("sizes")
+            assert _layout(plain) == _layout(sized) and v == plain.scenario_info[situation]
+            assert plain.targets == sized.targets and plain.instruction == sized.instruction
+            assert SC.drawn_attributes(plain) == SC.drawn_attributes(sized)
+            # the record's sizes, rounded as every number of a variation is
+            assert len(sizes) == len(sized.active) and all(min(abs(x - y) for y in S.SIZES) < 1e-4 for x in sizes)
+            m, n = plain.model, sized.model
+            for name, size in zip(sized.active, sizes, strict=True):
+                for kind in kinds:
+                    g, h = m.geom(f"{name}{kind}").id, n.geom(f"{name}{kind}").id
+                    assert n.geom_rbound[h] == pytest.approx(m.geom_rbound[g] * size, rel=1e-3)
+
+                    # the drawn mesh is the look's own scaled, its origin where the look's own is
+                    def verts(model, geom):
+                        mesh = model.geom_dataid[geom]
+                        start = model.mesh_vertadr[mesh]
+                        return np.abs(model.mesh_vert[start : start + model.mesh_vertnum[mesh]])
+
+                    assert np.allclose(verts(n, h), verts(m, g) * size, rtol=1e-3, atol=1e-6)
+                    if m.geom_group[g] == 2:  # a look drawn on this shoot
+                        assert n.geom_group[h] == 2
+                        p, _ = S._drawn_frame(n, h)
+                        q, _ = S._drawn_frame(m, g)
+                        assert np.allclose(p, q, atol=1e-9)
+            if all(x == 1.0 for x in sizes):  # the same images (some renderers differ by a pixel between two runs)
+                for camera in ("front", "wrist"):
+                    assert int((a[camera] != b[camera]).any(-1).sum()) <= 10, (seed, camera)
+            else:
+                rescaled += 1
+        assert 4 <= rescaled <= 24  # a fifth of 60, give or take
+    finally:
+        plain.close()
+        sized.close()
+    with pytest.raises(ValueError, match="sized"):
+        S.parse("sick+sized")
+
+
 @pytest.mark.parametrize(
     "scenario",
     (None, "nothing_to_do", "order", "order_heldout", "ties", "ties_heldout", "sick", "buds", "buds_heldout"),

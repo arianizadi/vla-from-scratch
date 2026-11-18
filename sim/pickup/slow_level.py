@@ -73,7 +73,7 @@ from .program import (
 )
 from .program import text as program_text
 from .reasoning import aim_of, aimed, subgoal_target
-from .scene import PlantCrop, Scene, SceneMemory, _position_name, scene_truth
+from .scene import TRUTH_ATTRIBUTES, PlantCrop, Scene, SceneMemory, _position_name, drawn_attributes, scene_truth
 
 KINDS = ("execute", "need_observation", "complete", "failed")  # what a decision can be
 SCENES = ("truth", "eyes", "full")  # where the percepts come from (full: the simulator's whole state, v3)
@@ -811,6 +811,7 @@ class SlowLevel:
         self._right = dict.fromkeys(CHECKS, 0)
         self._wrong = dict.fromkeys(CHECKS, False)
         self._false = dict.fromkeys(FALSE_CHECKS, False)
+        self._attribute_wrong: dict[str, dict] = {}  # v3: attribute -> {"looks", "first", "parts"} where it was wrong
 
     @property
     def offsets(self) -> list[int]:
@@ -878,6 +879,7 @@ class SlowLevel:
         self._right = dict.fromkeys(CHECKS, 0)
         self._wrong = dict.fromkeys(CHECKS, False)
         self._false = dict.fromkeys(FALSE_CHECKS, False)
+        self._attribute_wrong: dict[str, dict] = {}  # v3: attribute -> {"looks", "first", "parts"} where it was wrong
 
     def tick(self, obs: dict, history=None) -> Decision:
         """One look at the scene now (`obs`: the newest observation; `history`: frames to reach back to, for eyes that
@@ -1002,6 +1004,33 @@ class SlowLevel:
         errors = dict(parts=len(memory.parts) > count, cut=len(memory.parts) == count and not marked <= cut)
         for name, made in errors.items():
             self._false[name] = self._false[name] or made
+        if self.v3:
+            self._compare_attributes()
+
+    def _compare_attributes(self):
+        """v3: every attribute the memory holds against what the episode drew on that shoot (the shoot whose height on
+        the stem is nearest the part's, within the memory's match), for the record only. A wrong one is counted per
+        look, with the first look and the positions of the shoots it was wrong on."""
+        from .env import STEM_BASE
+
+        env, memory = self.env, self.supervisor.memory
+        drawn = drawn_attributes(env)
+        heights = {name: float(env.shoots[name]["origin"][2] - STEM_BASE) for name in env.active}
+        step = int(env.steps)
+        for part in memory.parts:
+            if not part.attributes or not heights:
+                continue
+            name = min(heights, key=lambda n: abs(heights[n] - part.height))
+            if abs(heights[name] - part.height) > memory.match:
+                continue
+            for attribute, value in part.attributes.items():
+                if attribute in TRUTH_ATTRIBUTES and value != drawn[name][attribute]:
+                    entry = self._attribute_wrong.setdefault(attribute, dict(looks=0, first=step, parts=[]))
+                    if entry.get("last") != step:
+                        entry["looks"], entry["last"] = entry["looks"] + 1, step
+                    position = _position_name(env.active.index(name), len(env.active))
+                    if position not in entry["parts"]:
+                        entry["parts"].append(position)
 
     def record(self, info: dict) -> dict:
         """The episode's record, plain types (`info`: the simulator's last). The Supervisor's record and: where the
@@ -1023,6 +1052,16 @@ class SlowLevel:
             ended_false_complete=record["final"] == "complete" and not bool(info.get("success")),
             memory_right={name: dict(share=shares[name], ever_wrong=self._wrong[name]) for name in CHECKS},
             memory_false=dict(self._false),
+            **(
+                dict(
+                    attributes_wrong={
+                        a: dict(looks=e["looks"], first=e["first"], parts=list(e["parts"]))
+                        for a, e in sorted(self._attribute_wrong.items())
+                    }
+                )
+                if self.v3
+                else {}
+            ),
             see_ms=_median_ms(self._see_s),
             write_ms=_median_ms(self._write_s),
             **record,

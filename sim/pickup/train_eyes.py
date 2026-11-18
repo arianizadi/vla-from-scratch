@@ -28,6 +28,7 @@ from torch.utils.data import DataLoader
 
 from .eyes import CONFIG_FILE, TARGETS, TOWER_TOKENS, Eyes, EyesConfig, checkpoints, evaluate, save
 from .eyes_data import SceneFrames, collate
+from .scene import TRUTH_ATTRIBUTES
 
 FINISHED = "Model has seen the desired number of samples"
 MIN_LR = 1e-5  # where the cosine ends
@@ -77,11 +78,16 @@ def _summary(name: str, m: dict) -> str:
     """One line of eyes.evaluate's metrics."""
     height = "-" if m["height_err_mm"] is None else f"{m['height_err_mm']:.1f} mm"
     bearing = "-" if m["bearing_err_deg"] is None else f"{m['bearing_err_deg']:.1f} deg"
+    attributes = "".join(
+        f", {a} {_percent(m[f'{a}_acc'])} (unreadable {_percent(m[f'{a}_unreadable_acc'])})"
+        for a in TRUTH_ATTRIBUTES
+        if f"{a}_acc" in m
+    )
     return (
         f"{name}: count {_percent(m['count_acc'])} (3 parts {_percent(m.get('count_acc_3'))}), "
         f"attached {_percent(m['attached_acc'])}, cut {_percent(m['cut_acc'])}, visible {_percent(m['visible_acc'])}, "
         f"height {height}, bearing {bearing}, flower {_percent(m['flower_acc'])}, label {_percent(m['label_acc'])} "
-        f"(card {_percent(m['label_acc_card'])}); {m['frames']} frames"
+        f"(card {_percent(m['label_acc_card'])}){attributes}; {m['frames']} frames"
     )
 
 
@@ -98,6 +104,13 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--cameras", nargs="+", default=["front", "wrist"], help="front, wrist, plant (the plant crop)")
     ap.add_argument("--frames", nargs="+", type=int, default=[0], help="frame offsets: -20 0 adds 1 s earlier")
+    ap.add_argument(
+        "--attributes",
+        nargs="*",
+        choices=TRUTH_ATTRIBUTES,
+        default=[],
+        help="architecture v3: the attributes each part slot reads as well (tie sick bud); none: v2's eyes",
+    )
     ap.add_argument("--backbone", choices=("vit", "hf", "tower"), default="vit")
     ap.add_argument("--hf_name", default=None, help="hf: a model name or a local directory")
     ap.add_argument("--hf_trainable_layers", type=int, default=0, help="hf: train its last n layers (0: frozen)")
@@ -131,6 +144,7 @@ def main(argv=None):
         tower_name=args.tower_name,
         tower_tokens=args.tower_tokens,
         tower_trainable_layers=args.tower_trainable_layers,
+        attributes=args.attributes,
     )
     found = checkpoints(out)
     if found and not args.resume:

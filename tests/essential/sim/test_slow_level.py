@@ -1767,6 +1767,53 @@ def test_the_cuts_meant_of_a_situation_that_picks_shoots_are_its_targets_and_may
         env.close()
 
 
+def test_the_record_counts_the_looks_at_which_the_memory_held_an_attribute_other_than_the_one_drawn():
+    """v3's record of attributes misread: none on the simulator's truth; with a truth that calls every red tie blue, the
+    looks at which the memory held that, and the positions of those shoots."""
+    pytest.importorskip("mujoco")
+    from dataclasses import replace as changed
+
+    from sim.pickup import slow_level as L3
+    from sim.pickup.env import PANDA_XML, PickupEnv
+
+    if not PANDA_XML.exists():
+        pytest.skip("Franka model not fetched (sim/pickup/scripts/fetch_assets.sh)")
+    env = PickupEnv("prune", scenario="ties:colour")
+    env.get_obs = lambda: {"state": env.state()}
+
+    def misread(env):
+        scene = S.scene_truth(env)
+        parts = [
+            changed(p, attributes={**p.attributes, "tie": "blue"}) if p.attributes.get("tie") == "red" else p
+            for p in scene.parts
+        ]
+        return changed(scene, parts=parts)
+
+    try:
+        for truth, wrong in ((None, False), (misread, True)):
+            slow = L3.SlowLevel(env, v3=True, truth=truth)
+            for seed in range(900_000, 900_040):
+                env.reset(seed=seed)
+                red = [n for n, c in env.scenario_info["ties"]["ties"].items() if c == "red"]
+                if not red or S.attribute_views(env, red[0])["tie"] == (False, False):
+                    continue  # a red tie that can be read at the first look
+                slow.reset()
+                for _ in range(3):  # three looks, one control step apart
+                    slow.tick(env.get_obs())
+                    env.step(env.last_action.copy())
+                record = slow.record({"success": False})
+                position = R.position_name(env.active.index(red[0]), len(env.active))
+                if wrong:
+                    assert record["attributes_wrong"]["tie"] == dict(looks=3, first=0, parts=[position])
+                else:
+                    assert record["attributes_wrong"] == {}
+                break
+            else:
+                pytest.fail("no layout with a red tie in view at the start")
+    finally:
+        env.close()
+
+
 def test_the_v3_summary_counts_by_situation_mode_shoots_and_cuts_meant():
     def episode(situation, mode, shoots, meant, success, **v3):
         counters = dict(

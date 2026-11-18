@@ -20,6 +20,11 @@ Layout:
 
 Only plant tasks have a scene. Held-out tasks are allowed: the labels do not depend on the instruction.
 
+With --attributes every frame's truth has each part's tie, sick and bud (architecture v3: scene.scene_truth with
+attributes, "unreadable" where no camera can read one), also on a plant that no situation dresses, which then has no
+tie, no sick shoot and no bud: a label the eyes learn as well. Without it a frame has them only where a situation that
+draws them applies (ties, sick, buds), as before.
+
 SceneRecorder writes this layout whoever drives. The expert never shows the eyes some states a policy reaches (jaws
 shut beside a shoot they did not cut), so eval.py --record_scene records the rollouts of a closed-loop evaluation with
 it, each frame labelled by the simulator; that dataset's meta.json says "source": "eval" and how they were driven.
@@ -89,9 +94,12 @@ class SceneRecorder:
     noise of the images that follow. eval.py's policy looks at those; the expert here does not, and the datasets
     collected here were made without keep_streams."""
 
-    def __init__(self, out, env, crop: bool = True, stride: int = 4, keep_streams: bool = False):
+    def __init__(
+        self, out, env, crop: bool = True, stride: int = 4, keep_streams: bool = False, attributes: bool | None = None
+    ):
         assert env.image_size == IMAGE_SIZE, f"the dataset's images are {IMAGE_SIZE} pixels, not {env.image_size}"
         self.out, self.env, self.stride, self.keep_streams = Path(out), env, stride, keep_streams
+        self.attributes = attributes  # scene_truth's: None, where a situation draws them; True, on every frame
         self.crop = PlantCrop(env, size=IMAGE_SIZE, zoom=CROP_ZOOM) if crop else None
         self.records: list[dict] = []
         (self.out / "episodes").mkdir(parents=True, exist_ok=True)
@@ -111,7 +119,7 @@ class SceneRecorder:
             columns[c].append(jpeg(obs[c]))
         if self.crop is not None:
             columns["plant"].append(jpeg(self._crop()))
-        columns["scene"].append(scene_truth(env).to_json())
+        columns["scene"].append(scene_truth(env, attributes=self.attributes).to_json())
 
     def _crop(self):
         if not self.keep_streams:
@@ -199,7 +207,9 @@ def _worker(args):
         leaf_fix=options["leaf_fix"],
     )
     expert = ScriptedExpert(env, seed=worker_id)
-    recorder = SceneRecorder(out_dir, env, crop=options["crop"], stride=options["stride"])
+    recorder = SceneRecorder(
+        out_dir, env, crop=options["crop"], stride=options["stride"], attributes=options["attributes"] or None
+    )
     try:
         for seed in seeds:
             run_episode(
@@ -239,6 +249,12 @@ def main(argv=None):
     )
     ap.add_argument("--scenario", default=None, help="test situations on top of the task (scenarios.py)")
     ap.add_argument("--leaf_fix", action="store_true", help="draw the leaves where their collision boxes are")
+    ap.add_argument(
+        "--attributes",
+        action="store_true",
+        help="every frame's truth with each part's tie, sick and bud (architecture v3), also on plants no situation "
+        "dresses",
+    )
     ap.add_argument("--max_steps", type=int, default=None, help="episode limit (default: the task's)")
     args = ap.parse_args(argv)
     assert args.task in TASKS and TASKS[args.task].get("plant"), f"{args.task}: only plant tasks have a scene"
@@ -255,6 +271,7 @@ def main(argv=None):
         scenario=args.scenario,
         leaf_fix=args.leaf_fix,
         max_steps=args.max_steps,
+        attributes=args.attributes,
     )
     seeds = list(range(args.seed, args.seed + args.episodes))
     workers = min(args.workers, len(seeds))
@@ -275,6 +292,7 @@ def main(argv=None):
         tail_steps=args.tail_steps,
         leaf_fix=args.leaf_fix,
         max_steps=args.max_steps,
+        **({"attributes": True} if args.attributes else {}),
     )
     episodes, successes, frames = meta["episodes"], meta["successes"], meta["frames"]
     print(f"wrote {episodes} episodes ({successes} successes) / {frames} frames to {out} in {time.time() - t0:.0f}s")

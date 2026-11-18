@@ -21,6 +21,9 @@
 #                                 for, --inspect hold) and the straight line home (--home_move line); after E13 the runs
 #                                 take "--inspect turn" (tutorial/architecture-v3.md, "After E13")
 #   PICKUP_WEIGHTS                the fast level's weights (default ema: the final averaged weights)
+#   PICKUP_EYES=<eyes run>        also the cells on the eyes' scene (step 6 and E17: <cell>_eyes, every situation and
+#                                 reason_mix with v2's slow level), the eyes served by eval_v2.sh (PICKUP_EYES_CHECKPOINT
+#                                 and PICKUP_EYES_WEIGHTS as there); PICKUP_E13_ONLY='_eyes$' runs those alone
 #   PICKUP_GPU and the rest: as for eval_v2.sh and _common.sh
 set -euo pipefail
 fast43=${1:?fast run, seed 43}; fast44=${2:?fast run, seed 44}; phase=${3:-all}
@@ -66,6 +69,16 @@ situations() {
     run "$where" "$fast" "${situation}_full" v3 full prune "$n" "$first" --scenario "$situation"
     run "$where" "$fast" "${situation}_truth_undrawn" v3 truth prune "$n" "$first" --scenario "$situation+undrawn"
   done
+  if [ -n "${PICKUP_EYES:-}" ]; then  # the same cells on the eyes' scene
+    run "$where" "$fast" prune_eyes v3 eyes prune "$n" "$first"
+    for mode in top_down bottom_up pair; do
+      run "$where" "$fast" "order_${mode}_eyes" v3 eyes prune "$((n / 2))" "$first" --scenario "order:$mode"
+    done
+    run "$where" "$fast" nothing_to_do_eyes v3 eyes prune "$n" "$first" --scenario nothing_to_do
+    for situation in ties sick buds; do
+      run "$where" "$fast" "${situation}_eyes" v3 eyes prune "$n" "$first" --scenario "$situation"
+    done
+  fi
 }
 
 if [ "$phase" != evaluation ]; then
@@ -76,5 +89,8 @@ if [ "$phase" != validation ]; then
     situations evaluation "$fast" "$n_eval" 1000000
   done
   run evaluation "$fast43" reason_mix_v2_truth v2 truth reason_mix "$n_eval" 1000000
+  if [ -n "${PICKUP_EYES:-}" ]; then
+    run evaluation "$fast43" reason_mix_v2_eyes v2 eyes reason_mix "$n_eval" 1000000
+  fi
 fi
 echo "[e13] all runs of $phase are in $root"

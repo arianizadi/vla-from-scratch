@@ -18,8 +18,11 @@ data that mixes it in), and `+undrawn` (ties, sick, buds) draws the episode as a
 included, but leaves the look undrawn: no tie, no yellow leaf, no bud (architecture v3's paired control of what a look
 costs the fast level). `ties` also takes `+undrawn_target` (every tie drawn but the one on the shoot meant) and
 `+undrawn_others` (only the tie on the shoot meant drawn), which tell a tie on the shoot the fast level is sent to from
-ties elsewhere on the plant. The catalogue numbers (B1, A5, ...) are accepted as names. See
-tutorial/test-situations.md for the catalogue.
+ties elsewhere on the plant. `+sized` (ties, buds; it can stand beside an `+undrawn` option) draws, in a fifth of the
+episodes (SIZED_SHARE), each tie or bud at a scale of its own between half and twice its size (SIZES), for the eyes'
+accuracy against the size of what they read (architecture v3, E16); the episode is otherwise the one drawn without it,
+and the variation lists the scale of each shoot's look, lowest shoot first (`sizes`). The catalogue numbers (B1, A5,
+...) are accepted as names. See tutorial/test-situations.md for the catalogue.
 
 A situation that draws something about each shoot that a program can ask for (a tie, sick leaves, a bud) says what it
 drew with `attributes(env)`, {shoot: {"tie": "red"}}; scene.scene_truth writes it per part, with "unreadable" where no
@@ -95,8 +98,9 @@ class Scenario:
     splits: dict = {}
     can_undraw = False  # it has a look that `undrawn` can leave out (ties, sick, buds)
     partial_undraw = False  # `hide` can leave it out on the shoots meant or on the others only (ties)
+    can_size = False  # `sized` can draw its look at other scales (ties, buds)
 
-    def __init__(self, mode=None, prob=1.0, split=None, undrawn=False, hide=None):
+    def __init__(self, mode=None, prob=1.0, split=None, undrawn=False, hide=None, sized=False):
         # several modes joined by "|" (lighting:dusk|noon): the draw is among those
         self.choices = tuple(mode.split("|")) if mode and "|" in mode else None
         if self.choices:
@@ -110,7 +114,9 @@ class Scenario:
         assert not undrawn or self.can_undraw, f"{self.name} has no look to leave undrawn"
         assert hide in (None, "target", "others") and (hide is None or self.partial_undraw), (self.name, hide)
         assert not (undrawn and hide), "+undrawn leaves every look out: not with +undrawn_target or +undrawn_others"
+        assert not sized or self.can_size, f"{self.name} has no look to draw at other sizes"
         self.mode, self.prob, self.split, self.undrawn = mode, prob, split, bool(undrawn)
+        self.sized = bool(sized)  # ties, buds: a fifth of the episodes draw each look at a scale of its own
         self.hide = hide  # ties: the tie left out on the shoot meant ("target") or on the other shoots ("others")
         self.applied, self.variation = False, {}
 
@@ -123,6 +129,7 @@ class Scenario:
             + (f"@{self.prob:g}" if self.prob < 1 else "")
             + ("+undrawn" if self.undrawn else "")
             + (f"+undrawn_{self.hide}" if self.hide else "")
+            + ("+sized" if self.sized else "")
         )
 
     # --------------------------------------------------------------------------------------------------- hooks
@@ -661,11 +668,12 @@ def manifest():
     return json.loads((SITUATIONS / "manifest.json").read_text())
 
 
-def _add_mesh(spec, name, scale=1.0):
+def _add_mesh(spec, name, scale=1.0, file=None):
+    """Mesh `name` from SITUATIONS/<file or name>.obj, at `scale`."""
     if spec.mesh(name) is not None:
         return
     mesh = spec.add_mesh()
-    mesh.name, mesh.file = name, str(SITUATIONS / f"{name}.obj")
+    mesh.name, mesh.file = name, str(SITUATIONS / f"{file or name}.obj")
     if scale != 1.0:
         mesh.scale = [scale] * 3
 
@@ -721,6 +729,72 @@ def _leaf_pose(env, name, j, yaw, pitch, roll):
 
 def _leaves_in_use(env, name):
     return [vis for vis, _ in env.leaf_geoms[name] if env.model.geom_group[vis] == 2]
+
+
+# The looks drawn at other sizes (+sized): 2 ** (k / 4) times the look's own size for k in -4..4, half to twice, the
+# same mesh compiled at each scale (a mesh's scale is fixed when the model is compiled); the scale of each shoot's look
+# is drawn uniformly among them, in SIZED_SHARE of the episodes
+SIZES = tuple(2 ** (k / 4) for k in range(-4, 5))
+SIZED_SHARE = 0.2
+
+
+def _size_name(mesh, k):
+    """The name of mesh `mesh` compiled at SIZES[k]."""
+    return mesh if SIZES[k] == 1.0 else f"{mesh}_size{k}"
+
+
+class _Sized:
+    """The `+sized` option of a situation whose look is visual-only mesh geoms on each shoot (ties, buds). build adds
+    the look's meshes at every scale of SIZES, init keeps what each geom is drawn with at its own size, and resize, at
+    the end of a draw, puts every geom back at its own size and then, in SIZED_SHARE of the episodes, gives each
+    shoot's geoms one scale. A geom's mesh, its bounding sphere and box change together (rays and culling read them);
+    its pose is set again by the situation's draw, from the new mesh's frame. The draw uses the episode's stream after
+    everything else the situation draws, so the episode is the same as without the option."""
+
+    sized_meshes: tuple[tuple[str, float], ...] = ()  # (mesh, the scale it is built at)
+
+    def _build_sizes(self, spec):
+        if not self.sized:
+            return
+        for mesh, scale in self.sized_meshes:
+            for k, size in enumerate(SIZES):
+                if size != 1.0:
+                    _add_mesh(spec, _size_name(mesh, k), scale * size, file=mesh)
+
+    def _init_sizes(self, env, geoms: dict[str, list[int]]):
+        """geoms: per shoot name, the look's geoms, each drawn with one of sized_meshes."""
+        self.size_geoms = geoms
+        if not self.sized:
+            return
+        m = env.model
+        self.mesh_sizes = {
+            int(m.mesh(name).id): [int(m.mesh(_size_name(name, k)).id) for k in range(len(SIZES))]
+            for name, _ in self.sized_meshes
+        }
+        self.size_base = {
+            g: (int(m.geom_dataid[g]), float(m.geom_rbound[g]), m.geom_aabb[g].copy())
+            for gs in geoms.values()
+            for g in gs
+        }
+
+    def _resize(self, env, rng, shoots) -> dict:
+        """Every look at its own size, then in SIZED_SHARE of the episodes each shoot's at a drawn scale. Returns
+        the variation's sizes (by shoot, lowest first; {} without the option)."""
+        if not self.sized:
+            return {}
+        m = env.model
+        for g, (mesh, rbound, aabb) in self.size_base.items():
+            m.geom_dataid[g], m.geom_rbound[g], m.geom_aabb[g] = mesh, rbound, aabb
+        sizes = [1.0] * len(shoots)
+        if rng.random() < SIZED_SHARE:
+            sizes = [SIZES[int(k)] for k in rng.integers(len(SIZES), size=len(shoots))]
+        for n, size in zip(shoots, sizes, strict=True):
+            k = SIZES.index(size)
+            for g in self.size_geoms[n]:
+                mesh, rbound, aabb = self.size_base[g]
+                m.geom_dataid[g] = self.mesh_sizes[mesh][k]
+                m.geom_rbound[g], m.geom_aabb[g] = rbound * size, aabb * size
+        return {"sizes": sizes}
 
 
 class ChooseShoots(Scenario):
@@ -788,7 +862,7 @@ TIE_HELDOUT_FRAMES = {
 }
 
 
-class Ties(ChooseShoots):
+class Ties(_Sized, ChooseShoots):
     """A1, gardener's ties: 'colour' - every shoot has a tie, each of another colour (red, blue, yellow, white), and the
     instruction names one colour; 'one' - one shoot has a tie, and the instruction asks for the tied shoot."""
 
@@ -797,9 +871,12 @@ class Ties(ChooseShoots):
     frames = TIE_FRAMES
     can_undraw = True
     partial_undraw = True
+    can_size = True
+    sized_meshes = (("sit_tie", TIE_SCALE),)
 
     def build(self, spec):
         _add_mesh(spec, "sit_tie", TIE_SCALE)
+        self._build_sizes(spec)
         for k in range(E.MAX_SHOOTS):
             g = _visual(spec.body(f"shoot{k}"), f"shoot{k}_tie", "sit_tie", (1, 1, 1, 1))
             g.pos = [0, 0, TIE_AT - E.CUT_MID]  # (the OBJ frame is set at init, once compiled)
@@ -811,6 +888,14 @@ class Ties(ChooseShoots):
         for g in self.ties.values():
             _obj_pose(m, g, np.array([0.0, 0.0, TIE_AT - E.CUT_MID]), np.eye(3))
         m.geom_sameframe[list(self.ties.values())] = 0
+        self._init_sizes(env, {n: [g] for n, g in self.ties.items()})
+
+    def draw(self, env, rng, mode):
+        out = super().draw(env, rng, mode)
+        sizes = self._resize(env, rng, env.active)
+        for g in self.ties.values() if self.sized else ():  # the band where it belongs, whichever mesh draws it
+            _obj_pose(env.model, g, np.array([0.0, 0.0, TIE_AT - E.CUT_MID]), np.eye(3))
+        return dict(out, **sizes)
 
     def restore(self, env):
         super().restore(env)
@@ -937,7 +1022,7 @@ BUD_FRAMES = (
 BUD_HELDOUT_FRAMES = ("spare the budding branches and snip the rest", "only the shoots carrying no bud have to go")
 
 
-class Buds(ChooseShoots):
+class Buds(_Sized, ChooseShoots):
     """A4, spare the buds: 0 to all of the shoots carry a flower bud at the tip (and then two leaves, turned away from
     it to either side). Cut every shoot without a bud; with a bud on every shoot there is nothing to do."""
 
@@ -945,11 +1030,14 @@ class Buds(ChooseShoots):
     modes = ("buds",)
     frames = {"buds": BUD_FRAMES}
     can_undraw = True
+    can_size = True
+    sized_meshes = (("sit_bud_body", 1.0), ("sit_bud_sepals", 1.0))
 
     def build(self, spec):
         a = manifest()
         for mesh in ("sit_bud_body", "sit_bud_sepals"):
             _add_mesh(spec, mesh)
+        self._build_sizes(spec)
         (shape,) = a["assets"]["bud"]["collision"]
         for k in range(E.MAX_SHOOTS):
             body = spec.body(f"shoot{k}")
@@ -962,6 +1050,16 @@ class Buds(ChooseShoots):
         m = env.model
         self.buds = {n: [m.geom(f"{n}_bud_{p}").id for p in ("body", "sepals", "col")] for n in env.shoot_names}
         m.geom_sameframe[[g for gs in self.buds.values() for g in gs]] = 0
+        self._init_sizes(env, {n: gs[:2] for n, gs in self.buds.items()})  # the drawn bud; its collision stays
+
+    def draw(self, env, rng, mode):
+        out = super().draw(env, rng, mode)
+        sizes = self._resize(env, rng, env.active)
+        for n in self.budding if self.sized else ():  # each bud at the tip, from the frame of the mesh drawing it
+            tip = np.array([0.0, 0.0, env.shoots[n]["length"] - E.CUT_MID])
+            for g in self.buds[n][:2]:
+                _obj_pose(env.model, g, tip, np.eye(3))
+        return dict(out, **sizes)
 
     def restore(self, env):
         super().restore(env)
@@ -1233,9 +1331,13 @@ def parse(spec) -> list[Scenario]:
         if not part:
             continue
         part, *options = part.split("+")
+        sized = "sized" in options
+        if sized:
+            options.remove("sized")
         if set(options) - {"undrawn", "undrawn_target", "undrawn_others"} or len(options) > 1:
             raise ValueError(
-                f"unknown option in {part}+{'+'.join(options)}: one of +undrawn, +undrawn_target, +undrawn_others"
+                f"unknown option in {part}+{'+'.join(options)}: one of +undrawn, +undrawn_target, +undrawn_others "
+                "(and +sized)"
             )
         part, _, prob = part.partition("@")
         part, _, split = part.partition("/")
@@ -1248,8 +1350,10 @@ def parse(spec) -> list[Scenario]:
         hide = options[0][len("undrawn_") :] if options and options[0] != "undrawn" else None
         if hide and not SCENARIOS[name].partial_undraw:
             raise ValueError(f"{name} has no look to leave undrawn on some shoots only: only ties has")
+        if sized and not SCENARIOS[name].can_size:
+            raise ValueError(f"{name} has no look to draw at other sizes (+sized): only ties and buds have")
         prob = float(prob) if prob else 1.0
-        out.append(SCENARIOS[name](mode or None, prob, split or None, "undrawn" in options, hide))
+        out.append(SCENARIOS[name](mode or None, prob, split or None, "undrawn" in options, hide, sized))
     names = [s.name for s in out]
     if len(set(names)) != len(names):
         raise ValueError(f"a scenario is given twice: {spec}")
