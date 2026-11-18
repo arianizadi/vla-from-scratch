@@ -10,7 +10,9 @@ action[t] is the command applied after observing frame t.
 
 Reasoning tasks (reason_*) also get the expert's notes (notes.py) as per-frame columns: note (the note in force),
 note_prev (the one before it), note_age (frames since it was written) and instruction_subgoal (its "next" field, which
-preprocessing offers as the language instruction type "subgoal").
+preprocessing offers as the language instruction type "subgoal"). A situation on a plant task that changes the task
+(--scenario ties, sick, buds, order, nothing_to_do) gets the column instruction_subgoal alone, from the shoot the expert
+goes for (notes.SubgoalWriter), so that the fast level of architecture v3 can be trained on it.
 
 With --policy_ports, a trained policy (served by policy_server.py, one server per worker) drives the first K steps
 of every episode and the scripted expert takes over from wherever the arm is and finishes the task; only the
@@ -34,7 +36,7 @@ from .disturb import Disturbance
 from .env import CONTROL_HZ, TASKS, PickupEnv
 from .eval import connect, infer_request
 from .expert import ScriptedExpert, random_start
-from .notes import NoteWriter, note_columns
+from .notes import NoteWriter, SubgoalWriter, note_columns
 
 CAMERAS = ("front", "wrist")
 NOTE_COLUMNS = ("note", "note_prev", "note_age", "instruction_subgoal")
@@ -105,6 +107,8 @@ def _worker(args):
     env = PickupEnv(task, scenario=scenario, leaf_fix=leaf_fix, park_reset=park_reset)
     expert = ScriptedExpert(env, seed=worker_id, reactive=disturb_prob > 0 or drift_prob > 0, side=side)
     writer = NoteWriter(env) if env.reason else None
+    if writer is None and env.plant_task and any(s.changes_task for s in env.scenarios):
+        writer = SubgoalWriter(env)  # a situation: the sub-goal column alone
     budget = env.max_steps
     conn = policy = None
     if takeover is not None:
@@ -176,7 +180,7 @@ def _worker(args):
                 **{c: pa.array([{"bytes": b, "path": None} for b in frames[c]]) for c in CAMERAS},
                 "state": pa.array([s.tolist() for s in states], type=pa.list_(pa.float32())),
                 "action": pa.array([a.tolist() for a in actions], type=pa.list_(pa.float32())),
-                **({k: pa.array(v) for k, v in note_columns(step_notes).items()} if writer is not None else {}),
+                **(_note_columns(writer, step_notes) if writer is not None else {}),
             }
         )
         pq.write_table(table, tmp)
@@ -194,7 +198,12 @@ def _worker(args):
                 **handover,
                 **({"named": env.target_label} if env.named else {}),  # named shoots: lowest / middle / highest
                 **({"scenario": env.scenario_info} if env.scenarios else {}),  # what each scenario drew
-                **(_reason_record(env, writer) if writer is not None else {}),
+                **(_reason_record(env, writer) if env.reason else {}),
+                **(
+                    {"subgoals": [[int(t), text] for t, text in writer.written]}
+                    if writer is not None and not env.reason
+                    else {}
+                ),
             )
         )
     if conn is not None:
@@ -224,6 +233,13 @@ class ActionNoise:
         executed = np.array(action, dtype=np.float64, copy=True)
         executed[: self.ARM] += self.offset
         return executed.astype(np.asarray(action).dtype)
+
+
+def _note_columns(writer, step_notes):
+    """The per-frame columns of an episode's notes (a reasoning task), or of its sub-goals alone (a situation)."""
+    if isinstance(writer, SubgoalWriter):
+        return {"instruction_subgoal": pa.array(step_notes)}
+    return {k: pa.array(v) for k, v in note_columns(step_notes).items()}
 
 
 def _reason_record(env, writer):
@@ -448,8 +464,11 @@ def main():
     for ep_idx, r in enumerate(kept):
         task_idx = tasks.setdefault(r["instruction"], len(tasks))
         columns = [*CAMERAS, "state", "action"]  # without an included one's bookkeeping
-        if "note" in pq.read_schema(r["path"]).names:
+        names = pq.read_schema(r["path"]).names
+        if "note" in names:
             columns += NOTE_COLUMNS
+        elif "instruction_subgoal" in names:  # a situation's sub-goals (notes.SubgoalWriter)
+            columns.append("instruction_subgoal")
         table = pq.read_table(r["path"], columns=columns)
         n = table.num_rows
         table = table.append_column("timestamp", pa.array(np.arange(n, dtype=np.float32) / CONTROL_HZ))
@@ -474,7 +493,16 @@ def main():
                 },
                 **{
                     k: r[k]
-                    for k in ("kind", "phrasing", "shoots", "targets", "label", "label_hidden_at_reach", "notes")
+                    for k in (
+                        "kind",
+                        "phrasing",
+                        "shoots",
+                        "targets",
+                        "label",
+                        "label_hidden_at_reach",
+                        "notes",
+                        "subgoals",
+                    )
                     if k in r
                 },
                 **({"source": r.get("source", out.name)} if args.include else {}),

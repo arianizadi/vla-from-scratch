@@ -121,7 +121,10 @@ JAWS_OPEN = 1.0  # the gripper's command at the start of every episode (env.rese
 PREAMBLE_LIMIT = 200  # control steps after which a recovery ends whatever the expert is doing (its preambles take
 # at most about 100; a plate turned by hand during one starts it again)
 # Architecture v3 (tutorial/architecture-v3.md, "The plan and the runner"; Supervisor with v3)
-INSPECT = ("hold", "show")  # what a missing attribute of one shoot asks of the fast level: hold, or "show the X shoot"
+# What a missing fact (an attribute of one shoot, or a shoot never seen) asks for: hold; give the fast level "show the X
+# shoot"; or turn the plate by a scripted press of a button (Look), as the expert turns it to read the card
+INSPECT = ("hold", "show", "turn")
+PLANT = "cannot see the whole plant"  # v3: the reason of a Failed when a look for a shoot never seen ran out
 LOOK_TURN = 2 * math.pi  # a look for one fact is bounded by one full turn of the plate from when the need arose,
 LOOK_STEPS = 360  # and, where the plate does not turn (a hold), by this many control steps: two turns at the buttons'
 #                   speed (0.7 rad/s)
@@ -149,7 +152,8 @@ class Decision:
     recover: bool = False  # first hand the arm to a scripted recovery (Recovery): nothing has progressed for long
     detail: str = ""  # need_observation: what is missing; failed: why; with a recovery: "no progress"
     aim: str = ""  # execute, where the slow level says it (Supervisor aim): what the shoot needs, reasoning.aim_of
-    home: bool = False  # v3: a verdict; the runner takes the arm to the home pose (Recovery then_home) and holds it
+    home: bool = False  # v3: a verdict; the runner takes the arm to the home pose (HomeMove) and holds it
+    turn: int = 0  # v3, inspect "turn": a look; the runner turns the plate this way (+1 counter-clockwise) (Look)
 
     @property
     def instruction(self) -> str | None:
@@ -222,10 +226,13 @@ class Supervisor:
                     and a look for an attribute of one shoot is bounded. None (the default): v3 for a program outside
                     v2's language, v2 otherwise, so that v2's runs are what they were; text is then read as v2's
     inspect         v3: an attribute of one shoot that is missing asks the fast level to "show the <position> shoot"
-                    ("show") or holds ("hold", the default: the fast level has no such skill yet). Either way the look
-                    is bounded by one full turn of the plate (LOOK_TURN, from the memory's bearings) or LOOK_STEPS
-                    control steps from when the need arose; then Failed, "cannot see the tie of the middle shoot",
-                    for good: a look that fails is never a "no"
+                    ("show"), holds ("hold", the default: the fast level has no such skill yet), or asks the runner to
+                    turn the plate by a scripted press (Decision.turn: toward bringing the shoot to face the robot the
+                    shorter way; "turn"). Either way the look is bounded by one full turn of the plate (LOOK_TURN, from
+                    the memory's bearings) or LOOK_STEPS control steps from when the need arose; then Failed, "cannot
+                    see the tie of the middle shoot", for good: a look that fails is never a "no". In v3 an inventory
+                    of fewer than two parts (rule a: a shoot or a stub never seen) is a look of the same kind, held for
+                    or turned for, with the same bound; then Failed, PLANT
     gate            rule f, the cut gate (`check_cut`, at every control step): a command that would shut the jaws
                     among the shoots anywhere but at the part authorised, facing the robot, leaves them at the cutting
                     width, is recorded as a veto and asks for a reset (as rule e does, within `resets`). Off: the same
@@ -277,7 +284,8 @@ class Supervisor:
         self._look: dict | None = None
         self._look_failed: str | None = None
         self._seen_bearings: dict[int, float] = {}  # part id -> bearing, of the parts seen at the last look
-        self.looks_asked = 0  # the looks for a fact of one shoot that began
+        self.looks_asked = 0  # the looks for a fact of one shoot (or, v3, for a shoot never seen) that began
+        self.inventory_looks = 0  # v3: of those, the looks for a shoot never seen (rule a, fewer than two parts)
         self.look_turn = 0.0  # radians the plate turned while one was going on
         self.attribute_hold_steps = 0  # looks that held for an attribute
         self.complete_without_action: bool | None = None  # Complete declared before any sub-goal was given
@@ -367,7 +375,25 @@ class Supervisor:
         subgoal = outcome.subgoal if self.inspect == "show" else None
         if subgoal is None:
             self.attribute_hold_steps += 1
-        return Decision("need_observation", subgoal, detail=outcome.what)
+        bearing = next((p.bearing for p in self.memory.parts if p.id == outcome.part), None)
+        turn = (1 if bearing is None or bearing >= 0 else -1) if self.inspect == "turn" else 0
+        return Decision("need_observation", subgoal, detail=outcome.what, turn=turn)
+
+    def _inventory(self, step: int, turned: float) -> Decision:
+        """v3, rule a with fewer than two parts: a shoot or a stub has not been seen. A look of its own, bounded as a
+        look for an attribute is (LOOK_TURN, LOOK_STEPS), turned for with inspect "turn"; past the bound, Failed."""
+        fact = ("plant", None)
+        if self._look is None or self._look["fact"] != fact:
+            self._look = dict(fact=fact, since=step, turned=0.0)
+            self.looks_asked += 1
+            self.inventory_looks += 1
+        else:
+            self._look["turned"] += abs(turned)
+            self.look_turn += abs(turned)
+        if self._look["turned"] >= LOOK_TURN or step - self._look["since"] >= LOOK_STEPS:
+            self._look_failed = PLANT
+            return Decision("failed", STOP, detail=PLANT, home=True)
+        return Decision("need_observation", None, detail="plant", turn=1 if self.inspect == "turn" else 0)
 
     def check_cut(self, jaws: float, height: float | None, among: bool, step: int) -> float:
         """Rule f, at every control step: the jaws' command to carry out in place of `jaws` (cut_gate). A command
@@ -414,6 +440,8 @@ class Supervisor:
             # Rule a: the fast level names shoots as the lowest, the middle or the highest of two or three
             # (reasoning.position_name). Hold, and do not let the plan name a shoot it could not mean.
             self.inventory_hold_steps += 1
+            if self.v3 and len(memory.parts) < 2:  # v3: a shoot never seen is looked for, within the bound
+                return self._inventory(step, turned), None
             return Decision("need_observation", None, detail="plant"), None
         outcome = self.plan.step(memory)
         if not (isinstance(outcome, NeedObservation) and outcome.part is not None):
@@ -655,10 +683,16 @@ class Supervisor:
             choices=None if plan is None else len(plan.choices),
             complete_without_action=self.complete_without_action,
             looks_asked=self.looks_asked,
+            inventory_looks=self.inventory_looks,
             look_turn=round(self.look_turn, 4),
             look_failed=self._look_failed,
             attribute_hold_steps=self.attribute_hold_steps,
             ended_holding_for_attribute=self._look is not None
+            and self._look["fact"][0] != "plant"
+            and self.decision is not None
+            and self.decision.kind == "need_observation",
+            ended_looking_for_plant=self._look is not None
+            and self._look["fact"][0] == "plant"
             and self.decision is not None
             and self.decision.kind == "need_observation",
             vetoes=[dict(v) for v in self.vetoes],
@@ -919,7 +953,15 @@ class SlowLevel:
         else:
             meant = len(env.targets) if env.targets else len(env.active)
         undrawn = any(s.undrawn for s in env.scenarios)
-        return dict(situation=name, mode=mode, shoots=len(env.active), cuts_meant=meant, undrawn=undrawn)
+        hide = next((s.hide for s in env.scenarios if getattr(s, "hide", None)), None)  # ties: +undrawn_target|others
+        return dict(
+            situation=name,
+            mode=mode,
+            shoots=len(env.active),
+            cuts_meant=meant,
+            undrawn=undrawn,
+            **({"undrawn_on": hide} if hide else {}),
+        )
 
     def _see(self, obs: dict, history) -> Scene:
         """The eyes' percept: the images under the keys the server listed, as JPEG bytes."""
@@ -1082,6 +1124,144 @@ class Recovery:
         return self.expert.act() if self.path is None else self.path[self.made - self._line_from - 1]
 
 
+HOME_SPEED = 0.30  # m/s: the home move's set-point, as fast as the expert's own way home in nothing_to_do
+HOME_SETTLE = 10  # control steps of the straight line in joint space that ends the home move (HomeMove)
+HOME_LIMIT = 400  # control steps after which a home move or a look ends whatever it is doing
+
+
+class HomeMove:
+    """v3: the arm taken to the home pose after a verdict, kept clear of the plant (tutorial/architecture-v3.md, "The
+    home move"). The home pose holds the gripper above the plant, so the straight line in joint space that a recovery
+    ends with (Recovery) can sweep the hand through the flower from a start in front of it (3 of 200 nothing_to_do
+    episodes in E13, from the same starts with both fast levels). Here the scripted expert first makes the moves of a
+    takeover where they are needed (expert.ScriptedExpert.take_over: open the jaws and back out of the plant, or come
+    back into the box above the table), then moves the gripper's set-point in straight lines: back toward the robot to
+    the lane in front of the plant and up to the home pose's height, then across to the home pose, pointing down as
+    there; the last HOME_SETTLE control steps go to the home joint angles in a straight line in joint space, from a
+    pose whose gripper is already there. act() gives the next command (8 numbers); done says the move is over.
+    `expert` is for tests (by default a new ScriptedExpert(env, seed=0))."""
+
+    def __init__(self, env, expert=None):
+        from .expert import LANE_BACK, ScriptedExpert  # the simulator: imported only when a move is made
+
+        if expert is None:
+            expert = ScriptedExpert(env, seed=0)
+        expert.take_over()
+        self.env, self.expert, self.made, self.path = env, expert, 0, None
+        home = expert.home_pos.copy()
+        lane_x = env.data.xpos[env.stand_body][0] - LANE_BACK
+        self.home = home
+        self._legs = len(expert.waypoints) if expert.preamble else 0  # the preamble's waypoints come first
+        expert.waypoints = (expert.waypoints if expert.preamble else []) + [None, None]
+        self._lane_x = lane_x
+        self._planned = False
+
+    def _plan(self):
+        """The two straight legs, from where the set-point is once any preamble is over."""
+        expert, home = self.expert, self.home
+        here = expert.des_pos.copy()
+        up = np.array([min(self._lane_x, here[0]), here[1], max(here[2], home[2])])
+        expert.waypoints[self._legs :] = [
+            (up, JAWS_OPEN, HOME_SPEED, 0, expert.R_home),
+            (home, JAWS_OPEN, HOME_SPEED, 10**6, expert.R_home),
+        ]
+        expert.wp, expert.dwell, self._planned = self._legs, 0, True
+
+    def _arrived(self) -> bool:
+        expert = self.expert
+        return (
+            expert.wp == len(expert.waypoints) - 1
+            and np.linalg.norm(expert.des_pos - self.home) < 1e-6
+            and np.linalg.norm(self.env.tcp_pos() - self.home) < 0.015
+        )
+
+    def _settle(self):
+        """The last straight line in joint space, to the home joint angles."""
+        from .env import HOME_Q
+
+        start, home = np.asarray(self.env.data.qpos[:7], dtype=float), np.asarray(HOME_Q, dtype=float)
+        self.path = [
+            np.append(start + (home - start) * (k + 1) / HOME_SETTLE, JAWS_OPEN).astype(np.float32)
+            for k in range(HOME_SETTLE)
+        ]
+        self._path_from = self.made
+
+    @property
+    def done(self) -> bool:
+        if self.path is not None:
+            return self.made - self._path_from >= len(self.path)
+        return False
+
+    def act(self) -> np.ndarray:
+        assert not self.done, "the home move is over"
+        expert = self.expert
+        if self.path is None and not self._planned and (expert.wp >= self._legs or self.made >= PREAMBLE_LIMIT):
+            self._plan()
+        if self.path is None and self._planned and (self._arrived() or self.made >= HOME_LIMIT):
+            self._settle()
+        self.made += 1
+        if self.path is not None:
+            return self.path[self.made - self._path_from - 1]
+        return expert.act()
+
+
+class Look:
+    """v3, inspect "turn": the plate turned for a look (Decision.turn), by the move the expert makes to turn it (to
+    bring a shoot into reach, or the card to the front camera: expert.ScriptedExpert._press_plan): any moves of a
+    takeover first (backing out of the plant), the hand turned where it is if it must be, then over the button that
+    turns the plate the way asked, pressed and held. The slow level looks at every control step meanwhile; when it
+    no longer asks for the look the runner calls release(), and the move lets go of the button (or, if it had not
+    reached it, goes straight there), lifts and comes back to the lane in front of the plant, where the fast level has
+    the arm again. done says the move is over. `expert` is for tests (by default a new ScriptedExpert(env, seed=0))."""
+
+    def __init__(self, env, sign: int, expert=None):
+        from .expert import LANE_BACK, ScriptedExpert, _angle
+
+        if expert is None:
+            expert = ScriptedExpert(env, seed=0)
+        expert.take_over()
+        self.env, self.expert, self.sign, self.made, self.released = env, expert, int(sign), 0, False
+        lane_x = env.data.xpos[env.stand_body][0] - LANE_BACK
+        press = expert._press_plan(self.sign, lambda: self.released, lane_x, 1.0)
+        before = list(expert.waypoints) if expert.preamble else []
+        here, R_now = expert.des_pos.copy(), expert.des_R if expert.des_R is not None else expert.R_down
+        stem = env.stem_axis()[0]
+        inserts = []
+        if not before and np.linalg.norm(here[:2] - stem[:2]) < 0.15 and here[2] > 0.2:  # above the plant (at home)
+            inserts.append((np.array([lane_x, here[1], here[2]]), press[0][1], 0.35, 0, press[0][4]))
+        if not before and _angle(R_now, press[0][4]) > 0.6:  # turn the hand where it is first, as the expert does
+            inserts.insert(0, (here, press[0][1], 0.1, 0, expert.R_down))
+        hold = (press[-1][0], press[-1][1], 0.0, 10**6, press[-1][4])  # at the lane: the move is over
+        expert.waypoints = before + inserts + press + [hold]
+        self._first = len(before)  # the first waypoint of the move proper (after any preamble)
+        self._press = len(before) + len(inserts) + 1  # the press, held while the look goes on
+        self._lane = len(expert.waypoints) - 2
+        expert.wp, expert.dwell = 0, 0
+
+    def release(self):
+        """The look is over: let go of the button, lift, and come back to the lane."""
+        self.released = True
+
+    @property
+    def done(self) -> bool:
+        return self.expert.wp == len(self.expert.waypoints) - 1 or self.made >= HOME_LIMIT
+
+    def act(self) -> np.ndarray:
+        assert not self.done, "the look's move is over"
+        expert = self.expert
+        if self.released and self._first <= expert.wp < self._press:  # not at the button yet: back to the lane now
+            expert.wp, expert.dwell = self._lane, 0
+        self.made += 1
+        return expert.act()
+
+
+def solved(rule_success: bool, decision: Decision | None) -> bool:
+    """v3: whether an episode is solved: the situation's success rule says so and the slow level's verdict is not
+    Failed. On a plant with nothing meant the rule asks only for no cut and the arm home, which a verdict of Failed
+    ("cannot see the tip of the lowest shoot") also brings about; E13 scored those as solved."""
+    return bool(rule_success) and not (decision is not None and decision.kind == "failed")
+
+
 # ------------------------------------------------------------------------------------------------------ summary
 def _mean(values) -> float | None:
     values = [v for v in values if v is not None]
@@ -1151,7 +1331,12 @@ def summary_v3(episodes: list[dict]) -> dict:
     of order, damage, false completions, Complete said before any sub-goal (where nothing was to be cut, and where
     something was: the reverse error), the home pose reached on a verdict, looks asked and their turn, looks that ran
     out of their bound, episodes that ended holding for an attribute, vetoes of the gate (episodes and in all) and
-    resets, and the control steps per solved episode."""
+    resets, and the control steps per solved episode. An episode whose verdict is Failed is not solved whatever the
+    situation's success rule says (eval.py); the episodes ending on Failed are counted (failed_verdict), those among
+    them that the rule alone would have scored solved (failed_rule_solved: on a plant with nothing meant, no cut and the
+    arm home) and those with nothing meant (failed_nothing_meant), with the looks for a shoot never seen
+    (inventory_looks) and the episodes whose look for one ran out (look_failed_plant). Records written before that
+    rule have no rule_success and count as the rule said."""
     rows = [(e, e["v2"]) for e in episodes if e.get("v2") is not None and "v3" in e["v2"]]
 
     def counts(group):
@@ -1170,7 +1355,14 @@ def summary_v3(episodes: list[dict]) -> dict:
                 bool(r["v3"]["complete_without_action"]) and r["situation"]["cuts_meant"] > 0 for _, r in group
             ),
             home_reached=sum(r["v3"]["home_reached"] is not None for _, r in group),
+            failed_verdict=sum(r.get("final") == "failed" for _, r in group),
+            failed_rule_solved=sum(r.get("final") == "failed" and bool(e.get("rule_success")) for e, r in group),
+            failed_nothing_meant=sum(
+                r.get("final") == "failed" and r["situation"]["cuts_meant"] == 0 for _, r in group
+            ),
             looks_asked=sum(r["v3"]["looks_asked"] for _, r in group),
+            inventory_looks=sum(r["v3"].get("inventory_looks", 0) for _, r in group),
+            look_failed_plant=sum(r["v3"]["look_failed"] == PLANT for _, r in group),
             look_turn=round(sum(r["v3"]["look_turn"] for _, r in group), 4),
             look_failed=sum(r["v3"]["look_failed"] is not None for _, r in group),
             ended_holding_for_attribute=sum(bool(r["v3"]["ended_holding_for_attribute"]) for _, r in group),

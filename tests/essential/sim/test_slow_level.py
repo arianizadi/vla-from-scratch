@@ -1795,3 +1795,283 @@ def test_the_v3_summary_counts_by_situation_mode_shoots_and_cuts_meant():
     assert out["by_situation"]["sick"]["episodes"] == 2 and out["by_mode"]["sick:sick"]["successes"] == 1
     assert set(out["by_shoots"]) == {"2", "3"} and out["by_cuts_meant"]["0"]["episodes"] == 1
     json.dumps(out)
+
+
+# ------------------------------------------------------------------------------- v3: the runner after E13's findings
+def test_v3_with_inspect_turn_a_missing_attribute_asks_the_runner_to_turn_the_shoot_round_the_shorter_way():
+    for bearing, turn in ((-1.0, -1), (1.0, 1), (0.0, 1)):
+        attributes = [{"sick": "no"}, {"sick": S.UNREADABLE}, {"sick": "no"}]
+        plant = Tended(bearings=[2.0, bearing, -2.0], attributes=attributes)
+        run = _v3("Cut(Filter(sick,yes,All()))", plant, inspect="turn")
+        decision = run.look(2)[-1]  # the first: the inventory is not settled yet
+        assert (decision.kind, decision.subgoal, decision.detail, decision.turn) == (
+            "need_observation", None, "sick", turn,
+        )  # fmt: skip
+        plant.attributes[1]["sick"] = "yes"  # turned into view
+        (decision,) = run.look()
+        assert decision.subgoal == "cut the middle shoot" and decision.turn == 0
+    # holding and showing never ask for a turn
+    for inspect in ("hold", "show"):
+        plant = Tended(attributes=[{"sick": "no"}, {"sick": S.UNREADABLE}, {"sick": "no"}])
+        decision = _v3("Cut(Filter(sick,yes,All()))", plant, inspect=inspect).look(2)[-1]
+        assert decision.kind == "need_observation" and decision.turn == 0
+
+
+def test_v3_a_shoot_never_seen_is_looked_for_within_the_bound_and_v2_holds_for_it_as_before():
+    stub = dict(heights=(0.08,), cut={0})  # a plant of two stubs, one of which no camera has shown
+    run = _v3("Cut(All())", Plant(**stub), inspect="turn")
+    first, *decisions = run.look(3)
+    assert (first.kind, first.detail, first.turn) == ("need_observation", "plant", 0)  # not settled yet: a hold
+    assert all((d.kind, d.detail, d.turn) == ("need_observation", "plant", 1) for d in decisions)
+    assert run.supervisor.looks_asked == 1 and run.supervisor.inventory_looks == 1
+    run.plant.heights, run.plant.cut = (0.08, 0.13), {0, 1}  # the turn shows the second stub
+    decision = run.look(2)[-1]  # (the inventory grew: one look to settle)
+    assert (decision.kind, decision.home, decision.turn) == ("complete", True, 0)
+    assert run.supervisor.complete_without_action and run.supervisor.record()["v3"]["inventory_looks"] == 1
+    # never seen: bounded by one full turn of the plate (here by time, the plate standing), then Failed for good
+    run = _v3("Cut(All())", Plant(**stub), every=8)
+    run.look(L.LOOK_STEPS // 8 + 2)
+    decision = run.decisions[-1]
+    assert (decision.kind, decision.detail, decision.home) == ("failed", L.PLANT, True)
+    assert run.supervisor.record()["v3"]["look_failed"] == L.PLANT
+    assert not run.supervisor.record()["v3"]["ended_holding_for_attribute"]
+    run = _v3("Cut(All())", Plant(**stub), inspect="turn")
+    run.look(1)
+    while run.decisions[-1].kind == "need_observation":
+        run.plant.bearings = [L._wrap(run.plant.bearings[0] + 0.3)] if run.plant.bearings else [0.3]
+        run.look()
+        assert len(run.decisions) < 40
+    assert run.decisions[-1].detail == L.PLANT and 20 <= len(run.decisions) <= 23  # 2 pi / 0.3
+    # v2 holds for it, without a bound
+    run = Run("Cut(All())", Plant(**stub), every=8, stable=1)
+    run.look(L.LOOK_STEPS // 8 + 10)
+    assert {(d.kind, d.subgoal, d.detail) for d in run.decisions} == {("need_observation", None, "plant")}
+
+
+def test_v3_an_episode_whose_verdict_is_failed_is_not_solved_and_the_summary_counts_those_the_rule_scored_solved():
+    failed, complete = L.Decision("failed", L.STOP, detail="x", home=True), L.Decision("complete", L.STOP, home=True)
+    assert not L.solved(True, failed) and L.solved(True, complete) and not L.solved(False, complete)
+    assert L.solved(True, None) and not L.solved(False, None)
+
+    def episode(meant, final, rule, success, look_failed=None):
+        counters = dict(
+            complete_without_action=False,
+            home_reached=10,
+            looks_asked=1,
+            look_turn=0.0,
+            look_failed=look_failed,
+            ended_holding_for_attribute=False,
+            vetoes=[],
+        )
+        asked = dict(situation="buds", mode="buds", shoots=3, cuts_meant=meant, undrawn=False)
+        record = dict(false_complete=False, resets=0, final=final, v3=counters, situation=asked)
+        return dict(success=success, rule_success=rule, wrong_object=False, damaged=None, steps=100, v2=record)
+
+    out = L.summary_v3(
+        [
+            episode(0, "failed", True, False, look_failed="cannot see the tip of the lowest shoot"),
+            episode(0, "complete", True, True),
+            episode(1, "failed", False, False, look_failed=L.PLANT),
+        ]
+    )
+    assert out["successes"] == 1 and out["failed_verdict"] == 2 and out["failed_rule_solved"] == 1
+    assert out["failed_nothing_meant"] == 1 and out["look_failed_plant"] == 1 and out["look_failed"] == 2
+
+
+# The starts from which E13's home move (a reset's straight line in joint space) touched the flower: nothing_to_do,
+# evaluation layouts, with both fast levels (and the same starts on sick plants with no sick shoot)
+E13_HOME_TOUCHES = (1_000_010, 1_000_113, 1_000_195)
+
+
+def _home(env, move, limit=400):
+    """Drive a home move to its end; whether it touched the plant, and the arm at the home pose then."""
+    from sim.pickup import slow_level as L3
+
+    steps = 0
+    while not move.done and env.damaged is None and steps < limit:
+        obs, _, _ = env.step(move.act())
+        steps += 1
+    return env.damaged, L3.SlowLevel.at_home(obs["state"]), steps
+
+
+def test_v3_the_home_move_backs_away_from_the_plant_first_and_goes_home_without_touching_it():
+    from sim.pickup import slow_level as L3
+    from sim.pickup.expert import ScriptedExpert, clear_start
+
+    env = _env("prune")
+    env.close()
+    from sim.pickup.env import PickupEnv
+
+    env = PickupEnv("prune", scenario="nothing_to_do")
+    try:
+        starter = ScriptedExpert(env, seed=0)
+        line_touched = 0
+        for seed in E13_HOME_TOUCHES + (1_000_000, 1_000_001):
+            env.reset(seed=seed)
+            clear_start(env, starter, seed)
+            damaged, home, steps = _home(env, L3.HomeMove(env))
+            assert damaged is None and home, (seed, damaged, steps)
+            assert steps <= 120  # about 2 s from a clear start
+            env.reset(seed=seed)
+            clear_start(env, starter, seed)
+            line_touched += _home(env, L3.Recovery(env, then_home=True))[0] is not None
+        assert line_touched == len(E13_HOME_TOUCHES)  # the line the reset makes is what E13 lost them to
+        # from among the shoots (the hand where a cut leaves it): the takeover's back-out first, then home
+        env.reset(seed=1_000_002)
+        name = env.active[0]
+        a, d = env.shoot_axis(name)
+        q = starter.solve_ik(env.data.qpos[:7].copy(), a + d * 0.12 + [0, 0, 0.03], 0.0, iters=200)
+        env.set_arm(q)
+        move = L3.HomeMove(env)
+        assert move.expert.preamble or move._legs == 0
+        damaged, home, _ = _home(env, move)
+        assert damaged is None and home
+    finally:
+        env.close()
+
+
+def test_v3_the_look_turns_the_plate_the_way_asked_and_on_release_comes_back_to_the_lane():
+    from sim.pickup import slow_level as L3
+    from sim.pickup.env import BUTTONS, PRESS_TRAVEL
+    from sim.pickup.expert import LANE_BACK, ScriptedExpert, clear_start
+
+    env = _env("prune")
+    try:
+        starter = ScriptedExpert(env, seed=0)
+        for seed, sign in ((900_000, 1), (900_001, -1)):
+            env.reset(seed=seed)
+            clear_start(env, starter, seed)
+            before, cut = env.plate_angle(), set(env.cut)
+            look = L3.Look(env, sign)
+            for _ in range(140):
+                env.step(look.act())
+            turned = env.plate_angle() - before
+            assert sign * turned > np.radians(30), (seed, np.degrees(turned))
+            look.release()
+            steps = 0
+            while not look.done:
+                env.step(look.act())
+                steps += 1
+                assert steps < 200
+            assert env.damaged is None and set(env.cut) == cut
+            lane_x = env.data.xpos[env.stand_body][0] - LANE_BACK
+            assert env.tcp_pos()[0] < lane_x  # back on the lane in front of the plant
+            assert not any(env.button_travel(b) > PRESS_TRAVEL for b in BUTTONS)  # the button let go
+        # released before it reaches the button: straight back to the lane, the plate untouched
+        env.reset(seed=900_002)
+        clear_start(env, starter, 900_002)
+        before = env.plate_angle()
+        look = L3.Look(env, 1)
+        for _ in range(3):
+            env.step(look.act())
+        look.release()
+        while not look.done:
+            env.step(look.act())
+        assert abs(env.plate_angle() - before) < np.radians(2) and env.damaged is None
+    finally:
+        env.close()
+
+
+def test_v3_runner_a_stub_never_seen_is_found_by_turning_the_plate_and_the_episode_is_solved(tmp_path, monkeypatch):
+    # nothing_to_do 1000023: a plant of two stubs, one of which no camera shows from the clear start (E13: held to the
+    # end of the episode with both fast levels); 1000010: a start from which the old home move touched the flower
+    results, policy = _eval_v3(
+        tmp_path, monkeypatch, "--task", "prune", "--scenario", "nothing_to_do", "--slow_level", "v3",
+        "--clear_start", "--episodes", "1", "--seed_start", "1000023", "--inspect", "turn",
+    )  # fmt: skip
+    (episode,) = results["per_episode"]
+    assert episode["success"] and episode["v2"]["final"] == "complete" and policy.queries == 0
+    assert episode["v2"]["v3"]["inventory_looks"] == 1 and episode["v2"]["v3"]["look_failed"] is None
+    assert results["home_move"] == "clear" and results["v2"]["settings"]["inspect"] == "turn"
+    results, _ = _eval_v3(
+        tmp_path, monkeypatch, "--task", "prune", "--scenario", "nothing_to_do", "--slow_level", "v3",
+        "--clear_start", "--episodes", "1", "--seed_start", "1000010",
+    )  # fmt: skip
+    assert results["successes"] == 1 and results["per_episode"][0]["damaged"] is None
+    results, _ = _eval_v3(
+        tmp_path, monkeypatch, "--task", "prune", "--scenario", "nothing_to_do", "--slow_level", "v3",
+        "--clear_start", "--episodes", "1", "--seed_start", "1000010", "--home_move", "line",
+    )  # fmt: skip
+    assert results["successes"] == 0 and results["per_episode"][0]["damaged"] == "flower touched"
+
+
+def test_v3_runner_a_look_that_runs_out_where_nothing_is_meant_is_a_failure_and_a_turn_reads_the_bud(
+    tmp_path, monkeypatch
+):
+    # buds 1000022: every shoot has a bud, and the middle one's tip is hidden from the clear start (E13: held, Failed
+    # "cannot see the tip of the middle shoot", and scored solved by the situation's rule: no cut, the arm home)
+    results, _ = _eval_v3(
+        tmp_path, monkeypatch, "--task", "prune", "--scenario", "buds", "--slow_level", "v3",
+        "--clear_start", "--episodes", "1", "--seed_start", "1000022", "--inspect", "hold",
+    )  # fmt: skip
+    (episode,) = results["per_episode"]
+    assert episode["v2"]["final"] == "failed" and episode["rule_success"] and not episode["success"]
+    assert results["v3"]["failed_rule_solved"] == 1 and results["v3"]["failed_nothing_meant"] == 1
+    results, _ = _eval_v3(
+        tmp_path, monkeypatch, "--task", "prune", "--scenario", "buds", "--slow_level", "v3",
+        "--clear_start", "--episodes", "1", "--seed_start", "1000022", "--inspect", "turn",
+    )  # fmt: skip
+    (episode,) = results["per_episode"]
+    assert episode["success"] and episode["v2"]["final"] == "complete" and episode["v2"]["v3"]["looks_asked"] >= 1
+
+
+def test_ties_can_leave_the_tie_undrawn_on_the_shoot_meant_or_on_the_others_only():
+    from sim.pickup import scenarios as SC
+
+    assert "ties+undrawn_target" in [s.spec() for s in SC.parse("ties+undrawn_target,lighting")]
+    for bad in ("sick+undrawn_target", "ties+undrawn+undrawn_target", "ties+undrawn_all"):
+        with pytest.raises(ValueError):
+            SC.parse(bad)
+    _env("prune").close()
+    from sim.pickup.env import PickupEnv
+
+    for option in ("undrawn_target", "undrawn_others"):
+        env = PickupEnv("prune", scenario=f"ties:colour+{option}")
+        try:
+            env.reset(seed=900_000)
+            ties = env.scenarios[0].ties
+            shown = {n for n, g in ties.items() if env.model.geom_group[g] == 2}
+            target = env.targets[0]
+            expected = set(env.active) - {target} if option == "undrawn_target" else {target}
+            assert shown == expected and len(env.scenario_info["ties"]["ties"]) == len(env.active)
+        finally:
+            env.close()
+
+
+@pytest.mark.parametrize("scenario", ["ties", "order", "sick", "nothing_to_do"])
+def test_a_situation_s_sub_goal_names_the_shoot_the_expert_cuts_next_and_stop_once_none_is_left(scenario):
+    """notes.SubgoalWriter, the column instruction_subgoal of a situation's demonstrations (collect.py): at every cut
+    the sub-goal in force named the shoot cut, by its position on the plant as found; after the last, "stop"."""
+    _env("prune").close()
+    from sim.pickup import reasoning as R
+    from sim.pickup.env import PickupEnv
+    from sim.pickup.expert import ScriptedExpert, random_start
+    from sim.pickup.notes import SubgoalWriter
+
+    env = PickupEnv("prune", scenario=scenario)
+    try:
+        expert, writer, solved = ScriptedExpert(env, seed=0), SubgoalWriter(env), 0
+        for seed in range(300_000, 300_006):
+            env.reset(seed=seed)
+            _, yaw = random_start(env, expert, seed)
+            expert.reset(yaw=yaw)
+            writer.reset()
+            done, info, said = False, {}, []
+            while not done:
+                writer.update()
+                cut = set(env.cut)
+                obs, done, info = env.step(expert.act())
+                for name in set(env.cut) - cut:
+                    said.append((writer.note, name))
+            if not info["success"]:
+                continue
+            solved += 1
+            for note, name in said:
+                assert note == f"cut the {R.position_name(env.active.index(name), len(env.active))} shoot"
+            writer.update()
+            assert writer.note == "stop" and writer.written[0][0] == 0
+            if scenario == "nothing_to_do":
+                assert writer.written == [(0, "stop")]
+        assert solved >= 3
+    finally:
+        env.close()

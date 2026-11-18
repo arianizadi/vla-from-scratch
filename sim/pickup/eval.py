@@ -38,12 +38,16 @@ its false completions apart from the successes.
 world the unknown facts allow, in stages (program.WorldPlan). --program gold is then the program of the situation the
 episode draws (program.from_scenario: prune, order, nothing_to_do, ties, sick, buds and their held-out frames) as well
 as a reasoning task's; --scene full gives it the simulator's whole state (every attribute, the card, every part) where
---scene truth gives what the cameras show. A fact about one shoot that is missing is held for (--inspect hold) or shown
-(--inspect show), bounded by one full turn of the plate; on a verdict the arm is taken home by the scripted move of a
-reset and held there, and the episode ends once the verdict has stood and the arm has been home for a second; the cut
-gate (--gate) checks every control step's command to the jaws against the part the plan authorised, and without --gate
-what it would have stopped is recorded only. results.json's v3 section counts the episodes by situation, mode, shoots
-and cuts meant (slow_level.summary_v3).
+--scene truth gives what the cameras show. A fact about one shoot that is missing is held for (--inspect hold), shown
+(--inspect show), or looked for by turning the plate with a scripted press of a button (--inspect turn:
+slow_level.Look), bounded by one full turn of the plate; a shoot never seen (fewer than two parts known) is looked for
+the same way, within the same bound. On a verdict the arm is taken home and held there (--home_move clear: back to the
+lane in front of the plant, up and across, slow_level.HomeMove; line: the straight line in joint space of a reset's
+scripted move, as E13 ran), and the episode ends once the verdict has stood and the arm has been home for a second; an
+episode whose verdict is Failed is not solved, whatever the situation's success rule says (its record keeps the rule's
+own verdict as rule_success). The cut gate (--gate) checks every control step's command to the jaws against the part
+the plan authorised, and without --gate what it would have stopped is recorded only. results.json's v3 section counts
+the episodes by situation, mode, shoots and cuts meant (slow_level.summary_v3).
 
 --clear_start starts every episode from a pose drawn as --random_start draws it but clear of the plant
 (expert.clear_start, --clearance), as architecture v3's evaluations start.
@@ -552,10 +556,18 @@ def main():
     # Architecture v3 (see the module's docstring and slow_level.py)
     ap.add_argument(
         "--inspect",
-        choices=["hold", "show"],
+        choices=["hold", "show", "turn"],
         default="hold",
-        help="v3: a fact about one shoot that is missing: hold (the fast level has no such skill yet), or give the "
-        "fast level 'show the <position> shoot'",
+        help="v3: a fact about one shoot that is missing, or a shoot never seen: hold (the fast level has no such "
+        "skill yet), give the fast level 'show the <position> shoot', or turn the plate with a scripted press "
+        "(slow_level.Look)",
+    )
+    ap.add_argument(
+        "--home_move",
+        choices=["clear", "line"],
+        default="clear",
+        help="v3: the arm's way home on a verdict: back to the lane in front of the plant, up and across "
+        "(slow_level.HomeMove), or the straight line in joint space of a reset's scripted move (as E13 ran)",
     )
     ap.add_argument(
         "--gate",
@@ -665,6 +677,7 @@ def main():
     assert args.clearance is None or args.clear_start, "--clearance is for --clear_start"
     if not v3:
         assert args.scene != "full", "--scene full is architecture v3's oracle: use --slow_level v3"
+        assert args.home_move == "clear", "--home_move is for --slow_level v3"
         assert (args.inspect, args.gate, args.slow_attribute_rule, args.slow_witness) == (
             "hold",
             False,
@@ -820,6 +833,7 @@ def main():
             slow.reset()
             slow_history, recovery = FrameHistory(obs, slow.offsets), None
             homing, at_home = False, 0  # v3: the home move made for the verdict that stands; control steps at home
+            looking = None  # v3, --inspect turn: the scripted turn of the plate for a look (slow_level.Look)
         if recorder is not None:
             recorder.start(seed)
         wrong_object = False  # a non-target object was lifted at any point in the episode
@@ -876,12 +890,26 @@ def main():
                 subgoal = goal_of(held) or subgoal
             if slow is not None and fresh and recovery is None:  # v2: it looks where the policy needs a new chunk
                 decision = slow.tick(obs, slow_history)
-                if decision.home:  # v3: a verdict: the arm goes home by the reset's scripted move, and stays there
+                if looking is not None and (not decision.turn or looking.done):
+                    if not decision.turn:  # v3: the look is over: let go of the button, back to the lane, then on
+                        looking.release()
+                        recovery = None if looking.done else looking
+                    looking = None
+                if recovery is not None:  # the look's way back first; the next look decides again
+                    pass
+                elif decision.home:  # v3: a verdict: the arm goes home by a scripted move, and stays there
                     if not homing and not slow.at_home(obs["state"]):
-                        recovery = slow_level.Recovery(env, then_home=True)
+                        if args.home_move == "clear":
+                            recovery = slow_level.HomeMove(env)
+                        else:
+                            recovery = slow_level.Recovery(env, then_home=True)
                     else:
                         queue = [home_hold.copy()]
                     homing = True
+                elif decision.turn and not decision.recover:  # v3, --inspect turn: a look; the plate is turned for it
+                    homing = False
+                    if looking is None:
+                        looking = slow_level.Look(env, decision.turn)
                 elif decision.recover:  # nothing has progressed for long: a scripted move first, then the policy
                     homing = False
                     recovery = slow_level.Recovery(env, then_home=decision.detail in ("reset", "veto"))
@@ -897,6 +925,8 @@ def main():
             elif recovery is not None:  # v2: a recovery's scripted move drives until it is over
                 queue = [recovery.act()]
                 recovery = None if recovery.done else recovery
+            elif looking is not None:  # v3: the look's move, while the slow level looks at every control step
+                queue = [looking.act()]
             elif not queue:
                 prev_action = env.last_action
                 if first_query and args.first_prev_action == "expert":
@@ -971,12 +1001,17 @@ def main():
         if recorder is not None:  # the last observation, and the episode's file
             recorder.frame(obs)
             recorder.end(info, env.steps)
+        # v3: an episode whose verdict is Failed is not solved, whatever the situation's own rule says (on a plant with
+        # nothing meant, that rule asks only for no cut and the arm home)
+        rule_success = bool(info["success"])
+        solved = slow_level.solved(rule_success, slow.decision) if v3 else rule_success
         episodes.append(
             dict(
                 seed=seed,
                 target=env.target,
                 instruction=env.instruction,
-                success=bool(info["success"]),
+                success=solved,
+                **(dict(rule_success=rule_success) if v3 else {}),
                 steps=env.steps,
                 wrong_object=wrong_object,
                 damaged=info.get("damaged"),  # pruning: what was damaged, if anything
@@ -1052,20 +1087,20 @@ def main():
             )
         )
         key = env.target_label or env.target  # named shoots: by position (shoot names follow height, not position)
-        per_target[key][0] += int(info["success"])
+        per_target[key][0] += int(solved)
         per_target[key][1] += 1
         if ep < args.videos:
-            write_video(out / f"rollout_{ep:03d}_{env.target}_{'ok' if info['success'] else 'fail'}.mp4", frames)
+            write_video(out / f"rollout_{ep:03d}_{env.target}_{'ok' if solved else 'fail'}.mp4", frames)
         if ep < args.traces:
             write_json(
-                out / f"trace_{ep:03d}_{env.target}_{'ok' if info['success'] else 'fail'}.json",
+                out / f"trace_{ep:03d}_{env.target}_{'ok' if solved else 'fail'}.json",
                 dict(
                     seed=seed,
                     target=env.target,
                     instruction=env.instruction,
                     objects=list(env.active),
                     control_hz=CONTROL_HZ,
-                    success=bool(info["success"]),
+                    success=solved,
                     close_step=episodes[-1]["close_step"],
                     disturbed=disturbance.record,
                     steps=trace,
@@ -1073,7 +1108,7 @@ def main():
             )
         done_n = len(episodes)
         print(
-            f"[eval] {done_n}/{args.episodes} seed={seed} target={env.target} success={info['success']} "
+            f"[eval] {done_n}/{args.episodes} seed={seed} target={env.target} success={solved} "
             f"steps={env.steps}  running={sum(e['success'] for e in episodes) / done_n:.2f}",
             flush=True,
         )
@@ -1133,6 +1168,7 @@ def main():
         noise=args.noise,
         random_start=args.random_start,
         **(dict(clear_start=dict(clearance=clearance)) if args.clear_start else {}),
+        **(dict(home_move=args.home_move) if v3 else {}),
         interventions=dict(
             expert_prefix=args.expert_prefix,
             prefix_target=args.prefix_target if args.expert_prefix else None,

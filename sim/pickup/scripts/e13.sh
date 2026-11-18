@@ -17,6 +17,9 @@
 #   PICKUP_E13_VALIDATION=<n>     episodes per run on validation layouts (default 100)
 #   PICKUP_E13_EVALUATION=<n>     episodes per run on evaluation layouts (default 200; order: n/2 per mode)
 #   PICKUP_E13_ONLY=<regex>       only the runs whose name matches (e.g. 'order|prune')
+#   PICKUP_E13_ARGS="<args>"      more eval.py arguments for every v3 run. E13 ran with the defaults (a missing fact held
+#                                 for, --inspect hold) and the straight line home (--home_move line); after E13 the runs
+#                                 take "--inspect turn" (tutorial/architecture-v3.md, "After E13")
 #   PICKUP_WEIGHTS                the fast level's weights (default ema: the final averaged weights)
 #   PICKUP_GPU and the rest: as for eval_v2.sh and _common.sh
 set -euo pipefail
@@ -38,8 +41,11 @@ run() {
   out="$root/$where/$(basename "$fast")/$name"
   if [ -f "$out/results.json" ]; then echo "[e13] $out: done already"; return 0; fi
   echo "[e13] $where $(basename "$fast") $name: $episodes episodes from seed $first"
+  local more=()
+  if [ "$level" = v3 ] && [ -n "${PICKUP_E13_ARGS:-}" ]; then read -r -a more <<< "$PICKUP_E13_ARGS"; fi
   PICKUP_SLOW_LEVEL=$level PICKUP_SCENE=$scene PICKUP_PROGRAM=gold PICKUP_OUT=$out \
-    "$here/eval_v2.sh" "$fast" "$task" "$episodes" --seed_start "$first" --clear_start "$@"
+    "$here/eval_v2.sh" "$fast" "$task" "$episodes" --seed_start "$first" --clear_start \
+    ${more[@]+"${more[@]}"} "$@"
 }
 
 # situations <phase> <fast run> <episodes> <first seed>

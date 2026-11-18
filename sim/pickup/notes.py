@@ -111,3 +111,61 @@ def note_columns(step_notes: list[str]) -> dict:
         note_age=np.asarray(age, dtype=np.int64),
         instruction_subgoal=[reasoning.subgoal(n) for n in step_notes],
     )
+
+
+class SubgoalWriter:
+    """The sub-goal of a situation's demonstrations (tutorial/architecture-v3.md, "Data to collect"): what the expert's
+    note on a reasoning task would say in its "next" field, for a situation on `prune` that has no notes (ties, sick,
+    buds, order, nothing_to_do). It changes at the moments a note would (NoteWriter: the start, a cut, the end of a turn
+    of the plant) and names the shoot the expert goes for by its position on the plant as found: "cut the <position>
+    shoot", the first shoot of the order not yet cut (order), else the shoot meant (or, without a situation that picks
+    shoots, any shoot) that needs the least turning; "stop" once none is left. collect.py writes it as the column
+    instruction_subgoal, which the fast level's config reads as the language instruction type "subgoal"."""
+
+    def __init__(self, env):
+        assert env.plant_task and not env.reason, f"{env.task}: a reasoning task has its notes (NoteWriter)"
+        self.env = env
+        self.reset()
+
+    def reset(self):
+        """Call after env.reset."""
+        self.note = ""
+        self.written: list[tuple[int, str]] = []  # (control step, sub-goal)
+        self._cut = frozenset()
+        self._pressed = False
+
+    def update(self) -> bool:
+        """Look at the scene now (before the next action); True if the sub-goal changed."""
+        env = self.env
+        pressed = any(env.button_travel(b) > PRESS_TRAVEL for b in BUTTONS)
+        still = not pressed and abs(env.plate_speed()) < PLATE_STILL
+        self._pressed |= pressed
+        event = not self.written
+        if frozenset(env.cut) != self._cut:
+            self._cut, event = frozenset(env.cut), True
+        if self._pressed and still:
+            self._pressed, event = False, True
+        if not event:
+            return False
+        text = self.text()
+        if text == self.note:
+            return False
+        self.note = text
+        self.written.append((env.steps, text))
+        return True
+
+    def text(self) -> str:
+        """The sub-goal for the scene now."""
+        env = self.env
+        if "ordered" in env.flags:
+            remaining = [n for n in env.targets if n not in env.cut][:1]
+        elif "targets" in env.flags:
+            remaining = [n for n in env.targets if n not in env.cut]
+        elif "home" in env.flags:  # nothing_to_do: nothing is meant
+            remaining = []
+        else:
+            remaining = [n for n in env.active if n not in env.cut]
+        if not remaining:
+            return "stop"
+        name = min(remaining, key=lambda n: abs(float(_wrap_angle(REACH_AZIMUTH - env.shoot_azimuth(n)))))
+        return f"cut the {reasoning.position_name(env.active.index(name), len(env.active))} shoot"

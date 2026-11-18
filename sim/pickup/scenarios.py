@@ -16,8 +16,10 @@ The spec of one scenario is `name[:mode][/split][@p][+undrawn]`: `mode` pins one
 bench and distractors have one), `p` applies it to that share of the episodes only (`nothing_to_do@0.2`, for training
 data that mixes it in), and `+undrawn` (ties, sick, buds) draws the episode as always, targets and instruction
 included, but leaves the look undrawn: no tie, no yellow leaf, no bud (architecture v3's paired control of what a look
-costs the fast level). The catalogue numbers (B1, A5, ...) are accepted as names. See tutorial/test-situations.md for
-the catalogue.
+costs the fast level). `ties` also takes `+undrawn_target` (every tie drawn but the one on the shoot meant) and
+`+undrawn_others` (only the tie on the shoot meant drawn), which tell a tie on the shoot the fast level is sent to from
+ties elsewhere on the plant. The catalogue numbers (B1, A5, ...) are accepted as names. See
+tutorial/test-situations.md for the catalogue.
 
 A situation that draws something about each shoot that a program can ask for (a tie, sick leaves, a bud) says what it
 drew with `attributes(env)`, {shoot: {"tie": "red"}}; scene.scene_truth writes it per part, with "unreadable" where no
@@ -92,8 +94,9 @@ class Scenario:
     # situation and testing on the rest. Empty: the scenario has no split.
     splits: dict = {}
     can_undraw = False  # it has a look that `undrawn` can leave out (ties, sick, buds)
+    partial_undraw = False  # `hide` can leave it out on the shoots meant or on the others only (ties)
 
-    def __init__(self, mode=None, prob=1.0, split=None, undrawn=False):
+    def __init__(self, mode=None, prob=1.0, split=None, undrawn=False, hide=None):
         # several modes joined by "|" (lighting:dusk|noon): the draw is among those
         self.choices = tuple(mode.split("|")) if mode and "|" in mode else None
         if self.choices:
@@ -105,7 +108,10 @@ class Scenario:
         assert split is None or split in self.splits, f"{self.name}: no split {split!r}; it has {sorted(self.splits)}"
         assert mode is None or split is None or mode in self.splits[split], f"{self.name}: {mode} is not in {split}"
         assert not undrawn or self.can_undraw, f"{self.name} has no look to leave undrawn"
+        assert hide in (None, "target", "others") and (hide is None or self.partial_undraw), (self.name, hide)
+        assert not (undrawn and hide), "+undrawn leaves every look out: not with +undrawn_target or +undrawn_others"
         self.mode, self.prob, self.split, self.undrawn = mode, prob, split, bool(undrawn)
+        self.hide = hide  # ties: the tie left out on the shoot meant ("target") or on the other shoots ("others")
         self.applied, self.variation = False, {}
 
     def spec(self):
@@ -116,6 +122,7 @@ class Scenario:
             + (f"/{self.split}" if self.split else "")
             + (f"@{self.prob:g}" if self.prob < 1 else "")
             + ("+undrawn" if self.undrawn else "")
+            + (f"+undrawn_{self.hide}" if self.hide else "")
         )
 
     # --------------------------------------------------------------------------------------------------- hooks
@@ -789,6 +796,7 @@ class Ties(ChooseShoots):
     modes = ("colour", "one")
     frames = TIE_FRAMES
     can_undraw = True
+    partial_undraw = True
 
     def build(self, spec):
         _add_mesh(spec, "sit_tie", TIE_SCALE)
@@ -818,7 +826,8 @@ class Ties(ChooseShoots):
         picked = [names[i] for i in rng.choice(len(names), size=len(tied), replace=False)]
         for n, c in zip(tied, picked, strict=True):
             env.model.geom_rgba[self.ties[n]] = colours[c]
-            _show(env.model, [self.ties[n]], not self.undrawn)
+            hidden = self.undrawn or (self.hide == "target" and n == target) or (self.hide == "others" and n != target)
+            _show(env.model, [self.ties[n]], not hidden)
         self.tied = dict(zip(tied, picked, strict=True))
         colour = picked[tied.index(target)]
         instruction = self._frame(rng, mode).format(c=colour)
@@ -1224,8 +1233,10 @@ def parse(spec) -> list[Scenario]:
         if not part:
             continue
         part, *options = part.split("+")
-        if set(options) - {"undrawn"}:
-            raise ValueError(f"unknown option in {part}+{'+'.join(options)}; the one option is +undrawn")
+        if set(options) - {"undrawn", "undrawn_target", "undrawn_others"} or len(options) > 1:
+            raise ValueError(
+                f"unknown option in {part}+{'+'.join(options)}: one of +undrawn, +undrawn_target, +undrawn_others"
+            )
         part, _, prob = part.partition("@")
         part, _, split = part.partition("/")
         name, _, mode = part.partition(":")
@@ -1234,7 +1245,11 @@ def parse(spec) -> list[Scenario]:
             raise ValueError(f"unknown scenario {name!r}; choose from {sorted(SCENARIOS)} (or {sorted(CATALOGUE)})")
         if options and not SCENARIOS[name].can_undraw:
             raise ValueError(f"{name} has no look to leave undrawn (+undrawn): only ties, sick and buds have")
-        out.append(SCENARIOS[name](mode or None, float(prob) if prob else 1.0, split or None, "undrawn" in options))
+        hide = options[0][len("undrawn_") :] if options and options[0] != "undrawn" else None
+        if hide and not SCENARIOS[name].partial_undraw:
+            raise ValueError(f"{name} has no look to leave undrawn on some shoots only: only ties has")
+        prob = float(prob) if prob else 1.0
+        out.append(SCENARIOS[name](mode or None, prob, split or None, "undrawn" in options, hide))
     names = [s.name for s in out]
     if len(set(names)) != len(names):
         raise ValueError(f"a scenario is given twice: {spec}")
