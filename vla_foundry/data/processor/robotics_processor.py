@@ -178,6 +178,10 @@ class RoboticsProcessor:
         notes_now = []
         # a training batch carries sample metadata; a served policy's does not (and is never paraphrased)
         training = "metadata" in batch and batch.get("notes") is None
+        suffix = getattr(self.data_params, "twin_suffix", "")
+        if training and suffix:  # the twin's images after the sample's own (model.twin_consistency_weight)
+            twins = [f"{c}{suffix}_t{i}" for i in self.data_params.image_indices for c in self.data_params.camera_names]
+            image_names = list(image_names) + twins
         for index, (sample_images, instruction) in enumerate(
             zip(batch["images"], batch["language_instruction"], strict=False)
         ):

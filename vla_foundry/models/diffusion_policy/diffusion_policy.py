@@ -9,6 +9,25 @@ from vla_foundry.models.vision_language_backbones import BaseBackboneWrapper
 from vla_foundry.params.model_params import DiffusionPolicyParams
 
 
+def twin_batch(input_ids, pixel_values, attention_mask, attention_mask_images):
+    """A training batch whose samples carry their twin's images after their own ([B, 2n] images, data.twin_suffix) ->
+    a batch of 2B samples with n images each: the B samples in their own look, then the same B in their twin's."""
+    b = input_ids.shape[0]
+    grouped = pixel_values.ndim == 5
+    images = pixel_values if grouped else pixel_values.unflatten(0, (b, pixel_values.shape[0] // b))
+    if images.shape[1] % 2:
+        raise ValueError(f"twins: {images.shape[1]} images per sample, not a sample's own images and its twin's")
+    n = images.shape[1] // 2
+    images = torch.cat([images[:, :n], images[:, n:]])
+    pixel_values = images if grouped else images.flatten(0, 1)
+    if attention_mask_images is not None:
+        attention_mask_images = torch.cat([attention_mask_images[:, :n], attention_mask_images[:, n:]])
+    input_ids = torch.cat([input_ids, input_ids])
+    if attention_mask is not None:
+        attention_mask = torch.cat([attention_mask, attention_mask])
+    return input_ids, pixel_values, attention_mask, attention_mask_images
+
+
 class DiffusionPolicy(BaseModel):
     def __init__(
         self,
@@ -36,6 +55,8 @@ class DiffusionPolicy(BaseModel):
         self.diffusion_step_conditioning = model_params.diffusion_step_conditioning
         self.input_noise_std = model_params.input_noise_std
         self.num_action_head_repeats = model_params.num_action_head_repeats
+        if model_params.twin_consistency_weight > 0 and (self.num_action_head_repeats or 1) > 1:
+            raise ValueError("twin_consistency_weight cannot be combined with num_action_head_repeats")
         # The action head reads the transformer's last hidden states and nothing else. Our own Transformer would
         # also project every token onto its vocabulary, logits that are thrown away (for a 256-wide, 6-layer head
         # with the default 50k vocabulary that projection is more arithmetic than the layers), so it is told not to.
@@ -100,6 +121,16 @@ class DiffusionPolicy(BaseModel):
     ):
         # Sample random timesteps
         timesteps = torch.randint(0, self.scheduler.num_timesteps, (actions.shape[0],)).to(actions.device)  # [bsz]
+        if self.training and self.model_params.twin_consistency_weight > 0:
+            # each sample and its twin (the same frame in another look), at the same flow time from the same noise
+            input_ids, pixel_values, attention_mask, attention_mask_images = twin_batch(
+                input_ids, pixel_values, attention_mask, attention_mask_images
+            )
+            actions, noise, past_mask, future_mask, timesteps = (
+                torch.cat([x, x]) for x in (actions, noise, past_mask, future_mask, timesteps)
+            )
+            if proprioception is not None:
+                proprioception = torch.cat([proprioception, proprioception])
 
         # Sample action to denoise
         noisy_action = self.scheduler.add_noise(actions, noise, timesteps, mask=future_mask)

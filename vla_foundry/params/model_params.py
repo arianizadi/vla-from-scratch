@@ -322,6 +322,10 @@ class DiffusionPolicyParams(ModelParams):
     input_noise_std: float = field(default=0.0)
     diffusion_step_conditioning: Literal["add", "concat"] = field(default="concat")
     num_action_head_repeats: int = field(default=None)
+    # Paired consistency (data.twin_suffix): in training each sample comes with its twin, the same frame drawn in
+    # another look; both are denoised from the same noise at the same flow time, each with the flow-matching loss
+    # (averaged), plus this weight times the mean squared difference of their predicted velocities. 0: off.
+    twin_consistency_weight: float = field(default=0.0)
 
     # Shared attributes. Overwritten in init_shared_attributes.
     action_dim: int = field(default=None)

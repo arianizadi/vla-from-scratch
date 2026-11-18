@@ -309,7 +309,37 @@ class DiffusionPolicyBatchHandler(BatchHandler):
             return sliced_inputs["noise"] - sliced_inputs["actions"]
         return targets[start_idx:end_idx]
 
+    TWIN_LOG_EVERY = 200
+
     def compute_loss(self, outputs, targets, loss_fn, cfg, mask=None):
+        if isinstance(outputs, torch.Tensor) and outputs.shape[0] == 2 * targets.shape[0]:
+            # a sample and its twin (model.twin_consistency_weight, the only way a batch comes back twice as long): the
+            # flow loss of each, averaged, and the squared difference of their predicted velocities (same noise, same
+            # flow time)
+            weight = cfg.model.twin_consistency_weight
+            own, twin = outputs.chunk(2)
+            flow = (self._flow_loss(own, targets, loss_fn, mask) + self._flow_loss(twin, targets, loss_fn, mask)) / 2
+            consistency = self._flow_loss(own, twin, loss_fn, mask)
+            self._log_twins(flow, consistency)
+            return flow + weight * consistency
+        return self._flow_loss(outputs, targets, loss_fn, mask)
+
+    def _log_twins(self, flow, consistency):
+        sums = getattr(self, "_twin_sums", None) or dict(n=0, flow=0.0, consistency=0.0)
+        sums["n"] += 1
+        sums["flow"] = sums["flow"] + flow.detach()
+        sums["consistency"] = sums["consistency"] + consistency.detach()
+        self._twin_sums = sums
+        if sums["n"] >= self.TWIN_LOG_EVERY:
+            n = sums["n"]
+            logging.info(
+                f"twins: flow loss {float(sums['flow']) / n:.4f}, consistency (mean squared difference of the twins' "
+                f"velocities) {float(sums['consistency']) / n:.4f} (mean of the last {n} batches)"
+            )
+            self._twin_sums = None
+
+    @staticmethod
+    def _flow_loss(outputs, targets, loss_fn, mask=None):
         # Reshape inputs and masks to match shapes
         predicted_direction = outputs
         target_direction = targets

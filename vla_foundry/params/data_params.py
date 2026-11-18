@@ -136,6 +136,10 @@ class RoboticsDataParams(DataParams):
     # Served policies always get the instruction as given.
     instruction_paraphrases: str | None = field(default=None)
     paraphrase_prob: float = field(default=0.0)
+    # Twins (model.twin_consistency_weight): in training each sample also carries the images of the same frame drawn in
+    # another look, the cameras <camera><twin_suffix> (e.g. front_twin), appended after the sample's own images in the
+    # same order. A served policy is given its own images only.
+    twin_suffix: str = field(default="")
 
     def __post_init__(self):
         try:

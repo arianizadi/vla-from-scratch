@@ -5,7 +5,8 @@
 # The config (sim/pickup/configs/<config>.yaml, default preprocess) sets the windows, among them which past frames
 # each sample carries: the same collection can be preprocessed again for a policy that looks further back
 # (preprocess_1s: the frame 1 s back instead of the previous one).
-# PICKUP_WORKERS sets the number of preprocessing CPUs (default 8). Environment: see _common.sh.
+# PICKUP_WORKERS sets the number of preprocessing CPUs (default 8); PICKUP_CAMERAS the cameras kept (default
+# "['front', 'wrist']"; a twins dataset adds front_twin and wrist_twin). Environment: see _common.sh.
 set -euo pipefail
 collection=${1:?collection}; name=${2:-$1}; config=${3:-preprocess}
 . "$(dirname "$0")/_common.sh"
@@ -16,7 +17,7 @@ rm -rf "data/preprocessed/$name"
   --type lerobot \
   --source_episodes "['$root/data/lerobot/$collection/']" \
   --output_dir "$root/data/preprocessed/$name/" \
-  --camera_names "['front', 'wrist']" \
+  --camera_names "${PICKUP_CAMERAS:-['front', 'wrist']}" \
   --observation_keys "['state']" \
   --action_keys "['action']" \
   --samples_per_shard 256 \
