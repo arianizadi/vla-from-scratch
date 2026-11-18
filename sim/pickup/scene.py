@@ -45,6 +45,12 @@ from . import reasoning
 # The card in the pot: none, one that does not show its face to the front camera, or the colour of its face
 LABELS = ("none", "unreadable", "white", "yellow", "cyan")
 NO_COLOUR = ("none", "unreadable")
+# Architecture v3: what a program can ask about a shoot (program.DOMAINS), each with a class of its own for "cannot be
+# read in this view", which is never a value of the shoot. The truth writes tie, sick and bud (tag belongs to rung 6,
+# whose situation is not built); a plant without a situation that draws one has no tie, no sick shoot and no bud.
+UNREADABLE = "unreadable"
+TRUTH_ATTRIBUTES = ("tie", "sick", "bud")
+NO_ATTRIBUTES = {"tie": "none", "sick": "no", "bud": "no"}
 # SceneMemory with `unseen`: a sighting founds a new part only at least this many `match` from every remembered
 # part. Shoots are at least 2 * match apart; the half between is left for the error of a height
 SEPARATE = 1.5
@@ -70,7 +76,10 @@ class Part:
     p_cut: float | None = None  # percepts: the probability that it is cut
     p_visible: float | None = None  # percepts: the probability that a camera shows it
     views: tuple[bool, ...] = ()  # truth: seen by (front, wrist); empty in percepts
-    attributes: dict[str, str] = field(default_factory=dict)  # e.g. {"tie": "red"}; no task here sets any yet
+    # e.g. {"tie": "red", "sick": "no", "bud": UNREADABLE}: a value of program.DOMAINS, or UNREADABLE where this view
+    # cannot show it (scene_truth with attributes)
+    attributes: dict[str, str] = field(default_factory=dict)
+    p_attributes: dict[str, float] = field(default_factory=dict)  # percepts: the probability of each class given
 
     def to_dict(self) -> dict:
         """The plain form: a truth part has "vis" [front, wrist]; a percept part has "vis" (one boolean) and "p",
@@ -87,6 +96,8 @@ class Part:
             out["p_vis"] = _r(self.p_visible)
         if self.attributes:
             out["attr"] = dict(self.attributes)
+        if self.p_attributes:
+            out["p_attr"] = {k: _r(v) for k, v in self.p_attributes.items()}
         return out
 
     @classmethod
@@ -103,6 +114,7 @@ class Part:
             p_visible=None if d.get("p_vis") is None else float(d["p_vis"]),
             views=views,
             attributes={str(k): str(v) for k, v in d.get("attr", d.get("attributes", {})).items()},
+            p_attributes={str(k): float(v) for k, v in d.get("p_attr", {}).items()},
         )
 
 
@@ -236,18 +248,107 @@ def _label(env, front: _Camera) -> str:
     return env.label_colour if shown else "unreadable"
 
 
-def scene_truth(env) -> Scene:
+# Where an attribute of an attached shoot is to be seen (architecture v3), by the same rays: a camera reads it when it
+# sees enough points of one of its places. Only what carries the attribute counts as the shoot's own there (a leaf in
+# front of the tip hides a bud as anything else would):
+#   tie   the tie's place on the shoot (scenarios.TIE_AT): TIE_POINTS along the axis around it, SEEN_POINTS of them;
+#         own: the shoot and the tie
+#   bud   the shoot's tip, where a bud would stand: BUD_POINTS out along the axis from it, SEEN_POINTS of them; own:
+#         the shoot and the bud
+#   sick  any leaf: the centre of a leaf as drawn; own: that leaf and what a scenario draws on it
+TIE_POINTS = (-0.008, 0.0, 0.008)  # metres along the shoot from TIE_AT (the tie is a band about 20 mm wide)
+BUD_POINTS = (0.010, 0.018, 0.026)  # metres out along the shoot from its tip (a bud reaches 29 mm beyond it)
+
+
+def _geom_ids(env, names) -> set[int]:
+    import mujoco
+
+    ids = (mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_GEOM, name) for name in names)
+    return {int(g) for g in ids if g >= 0}
+
+
+def _attribute_places(env, name: str) -> dict[str, list[tuple[np.ndarray, set[int], int]]]:
+    """For each attribute of attached shoot `name`, its places: (points, own geoms, points needed)."""
+    from .env import CUT_MID
+    from .scenarios import TIE_AT
+
+    shoot, body = env.shoots[name], env.obj_body[name]
+    origin, axis = env.data.xpos[body], env.data.xmat[body].reshape(3, 3)[:, 2]  # axis: along the shoot
+
+    def along(s):
+        return origin + (np.asarray(s) - CUT_MID)[:, None] * axis
+
+    stem = _geom_ids(env, [f"{name}_vis"])
+    tie = along(TIE_AT + np.array(TIE_POINTS)), stem | _geom_ids(env, [f"{name}_tie"]), SEEN_POINTS
+    bud = (
+        along(shoot["length"] + np.array(BUD_POINTS)),
+        stem | _geom_ids(env, [f"{name}_bud_body", f"{name}_bud_sepals"]),
+    )
+    leaves = []
+    for j, (vis, _) in enumerate(env.leaf_geoms[name]):
+        if env.model.geom_group[vis] == 2:  # in use
+            own = {int(vis)} | _geom_ids(env, [f"{name}_leaf{j}_spots", f"{name}_leaf{j}_edges"])
+            leaves.append((env.data.geom_xpos[vis][None, :].copy(), own, 1))
+    return {"tie": [tie], "bud": [(*bud, SEEN_POINTS)], "sick": leaves}
+
+
+def attribute_views(env, name: str, cameras=None) -> dict[str, tuple[bool, ...]]:
+    """Which cameras (default: front, wrist) can read each attribute of shoot `name` now (TRUTH_ATTRIBUTES). Nothing of
+    a cut shoot can be read: its tie, leaves and bud fell with it."""
+    cameras = cameras or (_Camera(env, "front"), _Camera(env, "wrist"))
+    if name in env.cut:
+        return {attr: tuple(False for _ in cameras) for attr in TRUTH_ATTRIBUTES}
+    places = _attribute_places(env, name)
+    return {
+        attr: tuple(
+            any(sum(camera.sees(p, own) for p in points) >= needed for points, own, needed in places[attr])
+            for camera in cameras
+        )
+        for attr in TRUTH_ATTRIBUTES
+    }
+
+
+def drawn_attributes(env) -> dict[str, dict[str, str]]:
+    """Every attribute of every shoot of the plant as the episode drew it (Scenario.attributes), seen or not: per shoot
+    NO_ATTRIBUTES with what the situations drew over it."""
+    out = {name: dict(NO_ATTRIBUTES) for name in env.active}
+    for scenario in env.scenarios:
+        if scenario.applied:
+            for name, values in scenario.attributes(env).items():
+                out[name].update(values)
+    return out
+
+
+def scene_truth(env, attributes: bool | None = None, full: bool = False) -> Scene:
     """The scene as the simulator knows it (env: a PickupEnv of a plant task, in the state the cameras show now): one
     Part per shoot of the plant, lowest first, cut or not, with which cameras show it (views: front, wrist), the
-    flower's colour and the card."""
+    flower's colour and the card.
+
+    `attributes` (architecture v3): each part's tie, sick and bud (drawn_attributes), UNREADABLE where no camera can
+    read it (attribute_views) and for every attribute of a cut part. None, the default: only where a situation that
+    draws attributes applies (ties, sick, buds), so that every other scene is what it was. `full`: the simulator's
+    whole state, hidden facts included (architecture v3's second oracle): every part is shown by both cameras, every
+    attribute is its value, cut or not, and the card's colour is given whichever way it faces."""
     from .env import REACH_AZIMUTH, STEM_BASE, _wrap_angle
 
     assert env.plant_task, f"{env.task} has no plant"
+    if attributes is None:
+        attributes = full or any(s.applied and s.attributes(env) for s in env.scenarios)
     front, wrist = _Camera(env, "front"), _Camera(env, "wrist")
+    drawn = drawn_attributes(env) if attributes else {}
     parts = []
     for name in env.active:  # from the lowest shoot up
-        points, own = _part_points(env, name), _own_geoms(env, name)
-        views = tuple(sum(camera.sees(p, own) for p in points) >= SEEN_POINTS for camera in (front, wrist))
+        if full:
+            views = (True, True)
+        else:
+            points, own = _part_points(env, name), _own_geoms(env, name)
+            views = tuple(sum(camera.sees(p, own) for p in points) >= SEEN_POINTS for camera in (front, wrist))
+        values = {}
+        if attributes and full:
+            values = dict(drawn[name])
+        elif attributes:
+            readable = attribute_views(env, name, (front, wrist))
+            values = {attr: drawn[name][attr] if any(readable[attr]) else UNREADABLE for attr in TRUTH_ATTRIBUTES}
         parts.append(
             Part(
                 height=float(env.shoots[name]["origin"][2] - STEM_BASE),
@@ -255,9 +356,11 @@ def scene_truth(env) -> Scene:
                 cut=name in env.cut,
                 visible=any(views),
                 views=views,
+                attributes=values,
             )
         )
-    return Scene(parts, env.flower_colour, _label(env, front))
+    label = (env.label_colour or "none") if full else _label(env, front)  # full: the card's colour, faced or not
+    return Scene(parts, env.flower_colour, label)
 
 
 class PlantCrop:

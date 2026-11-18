@@ -20,6 +20,7 @@ REPOSITORY = Path(__file__).resolve().parents[3]
 if str(REPOSITORY) not in sys.path:  # sim/ is not an installed package
     sys.path.insert(0, str(REPOSITORY))
 
+from sim.pickup import program as P  # noqa: E402
 from sim.pickup import reasoning as R  # noqa: E402
 from sim.pickup import scene as S  # noqa: E402
 
@@ -86,6 +87,22 @@ def test_truth_and_percept_records_round_trip_through_plain_dicts_and_json():
     assert S.Scene.from_json(odd.to_json()) == odd
     with pytest.raises(AssertionError):
         S.Scene([], "red", "green")
+
+
+def test_attributes_with_their_unreadable_class_and_probabilities_round_trip():
+    truth = S.Part(
+        0.1, 0.0, False, True, views=(True, False), attributes={"tie": "red", "sick": "no", "bud": "unreadable"}
+    )
+    assert (
+        truth.to_dict()["attr"] == {"tie": "red", "sick": "no", "bud": S.UNREADABLE} and "p_attr" not in truth.to_dict()
+    )
+    percept = S.Part(0.1, 0.0, False, True, p=0.9, attributes={"bud": "yes"}, p_attributes={"bud": 0.812345})
+    assert percept.to_dict()["p_attr"] == {"bud": 0.8123}
+    for part in (truth, S.Part.from_dict(percept.to_dict())):
+        assert S.Part.from_dict(part.to_dict()) == part
+    # the truth's values are the program's, and "unreadable" is none of them
+    for attr in S.TRUTH_ATTRIBUTES:
+        assert S.NO_ATTRIBUTES[attr] in P.DOMAINS[attr] and S.UNREADABLE not in P.DOMAINS[attr]
 
 
 def test_the_card_states_are_no_card_an_unreadable_one_and_the_colours_that_name_a_shoot():

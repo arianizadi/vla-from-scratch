@@ -638,3 +638,176 @@ def test_with_park_reset_an_episode_does_not_depend_on_the_ones_before(park_rese
     finally:
         used.close()
         fresh.close()
+
+
+# ================================================================================ architecture v3: attributes, census
+from sim.pickup import program as P  # noqa: E402
+from sim.pickup import scene as SC  # noqa: E402
+from sim.pickup.census import COUNTS, run_episode, tally  # noqa: E402
+
+ATTRIBUTE_SITUATIONS = {"ties": "tie", "sick": "sick", "buds": "bud"}
+
+
+def _quiet(env):
+    env.get_obs = lambda: {"state": env.state()}  # what these tests read needs no image
+    return env
+
+
+def _expected_attributes(env, situation):
+    """The draw as the scenario's own record says it, per shoot."""
+    v = env.scenario_info[situation]
+    if situation == "ties":
+        return {n: v["ties"].get(n, "none") for n in env.active}
+    if situation == "sick":
+        return {n: "yes" if n in v["looks"] else "no" for n in env.active}
+    return {n: "no" if n in env.targets else "yes" for n in env.active}  # buds: the targets are the shoots without
+
+
+@pytest.mark.parametrize("situation", sorted(ATTRIBUTE_SITUATIONS))
+def test_the_truth_s_attributes_are_the_scenario_s_draw_where_a_camera_can_read_them(situation):
+    attr = ATTRIBUTE_SITUATIONS[situation]
+    env = _quiet(_env("prune", situation))
+    readable = 0
+    try:
+        for seed in range(200):
+            env.reset(seed=seed)
+            expected = _expected_attributes(env, situation)
+            truth = SC.scene_truth(env)
+            full = SC.scene_truth(env, full=True)
+            for name, part, whole in zip(env.active, truth.parts, full.parts, strict=True):
+                assert set(part.attributes) == set(SC.TRUTH_ATTRIBUTES)
+                assert whole.attributes[attr] == expected[name] and whole.visible  # the whole state: every value
+                for other in set(SC.TRUTH_ATTRIBUTES) - {attr}:  # what this situation does not draw
+                    assert whole.attributes[other] == SC.NO_ATTRIBUTES[other]
+                value = part.attributes[attr]
+                assert value in (SC.UNREADABLE, expected[name])
+                readable += value != SC.UNREADABLE
+            json = truth.to_json()
+            assert SC.Scene.from_json(json).to_json() == json
+    finally:
+        env.close()
+    assert readable > 400  # most can be read at the start (the census counts how many; unreadable is tested below)
+
+
+def test_without_a_situation_that_draws_attributes_the_truth_is_what_it_was():
+    for task, scenario in (("prune", None), ("reason_mix", None), ("prune", "order")):
+        env = _quiet(_env(task, scenario))
+        try:
+            for seed in range(50):
+                env.reset(seed=seed)
+                truth = SC.scene_truth(env)
+                assert all(not part.attributes for part in truth.parts) and '"attr"' not in truth.to_json()
+                assert truth.to_json() == SC.scene_truth(env, attributes=False).to_json()
+                # asked for, every plant has them: no tie, no sick shoot and no bud is a label like any other
+                asked = SC.scene_truth(env, attributes=True)
+                for part in asked.parts:
+                    assert all(part.attributes[a] in (SC.UNREADABLE, SC.NO_ATTRIBUTES[a]) for a in SC.TRUTH_ATTRIBUTES)
+        finally:
+            env.close()
+
+
+def test_nothing_of_a_cut_shoot_can_be_read_and_a_hidden_place_cannot_either():
+    env = _quiet(_env("prune", "ties"))
+    try:
+        env.reset(seed=3)
+        name = env.active[0]
+        env._cut_shoot(name)
+        part = SC.scene_truth(env).parts[0]
+        assert part.cut and all(v == SC.UNREADABLE for v in part.attributes.values())
+        assert SC.scene_truth(env, full=True).parts[0].attributes["tie"] != SC.UNREADABLE
+        # turn the plate once round: at some angles the stem, the flower or a leaf hides a tie's place from the front
+        # camera, at some from both cameras, and at others it shows
+        env.reset(seed=3)
+        env._drive_turntable = lambda: env.data.ctrl.__setitem__(env.turntable, TURN_SPEED)
+        seen = {name: set() for name in env.active}
+        for k in range(200):  # 10 s at 0.7 rad/s: more than a full turn
+            env.step(env.last_action.copy())
+            if k % 4 == 0:
+                for name in env.active:
+                    seen[name].add(SC.attribute_views(env, name)["tie"])
+        assert all({True, False} == {front for front, _ in views} for views in seen.values())
+        assert any((False, False) in views for views in seen.values())
+    finally:
+        env.close()
+
+
+@pytest.mark.parametrize("situation", sorted(ATTRIBUTE_SITUATIONS))
+def test_undrawn_draws_the_same_episode_without_its_look(situation):
+    drawn, undrawn = _quiet(_env("prune", situation)), _quiet(_env("prune", f"{situation}+undrawn"))
+    try:
+        assert undrawn.scenarios[0].spec() == f"{situation}+undrawn" and undrawn.scenarios[0].undrawn
+        for seed in range(10):
+            drawn.reset(seed=seed)
+            undrawn.reset(seed=seed)
+            assert _layout(drawn) == _layout(undrawn)
+            assert drawn.scenario_info == undrawn.scenario_info and drawn.targets == undrawn.targets
+            assert drawn.instruction == undrawn.instruction
+            assert SC.drawn_attributes(drawn) == SC.drawn_attributes(undrawn)
+            m, n = drawn.model, undrawn.model
+            looks = [g for g in range(m.ngeom) if m.geom(g).name.endswith(("_tie", "_bud_body", "_spots", "_edges"))]
+            assert all(n.geom_group[n.geom(m.geom(g).name).id] == 3 for g in looks)
+            assert any(m.geom_group[g] == 2 for g in looks) or situation != "ties"
+            if situation == "sick":  # the leaves keep their green
+                for name in undrawn.active:
+                    vis = undrawn.leaf_geoms[name][0][0]
+                    assert np.allclose(n.geom_rgba[vis], undrawn.scenarios[0].leaf_rgba)
+    finally:
+        drawn.close()
+        undrawn.close()
+    with pytest.raises((ValueError, AssertionError)):
+        S.parse("wind+undrawn")
+    with pytest.raises(ValueError):
+        S.parse("ties+unseen")
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    (None, "nothing_to_do", "order", "order_heldout", "ties", "ties_heldout", "sick", "buds", "buds_heldout"),
+)
+def test_the_program_of_each_situation_selects_the_shoots_meant_in_their_order(scenario):
+    env = _quiet(_env("prune", scenario))
+    try:
+        for seed in range(300):
+            env.reset(seed=seed)
+            program = P.from_scenario(env)
+            drawn = SC.drawn_attributes(env)
+            attributes = [{a: v for a, v in drawn[n].items()} for n in env.active]
+            (stages,) = P.stages_on(program, len(env.active), env.flower_colour, None, attributes)
+            names = [[env.active[P.reasoning.position_index(p, len(env.active))] for p in stage] for stage in stages]
+            selected = [n for stage in names for n in stage]
+            if scenario is None:  # pruning: every shoot
+                assert sorted(selected) == sorted(env.active)
+            elif scenario == "nothing_to_do":  # every shoot, all of them cut already: nothing left to do
+                assert sorted(selected) == sorted(env.active) and set(env.cut) == set(env.active) and not env.targets
+            elif scenario.startswith("order"):  # one shoot a stage, in the order meant
+                assert all(len(stage) == 1 for stage in names) and selected == list(env.targets)
+            else:
+                assert len(names) <= 1 and sorted(selected) == sorted(env.targets)
+    finally:
+        env.close()
+
+
+def test_the_census_counts_each_shoot_once_per_attribute_and_view():
+    env = _quiet(_env("prune", "buds"))
+    expert = ScriptedExpert(env, seed=0)
+    try:
+        episodes = [run_episode(env, expert, seed) for seed in (900_000, 900_001)]
+    finally:
+        env.close()
+    for episode in episodes:
+        assert episode["looks"][0] == 0 and all(
+            b - a == 8 for a, b in zip(episode["looks"], episode["looks"][1:], strict=False)
+        )
+        for shoot in episode["shoots"]:
+            for views in shoot["readable"].values():
+                assert set(views["front"]) <= set(views["any"])
+                assert shoot["cut"] is None or all(step < shoot["cut"] for step in views["any"])  # never once cut
+    counted = tally(episodes)
+    shoots = sum(len(e["shoots"]) for e in episodes)
+    for views in counted.values():
+        for c in views.values():
+            assert c["shoots"] == shoots and c["before_own_cut"] + c["never"] == shoots
+            assert c["first_look"] <= c["before_first_cut"] <= c["before_own_cut"]
+            assert sum(v["shoots"] for v in c["by_value"].values()) == shoots
+            assert all(key in c for key in COUNTS)
+    assert set(counted["bud"]["any"]["by_value"]) <= {"yes", "no"}

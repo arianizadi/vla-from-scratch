@@ -11,11 +11,17 @@ draws its own variation for every episode from a stream of its own, seeded by th
 What was drawn is in `env.scenario_info` after every reset ({name: variation}); eval.py and collect.py record it per
 episode. Without a scenario the environment is exactly what it was before scenarios existed.
 
-The spec of one scenario is `name[:mode][/split][@p]`: `mode` pins one of its variations (`lighting:dusk`), `split`
-draws from the part kept for training (`train`) or the part held out for testing (`test`; lighting, camera, bench and
-distractors have one), `p` applies it to that share of the episodes only (`nothing_to_do@0.2`, for training data that
-mixes it in). The catalogue numbers
-(B1, A5, ...) are accepted as names. See tutorial/test-situations.md for the catalogue.
+The spec of one scenario is `name[:mode][/split][@p][+undrawn]`: `mode` pins one of its variations (`lighting:dusk`),
+`split` draws from the part kept for training (`train`) or the part held out for testing (`test`; lighting, camera,
+bench and distractors have one), `p` applies it to that share of the episodes only (`nothing_to_do@0.2`, for training
+data that mixes it in), and `+undrawn` (ties, sick, buds) draws the episode as always, targets and instruction
+included, but leaves the look undrawn: no tie, no yellow leaf, no bud (architecture v3's paired control of what a look
+costs the fast level). The catalogue numbers (B1, A5, ...) are accepted as names. See tutorial/test-situations.md for
+the catalogue.
+
+A situation that draws something about each shoot that a program can ask for (a tie, sick leaves, a bud) says what it
+drew with `attributes(env)`, {shoot: {"tie": "red"}}; scene.scene_truth writes it per part, with "unreadable" where no
+camera shows where it is to be seen.
 
 Robustness situations (the task is unchanged; held out by default):
 
@@ -85,8 +91,9 @@ class Scenario:
     # Held-out split: {"train": modes, "test": modes} (or other ranges, see the subclass) for training on part of a
     # situation and testing on the rest. Empty: the scenario has no split.
     splits: dict = {}
+    can_undraw = False  # it has a look that `undrawn` can leave out (ties, sick, buds)
 
-    def __init__(self, mode=None, prob=1.0, split=None):
+    def __init__(self, mode=None, prob=1.0, split=None, undrawn=False):
         # several modes joined by "|" (lighting:dusk|noon): the draw is among those
         self.choices = tuple(mode.split("|")) if mode and "|" in mode else None
         if self.choices:
@@ -97,7 +104,8 @@ class Scenario:
         assert 0.0 < prob <= 1.0, f"{self.name}: probability {prob} not in (0, 1]"
         assert split is None or split in self.splits, f"{self.name}: no split {split!r}; it has {sorted(self.splits)}"
         assert mode is None or split is None or mode in self.splits[split], f"{self.name}: {mode} is not in {split}"
-        self.mode, self.prob, self.split = mode, prob, split
+        assert not undrawn or self.can_undraw, f"{self.name} has no look to leave undrawn"
+        self.mode, self.prob, self.split, self.undrawn = mode, prob, split, bool(undrawn)
         self.applied, self.variation = False, {}
 
     def spec(self):
@@ -107,6 +115,7 @@ class Scenario:
             + (f":{'|'.join(self.choices)}" if self.choices else "")
             + (f"/{self.split}" if self.split else "")
             + (f"@{self.prob:g}" if self.prob < 1 else "")
+            + ("+undrawn" if self.undrawn else "")
         )
 
     # --------------------------------------------------------------------------------------------------- hooks
@@ -143,6 +152,11 @@ class Scenario:
     def result(self, env, done, info):
         """Change the outcome of a step (tasks whose success rule the scenario changes). Returns (done, info)."""
         return done, info
+
+    def attributes(self, env) -> dict[str, dict[str, str]]:
+        """What this episode drew about each shoot that a program can ask for, {shoot: {attribute: value}} (values of
+        program.DOMAINS), whether drawn or not (`undrawn`); {} for a scenario that draws none."""
+        return {}
 
     # ---------------------------------------------------------------------------------------------- per episode
     def reset(self, env, seed):
@@ -774,6 +788,7 @@ class Ties(ChooseShoots):
     name, catalogue = "ties", "A1"
     modes = ("colour", "one")
     frames = TIE_FRAMES
+    can_undraw = True
 
     def build(self, spec):
         _add_mesh(spec, "sit_tie", TIE_SCALE)
@@ -792,6 +807,7 @@ class Ties(ChooseShoots):
     def restore(self, env):
         super().restore(env)
         _show(env.model, self.ties.values(), False)
+        self.tied = {}
 
     def choose(self, env, rng, mode):
         colours = manifest()["assets"]["tie"]["colours"]
@@ -802,10 +818,14 @@ class Ties(ChooseShoots):
         picked = [names[i] for i in rng.choice(len(names), size=len(tied), replace=False)]
         for n, c in zip(tied, picked, strict=True):
             env.model.geom_rgba[self.ties[n]] = colours[c]
-            _show(env.model, [self.ties[n]], True)
+            _show(env.model, [self.ties[n]], not self.undrawn)
+        self.tied = dict(zip(tied, picked, strict=True))
         colour = picked[tied.index(target)]
         instruction = self._frame(rng, mode).format(c=colour)
-        return [target], instruction, dict(colour=colour, ties={n: c for n, c in zip(tied, picked, strict=True)})
+        return [target], instruction, dict(colour=colour, ties=dict(self.tied))
+
+    def attributes(self, env):
+        return {n: {"tie": self.tied.get(n, "none")} for n in env.active}
 
 
 class TiesHeldout(Ties):
@@ -827,6 +847,7 @@ class Sick(ChooseShoots):
     modes = ("sick",)
     frames = {"sick": SICK_FRAMES}
     looks = ("spots", "edges", "wilted")
+    can_undraw = True
 
     def build(self, spec):
         for mesh in ("sit_leaf_spots", "sit_leaf_edges", "sit_leaf_wilted"):
@@ -858,6 +879,7 @@ class Sick(ChooseShoots):
         for n in env.shoot_names:
             for vis, _ in env.leaf_geoms[n]:
                 m.geom_dataid[vis], m.geom_rgba[vis] = self.leaf_mesh, self.leaf_rgba
+        self.sick = set()
 
     def make_sick(self, env, name, look):
         m = env.model
@@ -882,8 +904,13 @@ class Sick(ChooseShoots):
         looks = {}
         for n in sick:
             looks[n] = self.looks[int(rng.integers(len(self.looks)))]
-            self.make_sick(env, n, looks[n])
+            if not self.undrawn:
+                self.make_sick(env, n, looks[n])
+        self.sick = set(sick)
         return sick, self._frame(rng, "sick"), dict(sick=count, looks=looks)
+
+    def attributes(self, env):
+        return {n: {"sick": "yes" if n in self.sick else "no"} for n in env.active}
 
 
 class SickHeldout(Sick):
@@ -908,6 +935,7 @@ class Buds(ChooseShoots):
     name, catalogue = "buds", "A4"
     modes = ("buds",)
     frames = {"buds": BUD_FRAMES}
+    can_undraw = True
 
     def build(self, spec):
         a = manifest()
@@ -932,6 +960,7 @@ class Buds(ChooseShoots):
         for vis_body, vis_sepals, col in self.buds.values():
             _show(m, [vis_body, vis_sepals], False)
             m.geom_contype[col] = m.geom_conaffinity[col] = 0
+        self.budding = set()
 
     def choose(self, env, rng, mode):
         m = env.model
@@ -944,13 +973,18 @@ class Buds(ChooseShoots):
             vis_body, vis_sepals, col = self.buds[n]
             for g in (vis_body, vis_sepals):
                 _obj_pose(m, g, tip, np.eye(3))
-            _show(m, [vis_body, vis_sepals], True)
             m.geom_pos[col] = tip + shape["pos"]
-            m.geom_contype[col], m.geom_conaffinity[col] = 2, 1
+            if not self.undrawn:  # undrawn: neither seen nor touched; the two leaves are posed as with a bud
+                _show(m, [vis_body, vis_sepals], True)
+                m.geom_contype[col], m.geom_conaffinity[col] = 2, 1
             for j, side in enumerate((-1, 1)):  # two leaves, turned away from the bud
                 _leaf_pose(env, n, j, side * rng.uniform(0.5, 0.85), rng.uniform(0.25, 0.5), rng.uniform(-0.25, 0.25))
+        self.budding = set(budding)
         targets = [n for n in shoots if n not in budding]
         return targets, self._frame(rng, "buds"), dict(buds=count)
+
+    def attributes(self, env):
+        return {n: {"bud": "yes" if n in self.budding else "no"} for n in env.active}
 
 
 class BudsHeldout(Buds):
@@ -1189,13 +1223,18 @@ def parse(spec) -> list[Scenario]:
     for part in (p.strip() for p in parts):
         if not part:
             continue
+        part, *options = part.split("+")
+        if set(options) - {"undrawn"}:
+            raise ValueError(f"unknown option in {part}+{'+'.join(options)}; the one option is +undrawn")
         part, _, prob = part.partition("@")
         part, _, split = part.partition("/")
         name, _, mode = part.partition(":")
         name = CATALOGUE.get(name.upper(), name)
         if name not in SCENARIOS:
             raise ValueError(f"unknown scenario {name!r}; choose from {sorted(SCENARIOS)} (or {sorted(CATALOGUE)})")
-        out.append(SCENARIOS[name](mode or None, float(prob) if prob else 1.0, split or None))
+        if options and not SCENARIOS[name].can_undraw:
+            raise ValueError(f"{name} has no look to leave undrawn (+undrawn): only ties, sick and buds have")
+        out.append(SCENARIOS[name](mode or None, float(prob) if prob else 1.0, split or None, "undrawn" in options))
     names = [s.name for s in out]
     if len(set(names)) != len(names):
         raise ValueError(f"a scenario is given twice: {spec}")
