@@ -93,7 +93,9 @@ class ViTBackboneWrapper(BaseBackboneWrapper):
         if self.training and self.model_params.augment:
             if pixel_values.ndim != 5:
                 raise ValueError("augment: the images must come grouped by sample, [B, N, C, H, W]")
-            pixel_values = augment_images(pixel_values)
+            pixel_values = augment_images(
+                pixel_values, self.model_params.augment_strength, self.model_params.augment_overlay
+            )
         if isinstance(self._model, FrozenTower) and pixel_values.ndim == 5:
             embeddings = self._model(pixel_values.flatten(0, 1)).unflatten(0, pixel_values.shape[:2])
         else:

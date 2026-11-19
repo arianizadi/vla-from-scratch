@@ -49,3 +49,12 @@ def test_backbone_augments_only_while_training():
     backbone.train()
     b = backbone.get_action_conditioning(ids, pixels).embeddings
     assert not torch.allclose(a, b)
+
+
+def test_half_strength_without_overlay_keeps_to_its_ranges():
+    """strength 0.5, no overlay: a flat grey image stays within brightness x 0.9-1.1 and white balance x 0.95-1.05."""
+    torch.manual_seed(3)
+    x = torch.zeros(64, 1, 3, 32, 32)  # 0.5 in 0..1
+    y = augment_images(x, strength=0.5, overlay=False) * 0.5 + 0.5
+    assert y.min() >= 0.5 * 0.9 * 0.95 - 1e-6 and y.max() <= 0.5 * 1.1 * 1.05 + 1e-6
+    assert torch.allclose(y, y[..., :1, :1].expand_as(y))  # flat stays flat: no overlay field

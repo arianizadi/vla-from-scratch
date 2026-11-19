@@ -10,6 +10,10 @@ camera differ only as the scene did and the change looks like one change of the 
     uniformly, interpolated to the image) blended over the whole image with alpha U(0, 0.25).
 Nothing is erased or cut out: small parts (buds, ties, the label) stay visible. The images are in the simple_vlm
 processor's range ((x - 0.5) / 0.5 for x in 0..1) on the way in and out.
+
+strength scales the shift and each photometric range about 1 (0.5: up to 4 pixels, brightness and contrast x 0.9-1.1,
+white balance x 0.95-1.05); overlay False leaves the colour field out (ViTBackboneParams.augment_strength,
+augment_overlay).
 """
 
 import torch
@@ -24,17 +28,17 @@ OVERLAY_ALPHA = 0.25
 OVERLAY_GRID = (2, 8)
 
 
-def _uniform(shape, bounds, like):
-    low, high = bounds
+def _uniform(shape, bounds, like, strength=1.0):
+    low, high = (1 + (bound - 1) * strength for bound in bounds)
     return torch.empty(shape, device=like.device, dtype=torch.float32).uniform_(low, high)
 
 
-def augment_images(pixel_values: torch.Tensor) -> torch.Tensor:
+def augment_images(pixel_values: torch.Tensor, strength: float = 1.0, overlay: bool = True) -> torch.Tensor:
     """pixel_values [B, N, 3, H, W] (processor range) -> the same shape, augmented per sample."""
     b, n, c, h, w = pixel_values.shape
     x = pixel_values.float() * 0.5 + 0.5
     # shift: one offset per sample for all of its images
-    pad = SHIFT * h // 224
+    pad = round(SHIFT * strength * h / 224)
     if pad > 0:
         padded = F.pad(x.flatten(0, 1), (pad, pad, pad, pad), mode="replicate").unflatten(0, (b, n))
         dx = torch.randint(0, 2 * pad + 1, (b,), device=x.device)
@@ -46,10 +50,12 @@ def augment_images(pixel_values: torch.Tensor) -> torch.Tensor:
         cols = (dx[:, None] + torch.arange(w, device=x.device)[None]).view(b, 1, 1, 1, w).expand(b, n, c, h, w)
         x = x.gather(4, cols)
     # photometric: brightness, contrast, white balance
-    x = x * _uniform((b, 1, 1, 1, 1), BRIGHTNESS, x)
+    x = x * _uniform((b, 1, 1, 1, 1), BRIGHTNESS, x, strength)
     mean = x.mean(dim=(2, 3, 4), keepdim=True)
-    x = (x - mean) * _uniform((b, 1, 1, 1, 1), CONTRAST, x) + mean
-    x = x * _uniform((b, 1, c, 1, 1), WHITE_BALANCE, x)
+    x = (x - mean) * _uniform((b, 1, 1, 1, 1), CONTRAST, x, strength) + mean
+    x = x * _uniform((b, 1, c, 1, 1), WHITE_BALANCE, x, strength)
+    if not overlay:
+        return ((x.clamp(0, 1) - 0.5) / 0.5).to(pixel_values.dtype)
     # overlay: a smooth random colour field, the same for all images of a sample
     cells = int(torch.randint(OVERLAY_GRID[0], OVERLAY_GRID[1] + 1, ()).item())
     field = F.interpolate(

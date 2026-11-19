@@ -284,6 +284,8 @@ class ViTBackboneParams(BackboneParams, ViTParams):
     # Vary the images while training (augment.py: shift, brightness, contrast, white balance, a random colour overlay;
     # the same for all images of a sample). Off when the policy runs.
     augment: bool = field(default=False)
+    augment_strength: float = field(default=1.0)  # scales the shift and the photometric ranges (augment.py)
+    augment_overlay: bool = field(default=True)  # the random colour overlay
 
 
 @register_model_params("stable_diffusion")
