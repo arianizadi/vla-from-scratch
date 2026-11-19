@@ -175,7 +175,7 @@ TWO_WAYS = "the instruction is read two ways"  # v3, asked twice: the two progra
 def _means(written: str, gold) -> bool:
     """Whether the text of a v3 program means what `gold` does (False where it does not parse)."""
     try:
-        return equivalent(parse(written, "v3"), gold)
+        return equivalent(parse(written, "v3"), gold, "v3")
     except ProgramError:
         return False
 
@@ -899,7 +899,12 @@ class SlowLevel:
         if self.two_ways:
             self.supervisor.no_program = TWO_WAYS
         plan = self.supervisor.plan
-        self.meaning = None if self.gold is None else plan is not None and equivalent(plan.program, self.gold)
+        # v3: compared in v3 (attribute values count there; v2's comparison takes Filters that differ only in the value
+        # kept for the same, as no v2 plant has attributes)
+        language = "v3" if self.v3 else None
+        self.meaning = (
+            None if self.gold is None else plan is not None and equivalent(plan.program, self.gold, language)
+        )
         if self.two_ways and self.gold is not None:  # what the first program would have meant, for the record
             self.meaning = _means(self.written, self.gold)
         self._looked = 0

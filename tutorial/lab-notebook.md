@@ -1846,6 +1846,197 @@ ties, the 4 wide sets of the small-object test in 18 minutes), 17 eyes runs (9 o
 closed-loop runs and 5,400 episodes in `results/pickup/e16/`. Two L40S GPUs for 4.9 hours of wall time each (9.8
 GPU-hours held), shared by the eyes' training, the collections' rendering and up to 9 evaluations at once.
 
+### Step 5: the program writer for v3's language (E15)
+
+Design: architecture-v3.md, "The program language" and "Step 5, as built". The frozen Qwen3-VL-2B of v2's writer
+(not fine-tuned) writes v3 programs (`CutFrom`, `Then`, `Take`, `Count`, `Nothing`, `tie,any`, `sick,no`) under v3's
+grammar constraint, greedily, with a description of the language construct by construct and sixteen worked examples
+in pairs (`program_writer_v3.py`); v2's writer, its prompt and its numbers are unchanged. It is scored alone, without
+images, on 100 tasks per situation and split drawn as the situations draw them (two or three shoots, the ties, sick
+shoots and buds): `prune` and `nothing_to_do` (one instruction, the task's own), `order`, `ties`, `sick`, `buds` in
+their training and held-out sentence frames, and the compositions of rung 5: a first set of 12 (24 instructions) that
+supplies the examples' constructs, and a held-out set of 8 new combinations in frames of their own (16 instructions).
+The task's own program is the one the closed loop runs (`program.from_scenario`'s). Flags as v2's: format (it parses),
+exact (its text is the task's), meaning (equivalent in v3: the same sequences of cuts on every plant), resolved (the
+same sequences of cuts on the plant drawn). Each distinct instruction is written once (the output depends on nothing
+else).
+
+**Two prompts.** The first (16 examples, set A) was run, its errors on training instructions read, and the description
+and examples revised once (the second): "the middle one" had been written `Rank(2,top)`, "the highest first, then the
+next one down" as two cuts, and sick and bud with the wrong value. Nothing was changed on the held-out errors. Meaning
+of 100 (resolved in brackets where it differs):
+
+| Writer | training frames (of 700) | held-out frames (of 400) | held-out compositions | prune, nothing_to_do | order train / held out | ties | sick | buds | compositions, first set |
+|---|---|---|---|---|---|---|---|---|---|
+| first prompt, A, 16, constrained | 560 (585) | 205 (209) | 67 (86) | 100, 100 | 56 (76) / 78 (79) | 100 / 78 (81) | 63 / 0 | 67 / 49 | 74 (79) |
+| **second prompt, A, 16, constrained** | **580 (610)** | **215** | **56 (77)** | 100, 100 | 68 (88) / 88 | 100 / 78 | 66 / 0 | 67 / 49 | 79 (89) |
+| second, A, 16, free | 580 (597) | 215 | 56 (77) | 100, 100 | 68 (75) / 88 | 100 / 78 | 66 / 0 | 67 / 49 | 79 (89) |
+| second, A, 8 (first of each pair), constrained | 391 (441) | 201 (216) | 47 (68) | 0, 0 | 52 (73) / 74 (89) | 100 / 78 | 100 / 0 | 100 / 49 | 39 (68) |
+| second, B, 16, constrained | 407 (436) | 234 (250) | 65 (79) | 0, 0 | 74 (81) / 83 | 100 / 49 (65) | 100 / 53 | 67 / 49 | 66 (88) |
+
+Free writing parses in 1180 of 1200 (20 `order` tasks: a `Then` of three statements written flat, `Then(a,b,c)`, and
+programs run together); constrained always. Asked twice (second prompt, A and B, the slow level acting only when the two
+programs are equivalent), of 1200 tasks: the two agree on 721, of which 151 are both wrong; of the 479 where they
+disagree, 281 had a right first program (blocked) and 198 a wrong one (stopped); the first writer alone runs 349 wrong
+programs. Set B cannot hold the prune instruction (the sets are disjoint and it has one wording), and the writer then
+writes `Cut(Filter(tie,any,All()))` for it, so asking twice blocks every `prune` and `nothing_to_do` episode. It is not
+used. A probe that let the model think first (up to 512 tokens, then the program under the constraint) wrote 3 of the
+first 9 distinct training instructions wrong, as without it, at one to two minutes per instruction on the shared GPU,
+and was stopped.
+
+- **P4 is refuted.** Meaning on 83% of training frames (95% asked), 54% of held-out frames (85% asked) and 56% of
+  held-out compositions (75% asked); P4's refutation (under 70 held out in new frames) says the examples come first,
+  and one revision raised the training frames by 20 and the held-out frames by 10.
+- **What it gets wrong is polarity and order, not form.** "cut the sick shoots, keep the healthy ones" is written
+  `sick,no` (34 of 100 `sick` training tasks), "keep the buds, cut the other shoots" `bud,yes` (33 of 100), though that
+  sentence is one of the sixteen examples with its program; every held-out `sick` frame ("the unhealthy shoots have to
+  go", "snip off the ailing branches and spare the healthy ones") is written `sick,no`; "the highest first, then the
+  next one down" is two cuts. The 2B model copies the program of the example whose words are nearest, and the pairs,
+  meant to teach the difference, put a near sentence with the other program beside each one.
+- **The constraint changes almost nothing** (as in v2): the free writer writes the same programs where both parse.
+  Sixteen examples beat eight by 189 training tasks, most of it the prune instruction, which is the sixteenth example.
+
+**All of v3 with the written program** (the eyes `eyes_v3_fwp_3m`, the fast level fine-tuned on ties, the second
+prompt, set A, 16 examples, constrained, once; evaluation layouts, 200 per cell, `order` 100 per mode; the same setting
+as step 6's "v3 on the eyes", whose task-program column is copied here). Written: episodes whose program means the
+task's (v3 equivalence, computed from the records):
+
+| Situation | the task's program (step 6) | **the written program** | written right | solved with a wrong program |
+|---|---|---|---|---|
+| `prune` | 154 | **160** | 200 | 0 |
+| `order`, of 300 | 239 | **215** | 226 | 33 |
+| `order`: from the top down | 78 | 57 | 43 | 24 |
+| `order`: from the bottom up | 77 | 78 | 100 | 0 |
+| `order`: a pair | 84 | 80 | 83 | 9 |
+| `nothing_to_do` | 199 | **199** | 200 | 0 |
+| `ties` | 170 | **168** | 200 | 0 |
+| `sick` | 162 | **125** | 149 | 1 |
+| `buds` | 166 | **121** | 136 | 5 |
+| held-out frames: `order`, of 300 | (239) | **220** | 283 | 0 |
+| held-out frames: `ties` | (170) | **147** | 146 | 19 |
+| held-out frames: `sick` | (162) | **2** | 0 | 2 |
+| held-out frames: `buds` | (166) | **94** | 98 | 10 |
+
+The task's program does not read the words, so its held-out-frame cells are its training-frame ones (in brackets).
+
+- **P5 holds where the writer is right and fails where it is not.** `prune`, `nothing_to_do` and `ties` are within 6
+  of the task's program (the writer is right on all of them); `order` loses 24 (one sentence frame of "from the top
+  down" in three is written as two cuts; on a two-shoot plant that is the same and 24 of them are solved anyway),
+  `sick` 37 and `buds` 45: the third of their training frames written with the wrong value cuts the healthy shoots or
+  the buds (29 and 35 wrong cuts against 0 and 9). In held-out frames `sick` is lost whole (every program `sick,no`).
+- **Where the program is right, the closed loop is the task program's**: among the episodes with a right program the
+  share solved matches step 6's (`sick` 124 of 149, `buds` 116 of 136). What the writer costs is its own meaning
+  errors, one sentence frame at a time, since an instruction is written the same way in every episode.
+
+### Step 7: retraining on the fast level's own rollouts (the fast level and the eyes), and calibration
+
+Design: architecture-v3.md, "Step 7, as built". Two retrainings from the fast level's own rollouts under v3, one for
+each part whose errors E13b and step 6 measured, each tried on validation layouts first, then the E13 grid on
+evaluation layouts. Every run below: the task's program, starts clear of the plant, up to two resets, `--inspect
+turn`, the gate off.
+
+**The fast level, on takeover demonstrations from its own rollouts.** The fast level fine-tuned on ties (seed 43)
+drives under its sub-goals (the column the situations' demonstrations carry, `notes.SubgoalWriter`), from starts clear
+of the plant, and the scripted expert takes over where it drifts (`collect.py --takeover_subgoals`): when its open jaws
+come within 3.5 cm of the middle of the named shoot's cut zone (with probability 0.5 per shoot; the expert then
+finishes that cut from where the hand is, without backing out, `ScriptedExpert.finish_cut`), when the plate has
+carried the named shoot within 10 degrees of its reach and on past it by 25 degrees while still turning away (the
+expert turns it back), or at a step drawn from 0 to 700, whichever comes first. Only the expert's part is recorded
+(not its back-out), with a tail of 10, only when it succeeds; layouts from seeds 610,000 to 650,000:
+
+| Situation | kept of attempts | frames | handed over at a cut | at an over-turn | at the drawn step | the expert failed after the handover |
+|---|---|---|---|---|---|---|
+| `prune` | 400 of 456 | 155,492 | 155 | 37 | 208 | 27 (16 flower) |
+| `order` | 400 of 447 | 156,944 | 166 | 24 | 210 | 13 |
+| `ties` | 400 of 561 | 48,607 | 138 | 40 | 222 | 15 (115 solved before any handover) |
+| `sick` | 400 of 642 | 108,111 | 126 | 38 | 236 | 170 (165 flower: its way home from a takeover pose) |
+| `buds` | 400 of 655 | 95,611 | 136 | 27 | 237 | 174 (164 flower) |
+| all (`takeover_tend_2k`) | 2000 of 2761 | 564,765 | 721 | 166 | 1113 | |
+
+The fast level was fine-tuned from the ties fine-tune's averaged weights on `reason_mix_8k_rs_tail10`,
+`ties_1500_rs_tail10` and `takeover_tend_2k` (0.6, 0.15, 0.25 of each batch, the old normalisation), 3M samples at a
+peak learning rate of 2e-4, as the ties fine-tune (`dp_vit_lang_reactive_subgoal_reason8k_ties_tk_ft3m_seed43`, final
+averaged weights; one hour). The simulator's scene, the task's program:
+
+| Situation | validation: ties fine-tune | validation: **takeover fine-tune** | evaluation: ties fine-tune (E13b) | evaluation: **takeover fine-tune** |
+|---|---|---|---|---|
+| `prune` | 79 | 85 | 161 | 163 |
+| `order`, of 150 / of 300 | 118 | 124 | 241 | 244 |
+| `nothing_to_do` | 100 | 100 | 200 | 200 |
+| `ties` | 94 | 88 | 177 | 171 |
+| `sick` | 87 | 90 | 176 | 178 |
+| `buds` | 94 | 90 | 182 | 182 |
+| `reason_mix`, v2's slow level | | | 182 | 175 |
+| all situations (validation, of 650) | 572 | 577 | | |
+| cut precision, across the shoot: median (validation) | 8.3 mm | **9.0 mm** | 8.2 mm (`prune`, step 6) | 8.7 mm (`prune`) |
+| wrong shoots cut (validation; evaluation, all situations) | 4 | 3 | 6 | 6 |
+| episodes lost with more than a full turn (validation) | 26 of 78 | 30 of 73 | | |
+
+- **No gain, and the cut is no closer.** On validation layouts the takeover fine-tune solves 577 of 650 against 572,
+  within noise, and on evaluation layouts every cell is within 7 of E13b's (`reason_mix` 175 against 182). The jaws
+  close further from the shoot's axis, not nearer (median 9.0 mm against 8.3 on the same validation episodes; the
+  expert's 5.9), and over-turning is as before (30 lost episodes with more than a full turn against 26). The fast
+  level as it was stays. No control fine-tune on the old data alone was run, so whether the takeover data or a second
+  fine-tune moved the cut out is not separated.
+- **Where the handovers came.** Drift was found in 755 of 2761 attempts at a cut and 167 at an over-turn: an over-turn
+  past 25 degrees happens in about one rollout in sixteen; the cuts handed over show the expert's last 25 to 40
+  frames from the fast level's own approach, a small part of a batch (0.25 of it is takeover data, of which those
+  frames are a fraction).
+
+**The eyes, on the fast level's own rollouts** (the design's step 7). The fast level fine-tuned on ties ran under v3
+on the eyes (`eyes_v3_fwp_3m`, the task's program) on `ties`, `sick` and `buds` from seeds 700,000 to 722,000 (layouts
+used nowhere else) with `eval.py --record_scene`: 1998 episodes (702, 651, 651; 1670 solved), 190,756 frames, every
+fourth control step with the plant crop and the simulator's truth. The eyes were trained again from scratch on every
+frame of step 6 and these (1.38M frames; front, wrist and the plant crop, 3M samples, seed 42, as `eyes_v3_fwp_3m`:
+`eyes_v3_fwp_roll_3m`). On the expert's validation frames they read as before (tie 95.1%, sick 98.5%, bud 97.8% on
+their own situations, against 95.4%, 99.0%, 98.2%; the three-shoot count 99.7%, cut 99.99%, the card 98.8% on
+`scene_val_tend_reason`); in closed loop they misread far less.
+
+**Calibration.** One temperature per attribute, fitted on the validation frames (`eyes_calibrate.py`: least NLL,
+"cannot be read" a class like the others): 1.23 (tie), 1.24 (sick), 1.19 (bud) for `eyes_v3_fwp_3m`, 1.25, 1.22, 1.22
+for the new eyes. It lowers the expected calibration error over all parts (tie 0.009 to 0.003) and the readings the
+memory counts that are wrong only from 0.30% to 0.24% (tie): over all frames the eyes were not far from calibrated,
+and a misreading that lasts is said with confidence.
+
+On validation layouts (the fast level fine-tuned on ties; 100 episodes a cell; "misread": episodes in which the memory
+held a wrong attribute at some look):
+
+| Eyes | `ties` | `sick` | `buds` | of 300 | wrong shoots cut | `Complete` said wrongly | misread |
+|---|---|---|---|---|---|---|---|
+| `eyes_v3_fwp_3m` (step 6) | 85 | 86 | 89 | 260 | 6 | 13 | 26 |
+| the same, with its temperatures | 88 | 87 | 82 | 257 | 8 | 8 | 32 |
+| **`eyes_v3_fwp_roll_3m`** | **92** | **92** | **91** | **275** | **0** | **3** | **10** |
+| the same, with its temperatures | 92 | 85 | 88 | 265 | 1 | 4 | 11 |
+
+The temperatures do not help in closed loop and are not used; the rollout eyes are. On evaluation layouts, with the
+fast level fine-tuned on ties (the same as step 6's "v3 on the eyes" and E13b's):
+
+| Situation | the simulator's scene (E13b) | the eyes of step 6 | **the rollout eyes** | misread: step 6 / rollout | wrong shoots | `Complete` said wrongly |
+|---|---|---|---|---|---|---|
+| `prune` | 161 | 154 | **157** | 3 / 0 | 0 / 0 | 0 / 0 |
+| `order`, of 300 | 241 | 239 | **242** | 6 / 1 | 4 / 1 | 2 / 2 |
+| `nothing_to_do` | 200 | 199 | **198** | 1 / 2 | 0 / 0 | 0 / 0 |
+| `ties` | 177 | 170 | **179** | 23 / 6 | 3 / 3 | 11 / 1 |
+| `sick` | 176 | 162 | **172** | 14 / 7 | 0 / 1 | 13 / 2 |
+| `buds` | 182 | 166 | **180** | 19 / 9 | 9 / 2 | 4 / 1 |
+| `reason_mix`, v2's slow level | 182 | 176 | **177** | | | |
+
+- **Perception now costs at most 4 episodes in 200 on any situation** (`ties` 179, `sick` 172, `buds` 180 against
+  177, 176 and 182 on the simulator's scene; 170, 162 and 166 with step 6's eyes; `prune` 157 against 161): P5
+  holds on every rung with the task's program. The
+  misreads that lasted 13 to 20 looks were states the expert's frames do not show; with 190,000 frames of the fast
+  level's own states they fall by half to three quarters, the wrong cuts on `buds` from 9 to 2 and the false
+  `Complete` on `ties` and `sick` from 24 to 3.
+- **Nothing regressed**: `order`, `nothing_to_do` and v2's `reason_mix` (177 against 176) are as they were.
+- **The wrong cuts on `buds` were the eyes', not the fast level's.** All 9 of step 6's came after the memory held a
+  budding shoot as "no bud" (the record's `attributes_wrong`), and on the simulator's scene the fast level cuts a shoot
+  not meant in at most 2 of 200 `buds` episodes.
+
+Runs: 9 recording runs (1998 episodes), 5 takeover collections (2761 attempts), one fine-tune, one eyes run, two
+temperature fits, 12 validation and 18 evaluation closed-loop runs for step 7 (about 5,800 episodes), 14 for step 5
+(2,600 episodes) and the writer alone (8 configurations), in `results/pickup/step5/`, `results/pickup/e15/` and
+`results/pickup/step7/`. GPUs 6 and 7 of an L40S machine were held for 2.5 and 2.2 hours of wall time (4.7 GPU-hours), shared by up to 16 runs at once.
+
 ## Throughput
 
 | Model | Machine A (RTX 4090) | Machine B (L40S) |

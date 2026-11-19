@@ -6,7 +6,8 @@ reasoning that v2's four task kinds do not ask for (telling a sick shoot from a 
 to be done, cutting in a given order, turning the plant to look before deciding, counting), and the smallest change to
 each of v2's five parts that carries it. It is a design and a plan of work for implementation agents. Steps 1 to 3 of
 the plan are built, and step 4 with its runs (E13), the runner's fixes after them and the fast level's fine-tune on
-the ties ("As built", after the plan); nothing else is. A number
+the ties, step 6 (the eyes), step 5 (the writer) and step 7 (the retraining on the fast level's own rollouts) ("As
+built", after the plan); nothing else is. A number
 is v2's own (from the [lab notebook](lab-notebook.md) or from architecture-v2.md) unless it is marked as computed for
 this document, and every expectation is marked as a prediction.
 
@@ -688,7 +689,7 @@ on the evaluation layouts with the setting fixed beforehand, both seeds, trainin
 *Done when:* the notebook has a section for v3, this document has its "First results" with every prediction answered,
 and the roadmap says where it stands.
 
-## As built: steps 1 to 4, and 6
+## As built: steps 1 to 7
 
 Steps 1 to 3 are in `sim/pickup/program.py`, `scene.py`, `scenarios.py`, `census.py` and `slow_level.py`, with their
 tests. Nothing of v2 changes by default: v2's language stays the default of `parse`, the acceptor and `equivalent`, so
@@ -843,10 +844,73 @@ a class for "cannot be read", trained from scratch on `scene_tend` (the design's
 (`buds` 16 down). What perception costs is attribute misreads that last: false `Complete` on `ties` and `sick`,
 wrong shoots on `buds`.
 
-**Next: step 5**, the writer (E15, no GPU), **then step 7**: all of v3 on rungs 1 to 4 with the written program, and
-2000 rollouts of the fast level under v3 recorded (`eval.py --record_scene`) for the eyes to be trained again: the
-misreads that reach the plan last 13 to 20 looks, many of them with the arm at the plant, which the expert's frames
-show less.
+**Step 5, as built** (E15; `sim/pickup/program_writer_v3.py`, `slow_server.py --language v3`; the notebook has the
+tables). v2's writer, its prompt and its numbers are unchanged; `ProgramWriter` takes a language, a description and
+worked examples, and v3's are in a module of their own. Where it departs from the design or adds to it:
+
+- **The tasks.** Each situation's instructions as the situation draws them (`scenarios.py`'s training and held-out
+  frames), with a plant drawn as it draws one; `prune` and `nothing_to_do` have one instruction, the task's own. The
+  compositions of rung 5 are a first set of 12 programs (24 instructions, the examples' source) and a held-out set of 8
+  new combinations in frames of their own (16 instructions). The task's program is `from_scenario`'s, so the writer is
+  scored against what the closed loop runs. The output depends only on the instruction, so each distinct instruction is
+  written once.
+- **Words.** The description and every example use no word that only a held-out instruction uses, but the names
+  `Middle` and `Nothing` (tested, as in v2); a few training compositions carry "more than", "fewer than", "exactly",
+  "two" and "any", so that the description of `Count` and `Take` can use them.
+- **Two prompts.** The first was revised once on its errors on training instructions (not on held-out ones): a
+  sentence on `Middle()`, on what "from the top down" cuts, on sick and bud values, and other pairs. Both are kept
+  (`--prompt first|second`); the second is used.
+- **Asking twice is built and not used.** The two sets of examples are disjoint, and the prune instruction has one
+  wording, so set B cannot hold it; its writer then writes `Cut(Filter(tie,any,All()))` for it and every `prune` and
+  `nothing_to_do` episode would be blocked. Where they disagree the slow level says `Failed`, "the instruction is read
+  two ways" (`slow_server.py --twice`).
+- **Thinking first** (`--think N`: the model writes its reasoning freely, then the program under the constraint) was
+  probed and stopped: no better on the first instructions, a minute or two per instruction on a shared GPU.
+
+**Step 5's results** (E15 and the closed loop; the notebook has the tables). P4 is refuted: the written program
+means the task's on 83% of training frames (95% asked), 54% of held-out frames (85%) and 56% of held-out compositions
+(75%), against 80%, 51% and 67% with the first prompt. The errors are polarity and order, one sentence frame at a time:
+"cut the sick shoots, keep the healthy ones" is written `sick,no`, "keep the buds, cut the other shoots" `bud,yes` (an
+example verbatim), every held-out `sick` frame `sick,no`, "the highest first, then the next one down" as two cuts. The
+constraint changes almost nothing; sixteen examples beat eight. In closed loop on the eyes (evaluation layouts),
+against the task's program: `prune` 160 (154), `order` 215 of 300 (239), `nothing_to_do` 199 (199), `ties` 168 (170),
+`sick` 125 (162), `buds` 121 (166); in held-out frames `order` 220, `ties` 147, `sick` 2, `buds` 94. P5 holds where
+the program is right and fails by the writer's errors where it is not. The writer is now the weakest part of v3 on
+rungs 1 to 4; what the design names next for it (the examples first) was tried once.
+
+**Step 7, as built** (the notebook has the tables). Two retrainings from the fast level's own rollouts under v3, each
+tried on validation layouts first:
+
+- **The fast level, on takeover demonstrations** (`collect.py --takeover_subgoals`, `--takeover_cut`,
+  `--takeover_overturn`, `--clear_start`, `--subgoal_column`; `ScriptedExpert.finish_cut`). The fine-tuned fast level
+  drives under its sub-goals and the expert takes over where it drifts: at a cut (the open jaws near the named
+  shoot's cut zone; the expert finishes that cut from where the hand is, with no back-out), at an over-turn (the named
+  shoot carried 25 degrees past its reach while the plate still turns), or at a drawn step. 2000 demonstrations of
+  `prune`, `order`, `ties`, `sick` and `buds` (`takeover_tend_2k`; 721 handovers at a cut, 166 at an over-turn), and a
+  fine-tune as the ties one (0.6, 0.15, 0.25 of each batch for the old data, the ties and these). It solves as many
+  (577 against 572 of 650 validation episodes; every evaluation cell within 7 of E13b's) and closes further from the
+  shoot, not nearer (median 9.0 mm against 8.3 on validation, 8.7 against 8.2 on `prune`; the expert 5.9), with as
+  much over-turning. The fast level as it was stays; the cut precision and the over-turning are not fixed by this
+  data, and no control fine-tune separates the data from a second fine-tune.
+- **The eyes, on the fast level's frames** (the design's step 7). 1998 rollouts of `ties`, `sick` and `buds` under v3
+  on the eyes recorded with `eval.py --record_scene` (190,756 frames), and the eyes trained again from scratch with
+  them (`eyes_v3_fwp_roll_3m`, otherwise `eyes_v3_fwp_3m`'s settings). On the expert's frames they read as before; in
+  closed loop the misreads fall by half to three quarters: 275 against 260 of 300 validation episodes, and on
+  evaluation layouts `ties` 179, `sick` 172, `buds` 180 against 170, 162 and 166 (the simulator's scene: 177, 176,
+  182), `prune` 157, `order` 242, `nothing_to_do` 198, v2's `reason_mix` 177. P5 holds on every rung. These eyes
+  replace step 6's.
+- **Calibration** (`eyes_calibrate.py`, `load_eyes(calibration=...)`, `slow_server.py --eyes_calibration`): one
+  temperature per attribute fitted on validation frames (about 1.2 for each) lowers the calibration error but changes
+  the readings counted wrong only from 0.30% to 0.24%; in closed loop it does not help (257 against 260, 265 against
+  275) and is not used. A rule that needs agreement from two views was already measured in step 6 ("angles",
+  "sticky") and was not repeated.
+- **A record fixed**: a v3 record's `program_meaning` compared a written program with the task's in v2 when both were
+  in v2's language, where Filters that differ only in the value kept count as the same (`bud,yes` against `bud,no`);
+  v3 compares in v3 now. The tables above are computed in v3 from the records.
+
+**Next**: the writer, where the closed loop now loses most (`sick` and `buds` in particular), before rung 5 (step 9)
+stands on it; then steps 8 to 12. The fast level's precision and over-turning remain its own track's.
+
 
 ## Risks
 
@@ -1013,7 +1077,8 @@ are not repeated.
 | The census | `sim/pickup/census.py` (new) |
 | The looks undrawn; `compose`; `tags` | `sim/pickup/scenarios.py` |
 | The eyes' four outputs | `sim/pickup/eyes.py`, `eyes_data.py`, `train_eyes.py` |
-| The writer's prompt, examples, asking twice | `sim/pickup/program_writer.py` |
+| The writer's prompt, examples, asking twice | `sim/pickup/program_writer.py`, `sim/pickup/program_writer_v3.py` |
+| The eyes' temperatures; takeover demonstrations from the fast level's rollouts | `sim/pickup/eyes_calibrate.py`; `sim/pickup/collect.py` |
 | The look, the home move, the gate, the counters | `sim/pickup/slow_level.py`, `sim/pickup/eval.py` (`--scene full`, `--inspect`, `--gate`) |
 | The expert's look and its sub-goals; the sub-goal column | `sim/pickup/expert.py`, `sim/pickup/collect.py` |
-| Tests | `tests/essential/sim/test_program.py`, `test_scene.py`, `test_slow_level.py`, `test_eyes.py`, `test_program_writer.py`, `test_scenarios.py` |
+| Tests | `tests/essential/sim/test_program.py`, `test_scene.py`, `test_slow_level.py`, `test_eyes.py`, `test_program_writer.py`, `test_program_writer_v3.py`, `test_takeover.py`, `test_scenarios.py` |
