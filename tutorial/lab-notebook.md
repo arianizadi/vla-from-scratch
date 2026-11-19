@@ -1156,6 +1156,24 @@ frozen Qwen3-VL tower learns on paired demonstrations (36 and 54 at checkpoints 
 did; augmentation as set stops the from-scratch policy from learning the task (7/100 at the end); DART-style noisy
 demonstrations learn slowly (25 at checkpoint 5); the paired consistency loss had not started to learn at checkpoint 3.
 
+**Final report cards: two seeds of the frozen DINOv2 policy, and two failures.** Final averaged weights (checkpoint
+11), 100 layouts per cell:
+
+| Policy | plain | lighting (/test) | camera (/test) | bench (/test) | distractors (/test) | wind | bump | sticky |
+|---|---|---|---|---|---|---|---|---|
+| From-scratch ViT, 1 s memory, seed 42 (reference) | 87 | 3 (0) | 2 (2) | 2 (0) | 72 (85) | 82 | 79 | 38 |
+| Frozen DINOv2 at 224 px, seed 42 (`dp_dinov2_lang_frames_1s_prune2k_leaffix_20m`) | 92 | 53 (55) | 15 (5) | 0 (0) | 74 (82) | 89 | 89 | 50 |
+| Frozen DINOv2 at 224 px, seed 43 (`..._seed43`) | 95 | 46 (47) | 10 (4) | 1 (0) | 85 (88) | 89 | 91 | 58 |
+| DART-style noisy demonstrations, from-scratch ViT (`dp_vit_lang_frames_1s_prune2k_leaffix_dart01_20m`) | 40 | 2 (0) | 3 (2) | 0 (0) | 16 (32) | 39 | 43 | 22 |
+| Paired consistency loss, from-scratch ViT (`dp_vit_lang_frames_1s_twin_prune2k_leaffix_paired_20m`) | 0 | 0 (0) | 0 (1) | 0 (0) | 0 (0) | 2 | 1 | 0 |
+
+The frozen DINOv2 encoder holds across two seeds: the best plain pruning of any policy (92 and 95), about half of it
+kept under changed light (46-55, and 47-55 under lights never seen in training), and the physical situations better
+than from scratch too (wind 89, bump 89-91, a sticky button 50-58 against 38). A moved camera (4-15) and another bench
+(0-1) still defeat it: on the bench it does not engage at all. Noise injected into the expert's joints (0.01 rad) halves
+plain success and buys no robustness; the consistency loss between a frame and its re-rendered twin keeps the
+from-scratch policy from learning at all, as the paired data alone did.
+
 **Aim drills.** Seven motor drills on the bare table (`tutorial/aim-range.md`: touch, touch along a pin, stop on,
 follow, flick between, press, pinch; the expert solves each at 499-500/500), as practice for the arm. Co-trained with
 pruning (75% pruning, 25% drills, `dp_vit_lang_reactive_prune2k_aim8k_co27m`): 22/100 on pruning (66 on the drills),
