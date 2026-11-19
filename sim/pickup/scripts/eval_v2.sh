@@ -18,6 +18,7 @@
 #   PICKUP_PROGRAM=gold|writer          the program: the task's own (default), or the one a language model writes
 #   PICKUP_WRITER=<model name or path>  that language model, for PICKUP_PROGRAM=writer
 #   PICKUP_WRITER_WEIGHTS=<checkpoint>  a reason_then_act checkpoint whose language model is loaded over it
+#   PICKUP_WRITER_LORA=<directory>      writer_tune.py's adapters, merged into that language model
 #   PICKUP_WRITER_ARGS="<args>"         more slow_server.py arguments for the writer (v3's: "--language v3 --shots 16
 #                                       --examples A", and --twice to ask twice)
 #   PICKUP_OUT=<dir>   where results.json goes (default results/pickup/<fast run>/<task>_<level>_<scene>_<program>)
@@ -75,6 +76,7 @@ if [ "$scene" = eyes ] || [ "$program" = writer ]; then
   if [ "$program" = writer ]; then
     slow+=(--writer "$PICKUP_WRITER")
     if [ -n "${PICKUP_WRITER_WEIGHTS:-}" ]; then slow+=(--writer_weights "$PICKUP_WRITER_WEIGHTS"); fi
+    if [ -n "${PICKUP_WRITER_LORA:-}" ]; then slow+=(--writer_lora "$PICKUP_WRITER_LORA"); fi
     if [ -n "${PICKUP_WRITER_ARGS:-}" ]; then read -r -a wargs <<< "$PICKUP_WRITER_ARGS"; slow+=("${wargs[@]}"); fi
   fi
   : > "$out/slow_server.log"

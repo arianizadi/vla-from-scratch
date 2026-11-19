@@ -49,6 +49,7 @@ class SlowServer:
 
     def __init__(self, eyes=None, writer=None, about: dict | None = None, second=None):
         self.eyes, self.writer, self.second = eyes, writer, second  # second: v3, asked twice (the other examples)
+        self._written: dict[str, dict] = {}  # instruction -> what the writer wrote
         self.about = dict(about or {})
 
     def info(self) -> dict:
@@ -68,6 +69,7 @@ class SlowServer:
             ),
             writer=self.about.get("writer") if self.writer is not None else None,
             writer_weights=self.about.get("writer_weights"),
+            writer_lora=self.about.get("writer_lora"),
             constrained=bool(self.writer.constrained) if self.writer is not None else False,
             shots=len(self.writer.examples) if self.writer is not None else None,
             **(
@@ -75,6 +77,7 @@ class SlowServer:
                     language="v3",
                     examples_set=self.about.get("examples_set"),
                     think=self.about.get("think", 0),
+                    think_temperature=self.about.get("think_temperature", 0.0),
                     twice=self.second is not None,
                 )
                 if self.writer is not None and getattr(self.writer, "language", "v2") == "v3"
@@ -97,10 +100,15 @@ class SlowServer:
         try:
             if cmd == "see":
                 return {"scene": self.eyes.see(request["images"]), "latency_s": time.perf_counter() - began}
-            out = self.writer.write(str(request["instruction"]))
+            said = str(request["instruction"])
+            # greedy writing depends on the instruction alone: each one is written once (a writer that thinks takes
+            # a minute over it)
+            if said not in self._written:
+                self._written[said] = self.writer.write(said)
+            out = self._written[said]
             reply = {"program": out["program"], "complete": bool(out["complete"])}
             if self.second is not None:
-                other = self.second.write(str(request["instruction"]))
+                other = self.second.write(said)
                 reply.update(second=other["program"], agree=_agree(out["program"], other["program"]))
             return {**reply, "latency_s": time.perf_counter() - began}
         except Exception as error:  # the client stops with the message; the server stays up for the next request
@@ -145,16 +153,21 @@ def load(args) -> SlowServer:
             about.update(eyes_calibration=args.eyes_calibration, eyes_temperature=dict(eyes.temperature))
         print(f"[slow_server] eyes: {args.eyes}, checkpoint {number} ({args.eyes_weights})", flush=True)
     if args.writer:
-        model, tokenizer = load_lm(args.writer, weights=args.writer_weights, device=args.device)
+        model, tokenizer = load_lm(args.writer, weights=args.writer_weights, device=args.device, lora=args.writer_lora)
         if args.language == "v3":
             from . import program_writer_v3 as v3
 
             free = not args.unconstrained
-            writer = v3.writer(model, tokenizer, args.shots, args.examples, constrained=free, think=args.think)
+            heat = args.think_temperature
+            writer = v3.writer(
+                model, tokenizer, args.shots, args.examples, constrained=free, think=args.think, think_temperature=heat
+            )
             if args.twice:
                 other = next(which for which in sorted(v3.EXAMPLES) if which != args.examples)
-                second = v3.writer(model, tokenizer, args.shots, other, constrained=free, think=args.think)
-            about.update(examples_set=args.examples, think=args.think)
+                second = v3.writer(
+                    model, tokenizer, args.shots, other, constrained=free, think=args.think, think_temperature=heat
+                )
+            about.update(examples_set=args.examples, think=args.think, think_temperature=heat)
         else:
             # one token more than the longest program: a constrained program always ends whole (program_writer.py)
             writer = ProgramWriter(
@@ -164,7 +177,7 @@ def load(args) -> SlowServer:
                 constrained=not args.unconstrained,
                 max_new_tokens=LONGEST_PROGRAM + 1,
             )
-        about.update(writer=args.writer, writer_weights=args.writer_weights)
+        about.update(writer=args.writer, writer_weights=args.writer_weights, writer_lora=args.writer_lora)
         kind = "free writing" if args.unconstrained else "held to the grammar"
         more = ""
         if args.language == "v3":
@@ -192,6 +205,8 @@ def main(argv=None):
     ap.add_argument("--examples", choices=["A", "B"], default="A", help="v3: the set of worked examples")
     ap.add_argument("--twice", action="store_true", help="v3: also write with the other set; say whether they agree")
     ap.add_argument("--think", type=int, default=0, help="v3: tokens of free reasoning before the program (0: none)")
+    ap.add_argument("--think_temperature", type=float, default=0.0, help="v3: the reasoning sampled at it (0: greedy)")
+    ap.add_argument("--writer_lora", default=None, help="a directory of writer_tune.py's adapters, merged into the writer")
     ap.add_argument("--device", default="cuda")
     args = ap.parse_args(argv)
     assert args.language == "v3" or not args.twice, "--twice is for --language v3"

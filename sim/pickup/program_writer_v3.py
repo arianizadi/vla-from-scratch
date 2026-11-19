@@ -338,6 +338,7 @@ def writer(
     max_new_tokens=None,
     prompt="second",
     think: int = 0,
+    think_temperature: float = 0.0,
 ):
     """A ProgramWriter for v3's language, with the description and the examples of set `which` of the prompt's
     version (PROMPTS: "second", the one used, or "first")."""
@@ -350,6 +351,7 @@ def writer(
         system=PROMPTS[prompt][0],
         pairs=examples(shots, which, prompt),
         think=think,
+        think_temperature=think_temperature,
     )
 
 
@@ -630,6 +632,9 @@ def main(argv: Sequence[str] | None = None) -> dict:
     ap.add_argument("--examples", choices=sorted(EXAMPLES), default="A", help="the set of worked examples")
     ap.add_argument("--prompt", choices=sorted(PROMPTS), default="second", help="the prompt's version")
     ap.add_argument("--think", type=int, default=0, help="tokens of free reasoning before the program (0: none)")
+    ap.add_argument("--think_temperature", type=float, default=0.0, help="the reasoning sampled at it (0: greedy)")
+    ap.add_argument("--think_batch", type=int, default=16, help="instructions reasoned about at once")
+    ap.add_argument("--lora", help="a directory of writer_tune.py's adapters, merged into the model")
     ap.add_argument("--seed", type=int, default=0, help="the tasks")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--unconstrained", action="store_true", help="the baseline: the model writes freely")
@@ -644,12 +649,14 @@ def main(argv: Sequence[str] | None = None) -> dict:
             print(name, counts, flush=True)
     else:
         assert args.model, "--model is needed to write"
-        model, tokenizer = load_lm(args.model, device=args.device)
+        model, tokenizer = load_lm(args.model, device=args.device, lora=args.lora)
         chosen = writer(
             model, tokenizer, args.shots, args.examples, not args.unconstrained, args.max_new_tokens, args.prompt,
-            args.think,
+            args.think, args.think_temperature,
         )
-        rows = evaluate(chosen.write, draw_tasks(args.n, args.seed), progress=True)
+        tasks = draw_tasks(args.n, args.seed)
+        chosen.think_many([task.instruction for task in tasks], batch=args.think_batch, seed=args.seed)
+        rows = evaluate(chosen.write, tasks, progress=True)
         summary = summarize(rows)
         print(table({k: {**v, **{f: v[f] for f in FLAGS}} for k, v in summary.items()}), flush=True)
         report = dict(
@@ -660,6 +667,8 @@ def main(argv: Sequence[str] | None = None) -> dict:
             examples_set=args.examples,
             prompt=args.prompt,
             think=args.think,
+            think_temperature=args.think_temperature,
+            lora=args.lora,
             seed=args.seed,
             max_new_tokens=args.max_new_tokens,
             examples=[list(example) for example in chosen.examples],

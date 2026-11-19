@@ -283,6 +283,7 @@ def _generate(
     max_new_tokens: int,
     stop_ids: list[int],
     allowed: Callable[[list[int]], list[int]] | None = None,
+    temperature: float = 0.0,
 ) -> tuple[list[int], float]:
     """Greedy decoding after `prompt`: the new token ids (the one that stopped it included) and the seconds taken. It
     stops at a token of `stop_ids` or after max_new_tokens. `allowed`, when given, maps the new ids so far to the ids
@@ -301,11 +302,12 @@ def _generate(
             input_ids=input_ids,
             attention_mask=inputs["attention_mask"].to(model.device),
             max_new_tokens=max_new_tokens,
-            do_sample=False,
+            do_sample=temperature > 0,
             num_beams=1,
-            temperature=None,  # a model's sampling settings (Qwen's) do not apply to greedy decoding
-            top_p=None,
-            top_k=None,
+            # a model's sampling settings (Qwen's) do not apply to greedy decoding; sampled: Qwen's for thinking
+            temperature=temperature if temperature > 0 else None,
+            top_p=0.95 if temperature > 0 else None,
+            top_k=20 if temperature > 0 else None,
             eos_token_id=stop_ids,
             pad_token_id=stop_ids[0] if tokenizer.pad_token_id is None else tokenizer.pad_token_id,
             prefix_allowed_tokens_fn=None if allowed is None else constraint,
@@ -355,6 +357,8 @@ class ProgramWriter(_Prompted):
     think           a thinking model first writes its reasoning freely, greedily, up to this many tokens or its own
                     </think> (closed for it at the limit), and then the program, constrained as without it. 0 (the
                     default): no_think's empty block, as v2's writer. The worked examples' answers stay programs
+    think_temperature  0 (the default): the reasoning greedily; above 0, sampled at this temperature (top-p 0.95,
+                    top-k 20, Qwen's settings for thinking). The program is always written greedily
     """
 
     def __init__(
@@ -370,9 +374,12 @@ class ProgramWriter(_Prompted):
         system: str | None = None,
         pairs: Sequence[tuple[str, str]] | None = None,
         think: int = 0,
+        think_temperature: float = 0.0,
     ):
         super().__init__(model, tokenizer, no_think and not think, max_new_tokens)
         self.think = int(think) if "</think>" in tokenizer.get_vocab() else 0
+        self.think_temperature = float(think_temperature)
+        self._thoughts: dict[str, tuple[str, float]] = {}  # instruction -> (reasoning, seconds), from think_many
         assert language in program.LANGUAGES, language
         self.language = language
         self.system = SYSTEM if system is None else system
@@ -398,22 +405,70 @@ class ProgramWriter(_Prompted):
 
         prompt = self.prompt(instruction)
         thought, thought_s = "", 0.0
-        if self.think:
+        if self.think and instruction in self._thoughts:
+            thought, thought_s = self._thoughts[instruction]
+            prompt = f"{self._think_prompt(prompt)}{thought}\n</think>\n\n"
+        elif self.think:
             prompt, thought, thought_s = self._thought(prompt)
         new, seconds = _generate(self.model, self.tokenizer, prompt, self.max_new_tokens, self.eos_ids, allowed)
         written = "".join(self.trie.texts[i] for i in new if i not in self.eos_ids)
         out = dict(program=written, complete=_parses(written, self.language), tokens=len(new), seconds=seconds + thought_s)
         return dict(out, thought=thought) if self.think else out
 
+    @staticmethod
+    def _think_prompt(prompt: str) -> str:
+        return prompt if prompt.endswith("<think>\n") else prompt + "<think>\n"
+
     def _thought(self, prompt: str) -> tuple[str, str, float]:
         """(the prompt with the model's reasoning and a closed think block after it, the reasoning, the seconds)."""
-        if not prompt.endswith("<think>\n"):
-            prompt += "<think>\n"
+        prompt = self._think_prompt(prompt)
         end = self.tokenizer.convert_tokens_to_ids("</think>")
-        new, seconds = _generate(self.model, self.tokenizer, prompt, self.think, [end, *self.eos_ids])
+        new, seconds = _generate(
+            self.model, self.tokenizer, prompt, self.think, [end, *self.eos_ids], temperature=self.think_temperature
+        )
         thought = self.tokenizer.decode([i for i in new if i != end], skip_special_tokens=True)
         thought = thought.split("</think>")[0].rstrip()
         return f"{prompt}{thought}\n</think>\n\n", thought, seconds
+
+    def think_many(self, instructions: Sequence[str], batch: int = 16, seed: int = 0) -> None:
+        """Write the reasoning for many instructions at once, `batch` at a time (left-padded), and keep it for `write`:
+        the same text as one at a time up to the numerics of batching. With think_temperature > 0 each batch samples
+        from its own seed (seed + the batch's number). Nothing for a writer that does not think."""
+        if not self.think:
+            return
+        todo = [said for said in dict.fromkeys(instructions) if said not in self._thoughts]
+        end = self.tokenizer.convert_tokens_to_ids("</think>")
+        side, self.tokenizer.padding_side = self.tokenizer.padding_side, "left"
+        try:
+            for start in range(0, len(todo), batch):
+                part = todo[start : start + batch]
+                prompts = [self._think_prompt(self.prompt(said)) for said in part]
+                inputs = self.tokenizer(prompts, return_tensors="pt", padding=True, add_special_tokens=False)
+                sampled = self.think_temperature > 0
+                if sampled:
+                    torch.manual_seed(seed + start // batch)
+                began = time.perf_counter()
+                with torch.no_grad():
+                    out = self.model.generate(
+                        input_ids=inputs["input_ids"].to(self.model.device),
+                        attention_mask=inputs["attention_mask"].to(self.model.device),
+                        max_new_tokens=self.think,
+                        do_sample=sampled,
+                        temperature=self.think_temperature if sampled else None,
+                        top_p=0.95 if sampled else None,
+                        top_k=20 if sampled else None,
+                        num_beams=1,
+                        eos_token_id=[end, *self.eos_ids],
+                        pad_token_id=self.eos_ids[0] if self.tokenizer.pad_token_id is None else self.tokenizer.pad_token_id,
+                    )
+                seconds = (time.perf_counter() - began) / len(part)
+                width = inputs["input_ids"].shape[1]
+                for said, row in zip(part, out[:, width:].tolist(), strict=True):
+                    thought = self.tokenizer.decode([i for i in row if i != end], skip_special_tokens=True)
+                    self._thoughts[said] = (thought.split("</think>")[0].rstrip(), seconds)
+                print(f"[program_writer] reasoned {start + len(part)} of {len(todo)} instructions", flush=True)
+        finally:
+            self.tokenizer.padding_side = side
 
 
 class FactsAnswerer(_Prompted):
@@ -491,11 +546,12 @@ def load_weights(model, path: str) -> dict:
     return report
 
 
-def load_lm(model: str, weights: str | None = None, device: str = "cuda", dtype=None):
+def load_lm(model: str, weights: str | None = None, device: str = "cuda", dtype=None, lora: str | None = None):
     """(model, tokenizer): a language model by Hugging Face name or local directory, in evaluation mode on `device`. A
     vision-language model (its config has a vision_config, as Qwen3-VL's) is loaded whole and used with text only.
     `weights`: a reason_then_act training checkpoint whose language model replaces the downloaded weights
-    (load_weights). `dtype`: bfloat16 on a GPU and float32 on the CPU unless given."""
+    (load_weights). `lora`: a directory of writer_tune.py's adapters, merged into the weights. `dtype`: bfloat16 on a
+    GPU and float32 on the CPU unless given."""
     from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForImageTextToText, AutoProcessor, AutoTokenizer
 
     if dtype is None:
@@ -513,7 +569,12 @@ def load_lm(model: str, weights: str | None = None, device: str = "cuda", dtype=
         tokenizer = AutoTokenizer.from_pretrained(model, trust_remote_code=True)
     if weights is not None:
         load_weights(lm, weights)
-    return lm.to(device).eval(), tokenizer
+    lm = lm.to(device)
+    if lora is not None:
+        from .writer_tune import apply_lora
+
+        apply_lora(lm, lora)
+    return lm.eval(), tokenizer
 
 
 # ------------------------------------------------------------------------------------------------------- the evaluation
@@ -672,6 +733,7 @@ def main(argv: Sequence[str] | None = None) -> dict:
     )
     ap.add_argument("--model", required=True, help="a Hugging Face model name or a local directory")
     ap.add_argument("--weights", help="a reason_then_act training checkpoint whose language model is loaded over it")
+    ap.add_argument("--lora", help="a directory of writer_tune.py's adapters, merged into the model")
     ap.add_argument("--n", type=int, default=25, help="tasks per kind and split")
     ap.add_argument("--shots", type=int, default=8, help="worked examples in the prompt")
     ap.add_argument("--seed", type=int, default=0, help="the worked examples and the tasks")
@@ -689,7 +751,7 @@ def main(argv: Sequence[str] | None = None) -> dict:
     ap.add_argument("--out", help="the JSON report: the summary and every row")
     args = ap.parse_args(argv)
 
-    model, tokenizer = load_lm(args.model, device=args.device)
+    model, tokenizer = load_lm(args.model, device=args.device, lora=args.lora)
     loaded = None if args.weights is None else load_weights(model, args.weights)
     tasks = draw_tasks(args.n, args.seed)
     if args.facts:
@@ -711,6 +773,7 @@ def main(argv: Sequence[str] | None = None) -> dict:
         mode="facts" if args.facts else "unconstrained" if args.unconstrained else "constrained",
         model=args.model,
         weights=args.weights,
+        lora=args.lora,
         loaded=loaded,
         n=args.n,
         shots=args.shots,

@@ -1165,6 +1165,7 @@ def test_the_slow_server_answers_info_see_and_write_and_refuses_what_it_has_not_
         eyes_weights=None,
         writer=None,
         writer_weights=None,
+        writer_lora=None,
         constrained=False,
         shots=None,
     )

@@ -1,0 +1,68 @@
+# The sub-goal fast level (dp_vit_lang_reactive_subgoal.yaml: one frame per camera, the current joint state, the
+# sub-goal of the expert's notes) with the frozen DINOv2-B with registers (facebook/dinov2-with-registers-base) in place
+# of its own ViT, as dp_dinov2_lang_frames_1s.yaml puts it in place of the 1 s memory policy's: patch tokens at 224
+# pixels (16 x 16 per image), the class token and registers dropped (frozen_tower.py). Architecture v3's fast level on
+# the encoder that kept half its success under new lighting (tutorial/lab-notebook.md, Step 8).
+save_path: experiments/pickup
+wandb: false
+db_logging: false
+# A running average of the weights is saved next to the trained ones (ema_N.pt) and evaluated with
+# them. While a policy is starting to work the average is far ahead of the trained weights
+# (tutorial/notes.md, "Averaged weights and the sampler's settings").
+ema:
+  enabled: true
+
+model:
+  <<: !include ../../../vla_foundry/config_presets/models/diffusion_policy.yaml
+  vision_language_backbone:
+    type: vit_backbone
+    img_size: 224
+    patch_size: 16
+    hidden_dim: 256
+    inter_dim: 1024
+    n_heads: 4
+    n_layers: 6
+    text_tokens: 32
+    text_vocab_size: 49280
+    frozen_tower: facebook/dinov2-with-registers-base
+  transformer:
+    type: transformer
+    hidden_dim: 256
+    n_heads: 4
+    n_layers: 6
+    max_seq_len: 2048
+    is_causal: false
+
+data:
+  <<: !include ../../../vla_foundry/config_presets/data/diffusion_policy.yaml
+  processor: simple_vlm
+  processor_kwargs: {}
+  image_size: 224
+  img_num_tokens: 1
+  seq_len: 64
+  dataset_modality:
+    - robotics
+  dataset_weighting:
+    - 1.0
+  camera_names:
+    - front
+    - wrist
+  image_indices:
+    - 0
+  lowdim_past_timesteps: 0
+  action_fields:
+    - action
+  proprioception_fields:
+    - state
+  language_instruction_types:
+    - subgoal
+  num_workers: 8
+  prefetch_factor: 4
+
+distributed:
+  fsdp: false
+
+hparams:
+  <<: !include ../../../vla_foundry/config_presets/hparams/diffusion_policy.yaml
+  per_gpu_batch_size: 64
+  global_batch_size: 64
