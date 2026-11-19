@@ -16,12 +16,17 @@ Requests, as dicts with "cmd":
                 "eyes_checkpoint", "eyes_weights", "writer": the language model's name (None without one),
                 "writer_weights", "constrained", "shots"}
   see       {"images": {"front_t0": JPEG bytes, ...}} -> {"scene": the percept (scene.py's percept form), "latency_s"}
-  write     {"instruction": "..."} -> {"program": the text written, "complete": it parses, "latency_s"}
+  write     {"instruction": "..."} -> {"program": the text written, "complete": it parses, "latency_s"}; with --twice
+            also "second" (the program written with the other set of examples) and "agree" (the two are equivalent)
   shutdown  -> {"ok": True}, and the server exits
 
 A request for a part that was not loaded, and one that fails, is answered with {"error": "..."}, and the server goes
 on serving. Either part can be left out: the eyes alone for the learned scene with the task's own program, the writer
 alone for written programs on the simulator's truth.
+
+--language v3 serves the writer of architecture v3 (program_writer_v3.py: v3's language, its description and the
+sixteen worked examples of --examples A or B); --twice writes each instruction with both sets (architecture-v3.md,
+"asked twice").
 """
 
 import argparse
@@ -30,6 +35,7 @@ import time
 import traceback
 from multiprocessing.connection import Listener
 
+from . import program
 from .eyes import checkpoints, load_eyes
 from .program_writer import LONGEST_PROGRAM, ProgramWriter, load_lm
 
@@ -41,8 +47,8 @@ class SlowServer:
     ProgramWriter, or None. `about`: what the info request reports besides the eyes' config (the run, the checkpoint,
     the model's name, ...)."""
 
-    def __init__(self, eyes=None, writer=None, about: dict | None = None):
-        self.eyes, self.writer = eyes, writer
+    def __init__(self, eyes=None, writer=None, about: dict | None = None, second=None):
+        self.eyes, self.writer, self.second = eyes, writer, second  # second: v3, asked twice (the other examples)
         self.about = dict(about or {})
 
     def info(self) -> dict:
@@ -55,10 +61,25 @@ class SlowServer:
             eyes_run=self.about.get("eyes_run"),
             eyes_checkpoint=self.about.get("eyes_checkpoint"),
             eyes_weights=self.about.get("eyes_weights"),
+            **(
+                dict(eyes_calibration=self.about["eyes_calibration"], eyes_temperature=self.about["eyes_temperature"])
+                if "eyes_calibration" in self.about
+                else {}
+            ),
             writer=self.about.get("writer") if self.writer is not None else None,
             writer_weights=self.about.get("writer_weights"),
             constrained=bool(self.writer.constrained) if self.writer is not None else False,
             shots=len(self.writer.examples) if self.writer is not None else None,
+            **(
+                dict(
+                    language="v3",
+                    examples_set=self.about.get("examples_set"),
+                    think=self.about.get("think", 0),
+                    twice=self.second is not None,
+                )
+                if self.writer is not None and getattr(self.writer, "language", "v2") == "v3"
+                else {}
+            ),
         )
 
     def handle(self, request: dict) -> dict:
@@ -77,14 +98,22 @@ class SlowServer:
             if cmd == "see":
                 return {"scene": self.eyes.see(request["images"]), "latency_s": time.perf_counter() - began}
             out = self.writer.write(str(request["instruction"]))
-            return {
-                "program": out["program"],
-                "complete": bool(out["complete"]),
-                "latency_s": time.perf_counter() - began,
-            }
+            reply = {"program": out["program"], "complete": bool(out["complete"])}
+            if self.second is not None:
+                other = self.second.write(str(request["instruction"]))
+                reply.update(second=other["program"], agree=_agree(out["program"], other["program"]))
+            return {**reply, "latency_s": time.perf_counter() - began}
         except Exception as error:  # the client stops with the message; the server stays up for the next request
             traceback.print_exc()
             return {"error": f"{cmd}: {type(error).__name__}: {error}"}
+
+
+def _agree(first: str, second: str) -> bool:
+    """Two programs of v3 that both parse and are equivalent (program.equivalent_v3)."""
+    try:
+        return program.equivalent_v3(program.parse(first, "v3"), program.parse(second, "v3"))
+    except program.ProgramError:
+        return False
 
 
 def serve(listener: Listener, server: SlowServer):
@@ -104,28 +133,44 @@ def serve(listener: Listener, server: SlowServer):
 
 def load(args) -> SlowServer:
     """The parts the command line asks for."""
-    eyes = writer = None
+    eyes = writer = second = None
     about = {}
     if args.eyes:
         # the averaged weights are an Eyes checkpoint's "ema" entry, the trained ones its "model" entry
-        eyes = load_eyes(args.eyes, args.eyes_checkpoint, "ema" if args.eyes_weights == "ema" else "model", args.device)
+        weights = "ema" if args.eyes_weights == "ema" else "model"
+        eyes = load_eyes(args.eyes, args.eyes_checkpoint, weights, args.device, calibration=args.eyes_calibration)
         number = args.eyes_checkpoint if args.eyes_checkpoint is not None else max(checkpoints(args.eyes))
         about.update(eyes_run=args.eyes, eyes_checkpoint=number, eyes_weights=args.eyes_weights)
+        if args.eyes_calibration:
+            about.update(eyes_calibration=args.eyes_calibration, eyes_temperature=dict(eyes.temperature))
         print(f"[slow_server] eyes: {args.eyes}, checkpoint {number} ({args.eyes_weights})", flush=True)
     if args.writer:
         model, tokenizer = load_lm(args.writer, weights=args.writer_weights, device=args.device)
-        # one token more than the longest program: a constrained program always ends whole (program_writer.py)
-        writer = ProgramWriter(
-            model,
-            tokenizer,
-            shots=args.shots,
-            constrained=not args.unconstrained,
-            max_new_tokens=LONGEST_PROGRAM + 1,
-        )
+        if args.language == "v3":
+            from . import program_writer_v3 as v3
+
+            free = not args.unconstrained
+            writer = v3.writer(model, tokenizer, args.shots, args.examples, constrained=free, think=args.think)
+            if args.twice:
+                other = next(which for which in sorted(v3.EXAMPLES) if which != args.examples)
+                second = v3.writer(model, tokenizer, args.shots, other, constrained=free, think=args.think)
+            about.update(examples_set=args.examples, think=args.think)
+        else:
+            # one token more than the longest program: a constrained program always ends whole (program_writer.py)
+            writer = ProgramWriter(
+                model,
+                tokenizer,
+                shots=args.shots,
+                constrained=not args.unconstrained,
+                max_new_tokens=LONGEST_PROGRAM + 1,
+            )
         about.update(writer=args.writer, writer_weights=args.writer_weights)
         kind = "free writing" if args.unconstrained else "held to the grammar"
-        print(f"[slow_server] writer: {args.writer}, {args.shots} worked examples, {kind}", flush=True)
-    return SlowServer(eyes, writer, about)
+        more = ""
+        if args.language == "v3":
+            more = f", language v3, examples {args.examples}{', asked twice' if args.twice else ''}, think {args.think}"
+        print(f"[slow_server] writer: {args.writer}, {args.shots} worked examples, {kind}{more}", flush=True)
+    return SlowServer(eyes, writer, about, second)
 
 
 def main(argv=None):
@@ -134,14 +179,23 @@ def main(argv=None):
     ap.add_argument("--eyes", default=None, help="a run directory of train_eyes.py")
     ap.add_argument("--eyes_checkpoint", type=int, default=None, help="its checkpoint number (default: the latest)")
     ap.add_argument("--eyes_weights", choices=["ema", "raw"], default="ema", help="averaged or trained weights")
+    ap.add_argument(
+        "--eyes_calibration", default=None, help="a file of eyes_calibrate.py: the attributes' temperatures"
+    )
     ap.add_argument("--writer", default=None, help="a language model: a Hugging Face name or a local directory")
     ap.add_argument(
         "--writer_weights", default=None, help="a reason_then_act checkpoint whose language model is loaded over it"
     )
     ap.add_argument("--shots", type=int, default=8, help="worked examples in the writer's prompt")
     ap.add_argument("--unconstrained", action="store_true", help="the writer writes freely (the baseline)")
+    ap.add_argument("--language", choices=["v2", "v3"], default="v2", help="the writer's language (v3: architecture v3)")
+    ap.add_argument("--examples", choices=["A", "B"], default="A", help="v3: the set of worked examples")
+    ap.add_argument("--twice", action="store_true", help="v3: also write with the other set; say whether they agree")
+    ap.add_argument("--think", type=int, default=0, help="v3: tokens of free reasoning before the program (0: none)")
     ap.add_argument("--device", default="cuda")
     args = ap.parse_args(argv)
+    assert args.language == "v3" or not args.twice, "--twice is for --language v3"
+    assert args.language == "v2" or args.shots in (8, 16), "v3's writer has 8 or 16 worked examples"
 
     # Bind before loading: if the port is taken this fails at once, not after a client has reached whoever holds it
     with Listener(("127.0.0.1", args.port), authkey=AUTHKEY) as listener:

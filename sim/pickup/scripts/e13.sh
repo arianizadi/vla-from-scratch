@@ -24,6 +24,11 @@
 #   PICKUP_EYES=<eyes run>        also the cells on the eyes' scene (step 6 and E17: <cell>_eyes, every situation and
 #                                 reason_mix with v2's slow level), the eyes served by eval_v2.sh (PICKUP_EYES_CHECKPOINT
 #                                 and PICKUP_EYES_WEIGHTS as there); PICKUP_E13_ONLY='_eyes$' runs those alone
+#   PICKUP_E13_PROGRAM=writer     the program the language model writes (step 5, E17: PICKUP_WRITER and PICKUP_WRITER_ARGS
+#                                 as for eval_v2.sh) in place of the task's own, for every v3 run; default gold
+#   PICKUP_E13_HELDOUT=1          also the cells of order, ties, sick and buds in held-out sentence frames
+#                                 (<cell>_heldout_<scene>: scenarios order_heldout, ties_heldout, ...), for a written
+#                                 program; with the task's own they are the training frames' cells
 #   PICKUP_GPU and the rest: as for eval_v2.sh and _common.sh
 set -euo pipefail
 fast43=${1:?fast run, seed 43}; fast44=${2:?fast run, seed 44}; phase=${3:-all}
@@ -46,7 +51,9 @@ run() {
   echo "[e13] $where $(basename "$fast") $name: $episodes episodes from seed $first"
   local more=()
   if [ "$level" = v3 ] && [ -n "${PICKUP_E13_ARGS:-}" ]; then read -r -a more <<< "$PICKUP_E13_ARGS"; fi
-  PICKUP_SLOW_LEVEL=$level PICKUP_SCENE=$scene PICKUP_PROGRAM=gold PICKUP_OUT=$out \
+  local program=gold
+  if [ "$level" = v3 ]; then program=${PICKUP_E13_PROGRAM:-gold}; fi
+  PICKUP_SLOW_LEVEL=$level PICKUP_SCENE=$scene PICKUP_PROGRAM=$program PICKUP_OUT=$out \
     "$here/eval_v2.sh" "$fast" "$task" "$episodes" --seed_start "$first" --clear_start \
     ${more[@]+"${more[@]}"} "$@"
 }
@@ -77,6 +84,18 @@ situations() {
     run "$where" "$fast" nothing_to_do_eyes v3 eyes prune "$n" "$first" --scenario nothing_to_do
     for situation in ties sick buds; do
       run "$where" "$fast" "${situation}_eyes" v3 eyes prune "$n" "$first" --scenario "$situation"
+    done
+  fi
+  if [ -n "${PICKUP_E13_HELDOUT:-}" ]; then  # held-out sentence frames, on each scene asked for
+    local scene
+    for scene in truth ${PICKUP_EYES:+eyes}; do
+      for mode in top_down bottom_up pair; do
+        run "$where" "$fast" "order_${mode}_heldout_$scene" v3 "$scene" prune "$((n / 2))" "$first" \
+          --scenario "order_heldout:$mode"
+      done
+      for situation in ties sick buds; do
+        run "$where" "$fast" "${situation}_heldout_$scene" v3 "$scene" prune "$n" "$first" --scenario "${situation}_heldout"
+      done
     done
   fi
 }

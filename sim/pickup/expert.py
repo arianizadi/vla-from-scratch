@@ -207,6 +207,43 @@ class ScriptedExpert:
                 ]
                 self.wp, self.dwell, self.preamble = 0, 0, True
 
+    def finish_cut(self, name):
+        """Take over at a cut another controller (a learned fast level) is about to make on shoot `name`, the open jaws
+        near its cut zone (collect.Drift): from the arm as it is (take_over's set-point), the last part of the expert's
+        own cut, with no backing out: in to a point of the cut zone at the approach speed, the jaws turned upright
+        (prune_orientation) for the side the hand is on, close until the shoot is cut, open, back out to the lane;
+        then the ordinary plan. Demonstrations recorded from here show the cut corrected from where a policy's hand
+        arrives (architecture v3, step 7)."""
+        env = self.env
+        R = env.data.site_xmat[env.tcp_id].reshape(3, 3).copy()
+        yaw = float(_wrap(env.tcp_yaw() - self.yaw_home, 2 * np.pi))
+        self.reset(yaw=yaw, R=R)
+        self.q_cmd = env.data.qpos[:7].copy()
+        speed = self.rng.uniform(0.8, 1.2)
+        a, d = env.shoot_axis(name)
+        cut = a + d * self.rng.uniform(0.031, 0.039)
+        u = d[:2] / np.linalg.norm(d[:2])
+        across = np.array([-u[1], u[0], 0.0])
+        toward = across if R[:, 2] @ across >= 0 else -across  # the side the hand came in from
+        R_cut = self.prune_orientation(toward)
+        pre = cut - toward * self.rng.uniform(0.13, 0.15)
+        lane_x = env.data.xpos[env.stand_body][0] - LANE_BACK
+        lane = np.array([min(lane_x, pre[0]), pre[1], pre[2]])
+
+        def is_cut(name=name):
+            return name in env.cut
+
+        self.waypoints = [
+            (cut, PRUNE_OPEN, 0.10 * speed, 2, R_cut),
+            (cut, 0.0, 0.0, 25, R_cut, is_cut),
+            (cut, 0.0, 0.0, 2, R_cut),
+            (cut, PRUNE_OPEN, 0.0, 3, R_cut),
+            (pre, PRUNE_OPEN, 0.20 * speed, 0, R_cut),
+            (lane, PRUNE_OPEN, 0.30 * speed, 0, R_cut),
+        ]
+        self.wp, self.dwell, self.preamble = 0, 0, False
+        self.prune_target = name
+
     def replan(self):
         """Plan again from the arm as it is now (after the scene changed under the plan, e.g. the plate was turned by
         hand: scenario 'bump'), keeping what has been learned (the card read)."""

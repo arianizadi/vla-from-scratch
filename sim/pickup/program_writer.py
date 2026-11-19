@@ -224,11 +224,13 @@ class _Node:
 
 class TokenTrie:
     """A character trie over the tokens of a vocabulary that can be part of a program: those whose text (token_texts:
-    what the token adds to the decoded text) is not empty and made only of program.ALPHABET characters. A token with
-    a leading space is not one: programs have no spaces. `texts`: those tokens' texts, by id."""
+    what the token adds to the decoded text) is not empty and made only of program.ALPHABET characters (or of
+    `alphabet`'s: program.ALPHABETS["v3"] for v3's language). A token with a leading space is not one: programs have no
+    spaces. `texts`: those tokens' texts, by id."""
 
-    def __init__(self, texts: dict[int, str]):
-        self.texts = {i: t for i, t in texts.items() if t and set(t) <= program.ALPHABET}
+    def __init__(self, texts: dict[int, str], alphabet: frozenset[str] | None = None):
+        alphabet = program.ALPHABET if alphabet is None else alphabet
+        self.texts = {i: t for i, t in texts.items() if t and set(t) <= alphabet}
         self.root = _Node()
         for token_id, text in self.texts.items():
             node = self.root
@@ -237,9 +239,9 @@ class TokenTrie:
             node.ids.append(token_id)
 
 
-def allowed_tokens(trie: TokenTrie, written: str, eos_ids: Sequence[int]) -> list[int]:
-    """The tokens that may follow `written`: each token whose text keeps it the beginning of some program, and the
-    end-of-sequence tokens if and only if `written` is a whole program.
+def allowed_tokens(trie: TokenTrie, written: str, eos_ids: Sequence[int], language: str = "v2") -> list[int]:
+    """The tokens that may follow `written`: each token whose text keeps it the beginning of some program (of
+    `language`), and the end-of-sequence tokens if and only if `written` is a whole program.
 
     Exact: the walk down the trie follows a character only if program.next_chars allows it after the written text
     and the path so far, and collects the tokens that end on the way, so a token is collected exactly when each of
@@ -251,9 +253,9 @@ def allowed_tokens(trie: TokenTrie, written: str, eos_ids: Sequence[int]) -> lis
         node, text = stack.pop()
         allowed.update(node.ids)
         if node.children:
-            for char in program.next_chars(text).intersection(node.children):
+            for char in program.next_chars(text, language).intersection(node.children):
                 stack.append((node.children[char], text + char))
-    if program.is_complete(written):
+    if program.is_complete(written, language):
         allowed.update(eos_ids)
     return sorted(allowed) if allowed else list(eos_ids)
 
@@ -330,9 +332,9 @@ class _Prompted:
         return reply.split("\n", 1)[0].strip(), new, seconds
 
 
-def _parses(written: str) -> bool:
+def _parses(written: str, language: str = "v2") -> bool:
     try:
-        program.parse(written)
+        program.parse(written, language)
     except program.ProgramError:
         return False
     return True
@@ -347,6 +349,12 @@ class ProgramWriter(_Prompted):
     no_think        make a thinking model answer at once (an empty <think></think> block); nothing for other models
     max_new_tokens  the limit on new tokens, the one that ends the writing included. A constrained program cut short
                     by it is not complete; with LONGEST_PROGRAM + 1 that cannot happen
+    language        the language written and held to: "v2" (SYSTEM, `examples`) or "v3" (program_writer_v3: its
+                    description and worked examples, passed as `system` and `pairs`)
+    system, pairs   the description and the worked examples ((instruction, program) pairs) in place of v2's
+    think           a thinking model first writes its reasoning freely, greedily, up to this many tokens or its own
+                    </think> (closed for it at the limit), and then the program, constrained as without it. 0 (the
+                    default): no_think's empty block, as v2's writer. The worked examples' answers stay programs
     """
 
     def __init__(
@@ -358,31 +366,54 @@ class ProgramWriter(_Prompted):
         constrained: bool = True,
         no_think: bool = True,
         max_new_tokens: int = 96,
+        language: str = "v2",
+        system: str | None = None,
+        pairs: Sequence[tuple[str, str]] | None = None,
+        think: int = 0,
     ):
-        super().__init__(model, tokenizer, no_think, max_new_tokens)
-        self.examples = examples(shots, seed)
+        super().__init__(model, tokenizer, no_think and not think, max_new_tokens)
+        self.think = int(think) if "</think>" in tokenizer.get_vocab() else 0
+        assert language in program.LANGUAGES, language
+        self.language = language
+        self.system = SYSTEM if system is None else system
+        self.examples = examples(shots, seed) if pairs is None else [tuple(pair) for pair in pairs]
         self.constrained = constrained
-        self.trie = TokenTrie(self.texts)
+        self.trie = TokenTrie(self.texts, program.ALPHABETS[language])
 
     def prompt(self, instruction: str) -> str:
         turns = [(f"Instruction: {said}", written) for said, written in self.examples]
-        return _prompt(self.tokenizer, SYSTEM, turns, f"Instruction: {instruction}", self.no_think)
+        return _prompt(self.tokenizer, self.system, turns, f"Instruction: {instruction}", self.no_think)
 
     def write(self, instruction: str) -> dict:
         """{"program": the text written, "complete": it is a whole program (it parses), "tokens": the new tokens, the
         one that ended the writing included, "seconds": the time the model took}."""
         if not self.constrained:
             written, new, seconds = self._free(self.prompt(instruction))
-            return dict(program=written, complete=_parses(written), tokens=len(new), seconds=seconds)
+            return dict(program=written, complete=_parses(written, self.language), tokens=len(new), seconds=seconds)
 
         def allowed(new: list[int]) -> list[int]:
             # every new token so far came from the trie: the end of the sequence ends the writing
-            return allowed_tokens(self.trie, "".join(self.trie.texts[i] for i in new), self.eos_ids)
+            written = "".join(self.trie.texts[i] for i in new)
+            return allowed_tokens(self.trie, written, self.eos_ids, self.language)
 
         prompt = self.prompt(instruction)
+        thought, thought_s = "", 0.0
+        if self.think:
+            prompt, thought, thought_s = self._thought(prompt)
         new, seconds = _generate(self.model, self.tokenizer, prompt, self.max_new_tokens, self.eos_ids, allowed)
         written = "".join(self.trie.texts[i] for i in new if i not in self.eos_ids)
-        return dict(program=written, complete=_parses(written), tokens=len(new), seconds=seconds)
+        out = dict(program=written, complete=_parses(written, self.language), tokens=len(new), seconds=seconds + thought_s)
+        return dict(out, thought=thought) if self.think else out
+
+    def _thought(self, prompt: str) -> tuple[str, str, float]:
+        """(the prompt with the model's reasoning and a closed think block after it, the reasoning, the seconds)."""
+        if not prompt.endswith("<think>\n"):
+            prompt += "<think>\n"
+        end = self.tokenizer.convert_tokens_to_ids("</think>")
+        new, seconds = _generate(self.model, self.tokenizer, prompt, self.think, [end, *self.eos_ids])
+        thought = self.tokenizer.decode([i for i in new if i != end], skip_special_tokens=True)
+        thought = thought.split("</think>")[0].rstrip()
+        return f"{prompt}{thought}\n</think>\n\n", thought, seconds
 
 
 class FactsAnswerer(_Prompted):

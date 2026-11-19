@@ -115,3 +115,37 @@ def test_the_expert_takes_over_from_a_pose_it_would_never_choose():
         assert info["success"] and info["damaged"] is None, info
     finally:
         env.close()
+
+
+def test_a_takeover_at_a_cut_finishes_that_cut_from_where_the_hand_is():
+    """Architecture v3, step 7 (collect.Drift, --takeover_cut 1): the stand-in, an expert of its own, goes for a shoot;
+    the handover comes when its open jaws come near that shoot's cut zone, before the cut, and the expert finishes
+    that cut from there, with no preamble, then prunes the rest. The sub-goal is the column's (notes.SubgoalWriter)."""
+    from sim.pickup.collect import CUT_NEAR, Drift
+    from sim.pickup.notes import SubgoalWriter
+
+    env = _env("prune")
+    try:
+        cut_first = 0
+        for seed in SEEDS:
+            obs = env.reset(seed=seed)
+            writer = SubgoalWriter(env)
+
+            def subgoal():
+                writer.update()
+                return writer.note
+
+            drift = Drift(env, subgoal, seed, cut_prob=1.0)
+            expert = ScriptedExpert(env, seed=0)
+            obs, ended, preamble = hand_over(env, expert, obs, _stand_in(env, seed=7), 700, env.max_steps, drift)
+            assert ended is None, f"seed {seed}: {ended}"
+            assert drift.reason == "cut" and preamble == 0, (drift.reason, preamble)
+            assert drift.shoot not in env.cut and expert.prune_target == drift.shoot and not expert.preamble
+            a, d = env.shoot_axis(drift.shoot)
+            assert np.linalg.norm(env.tcp_pos() - (a + d * 0.035)) < CUT_NEAR
+            info = _finish(env, expert)
+            assert info["damaged"] is None, f"seed {seed}: {info['damaged']}"
+            cut_first += env.cut and info["success"]
+        assert cut_first >= 2, f"the expert finished the cut and the plant on {cut_first} of {len(SEEDS)}"
+    finally:
+        env.close()

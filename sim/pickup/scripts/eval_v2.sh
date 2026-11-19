@@ -14,9 +14,12 @@
 #   PICKUP_EYES=<run dir>               the eyes (a train_eyes.py run), for PICKUP_SCENE=eyes
 #   PICKUP_EYES_CHECKPOINT=<k>          their checkpoint number (default: the latest)
 #   PICKUP_EYES_WEIGHTS=ema|raw         their averaged (default) or trained weights
+#   PICKUP_EYES_CALIBRATION=<file>      v3: the temperatures of their attribute outputs (eyes_calibrate.py)
 #   PICKUP_PROGRAM=gold|writer          the program: the task's own (default), or the one a language model writes
 #   PICKUP_WRITER=<model name or path>  that language model, for PICKUP_PROGRAM=writer
 #   PICKUP_WRITER_WEIGHTS=<checkpoint>  a reason_then_act checkpoint whose language model is loaded over it
+#   PICKUP_WRITER_ARGS="<args>"         more slow_server.py arguments for the writer (v3's: "--language v3 --shots 16
+#                                       --examples A", and --twice to ask twice)
 #   PICKUP_OUT=<dir>   where results.json goes (default results/pickup/<fast run>/<task>_<level>_<scene>_<program>)
 # The slow level's own settings are eval.py's: --slow_stable, --slow_p_min, --slow_unseen, --slow_revoke, --slow_give_up,
 # --patience, --recover. With the eyes the memory's two options are on unless told otherwise (slow_level.DEFAULTS); the
@@ -67,10 +70,12 @@ if [ "$scene" = eyes ] || [ "$program" = writer ]; then
     slow+=(--eyes "$PICKUP_EYES")
     if [ -n "${PICKUP_EYES_CHECKPOINT:-}" ]; then slow+=(--eyes_checkpoint "$PICKUP_EYES_CHECKPOINT"); fi
     if [ -n "${PICKUP_EYES_WEIGHTS:-}" ]; then slow+=(--eyes_weights "$PICKUP_EYES_WEIGHTS"); fi
+    if [ -n "${PICKUP_EYES_CALIBRATION:-}" ]; then slow+=(--eyes_calibration "$PICKUP_EYES_CALIBRATION"); fi
   fi
   if [ "$program" = writer ]; then
     slow+=(--writer "$PICKUP_WRITER")
     if [ -n "${PICKUP_WRITER_WEIGHTS:-}" ]; then slow+=(--writer_weights "$PICKUP_WRITER_WEIGHTS"); fi
+    if [ -n "${PICKUP_WRITER_ARGS:-}" ]; then read -r -a wargs <<< "$PICKUP_WRITER_ARGS"; slow+=("${wargs[@]}"); fi
   fi
   : > "$out/slow_server.log"
   "${foundry_python[@]}" "${slow[@]}" </dev/null >"$out/slow_server.log" 2>&1 &

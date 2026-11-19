@@ -169,6 +169,17 @@ def _wrap(angle: float) -> float:
     return (angle + math.pi) % (2 * math.pi) - math.pi
 
 
+TWO_WAYS = "the instruction is read two ways"  # v3, asked twice: the two programs are not equivalent
+
+
+def _means(written: str, gold) -> bool:
+    """Whether the text of a v3 program means what `gold` does (False where it does not parse)."""
+    try:
+        return equivalent(parse(written, "v3"), gold)
+    except ProgramError:
+        return False
+
+
 def _compile(source, v3: bool | None = None) -> tuple[str | None, Plan | WorldPlan | None, bool]:
     """(the program's text, a plan for it, whether it is run as v3) from a program, the text of one, or None. Text that
     is not a program keeps its text and has no plan. v3 None: a program outside v2's language is run as v3, and text is
@@ -281,6 +292,7 @@ class Supervisor:
             stable=stable, p_min=p_min, unseen=unseen, revoke=revoke, attribute_rule=attribute_rule, witness=witness
         )
         self.text, self.plan, self.v3 = _compile(program, v3)
+        self.no_program = "no program"  # the reason given where there is no plan (TWO_WAYS: asked twice, they differ)
         self.inspect, self.gate_on = inspect, bool(gate)
         # v3: the look in progress ({"fact", "since", "turned"}), the bound's verdict once it ran out, the plate's turn
         self._look: dict | None = None
@@ -432,7 +444,7 @@ class Supervisor:
     def _decide(self, step: int, turned: float = 0.0) -> tuple[Decision, int | None]:
         """What the plan says for the memory now (rules a to c), and the part an Execute (or a look) names."""
         if self.plan is None:
-            return Decision("failed", STOP, detail="no program", home=self.v3), None
+            return Decision("failed", STOP, detail=self.no_program, home=self.v3), None
         if self._given_up:  # rule d gave up: final
             return Decision("failed", STOP, detail="no progress", home=self.v3), None
         if self._look_failed is not None:  # v3: a look ran out of its bound: final
@@ -849,6 +861,7 @@ class SlowLevel:
                 self.gold = Cut(_NAMED[_position_name(env.active.index(shoot), len(env.active))])
             self._stem = self._setup()
         self.written, self._see_s, self._write_s = None, [], []
+        self.second, self.two_ways = None, False  # v3 asked twice: the other program, and whether the two disagree
         if self.source == "gold":
             assert self.gold is not None, "no reasoning task drawn yet: reset the slow level after env.reset"
             given = self.gold
@@ -856,6 +869,10 @@ class SlowLevel:
             reply = self._ask({"cmd": "write", "instruction": env.instruction})
             self._write_s.append(float(reply["latency_s"]))
             given = self.written = str(reply["program"])
+            if "agree" in reply:  # asked twice (slow_server.py --twice): two programs that differ are not acted on
+                self.second, self.two_ways = str(reply["second"]), not reply["agree"]
+                if self.two_ways:
+                    given = None
         self.supervisor = Supervisor(
             given,
             self.stable,
@@ -879,8 +896,12 @@ class SlowLevel:
                 else {}
             ),
         )
+        if self.two_ways:
+            self.supervisor.no_program = TWO_WAYS
         plan = self.supervisor.plan
         self.meaning = None if self.gold is None else plan is not None and equivalent(plan.program, self.gold)
+        if self.two_ways and self.gold is not None:  # what the first program would have meant, for the record
+            self.meaning = _means(self.written, self.gold)
         self._looked = 0
         self._right = dict.fromkeys(CHECKS, 0)
         self._wrong = dict.fromkeys(CHECKS, False)
@@ -1053,6 +1074,7 @@ class SlowLevel:
             program_source=self.source,
             gold=None if self.gold is None else program_text(self.gold),
             written=self.written,
+            **(dict(second=self.second, two_ways=self.two_ways) if self.second is not None else {}),
             program_meaning=self.meaning,
             false_complete=record["declared_complete"] is not None and not bool(info.get("success")),
             ended_false_complete=record["final"] == "complete" and not bool(info.get("success")),

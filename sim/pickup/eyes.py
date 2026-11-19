@@ -579,6 +579,9 @@ class Eyes(nn.Module):
             self.attribute_heads = nn.ModuleDict(
                 {name: nn.Linear(width, len(ATTRIBUTE_CLASSES[name])) for name in config.attributes}
             )
+        # Temperature scaling of each attribute's probabilities in the percept (decode), fitted on validation frames
+        # after training (eyes_calibrate.py): the logits are divided by it. Not a weight: 1 (none) unless set.
+        self.temperature: dict[str, float] = {}
 
     def forward(self, images: torch.Tensor) -> dict[str, torch.Tensor]:
         """images [B, V, 3, S, S]: float in 0..1, or uint8 (scaled here, so that a batch can travel to the GPU as
@@ -670,8 +673,11 @@ class Eyes(nn.Module):
         bearings = torch.atan2(bearing[..., 0], bearing[..., 1]).cpu().tolist()
         p_flower, flower = (x.cpu().tolist() for x in torch.softmax(outputs["flower"].float(), -1).max(-1))
         p_label, label = (x.cpu().tolist() for x in torch.softmax(outputs["label"].float(), -1).max(-1))
-        read = {  # attribute -> (probabilities [B][slots], classes [B][slots])
-            name: tuple(x.cpu().tolist() for x in torch.softmax(outputs[name].float(), -1).max(-1))
+        read = {  # attribute -> (probabilities [B][slots], classes [B][slots]), the temperature applied
+            name: tuple(
+                x.cpu().tolist()
+                for x in torch.softmax(outputs[name].float() / self.temperature.get(name, 1.0), -1).max(-1)
+            )
             for name in self.config.attributes
         }
         percepts = []
@@ -908,10 +914,17 @@ def save(run_dir: str | Path, k: int, model: Eyes, ema: nn.Module | None = None,
     return path
 
 
-def load_eyes(run_dir: str | Path, checkpoint: int | None = None, weights: str = "ema", device: str = "cpu") -> Eyes:
+def load_eyes(
+    run_dir: str | Path,
+    checkpoint: int | None = None,
+    weights: str = "ema",
+    device: str = "cpu",
+    calibration: str | Path | None = None,
+) -> Eyes:
     """The eyes of a run (train_eyes.py), in eval mode: checkpoint `checkpoint` (the latest by default), its averaged
     weights ("ema", as the policies are evaluated) or the trained ones ("model"). The tower backbone's frozen weights
-    are loaded from its tower_name again (the checkpoint holds the rest)."""
+    are loaded from its tower_name again (the checkpoint holds the rest). `calibration`: a file of eyes_calibrate.py
+    whose temperatures the percepts' attribute probabilities are then scaled by."""
     if weights not in ("ema", "model"):
         raise ValueError(f"weights {weights!r}: 'ema' or 'model'")
     run = Path(run_dir)
@@ -925,4 +938,10 @@ def load_eyes(run_dir: str | Path, checkpoint: int | None = None, weights: str =
     model = Eyes(config, pretrained=False)
     state = torch.load(found[k], map_location="cpu", weights_only=True)
     model.load_state_dict(state[weights])
+    if calibration is not None:
+        fitted = json.loads(Path(calibration).read_text())["temperature"]
+        unknown = set(fitted) - set(config.attributes)
+        if unknown:
+            raise ValueError(f"{calibration} has temperatures for {sorted(unknown)}, which these eyes do not read")
+        model.temperature = {name: float(t) for name, t in fitted.items()}
     return model.to(device).eval()
