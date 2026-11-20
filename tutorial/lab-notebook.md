@@ -1164,6 +1164,7 @@ demonstrations learn slowly (25 at checkpoint 5); the paired consistency loss ha
 | From-scratch ViT, 1 s memory, seed 42 (reference) | 87 | 3 (0) | 2 (2) | 2 (0) | 72 (85) | 82 | 79 | 38 |
 | Frozen DINOv2 at 224 px, seed 42 (`dp_dinov2_lang_frames_1s_prune2k_leaffix_20m`) | 92 | 53 (55) | 15 (5) | 0 (0) | 74 (82) | 89 | 89 | 50 |
 | Frozen DINOv2 at 224 px, seed 43 (`..._seed43`) | 95 | 46 (47) | 10 (4) | 1 (0) | 85 (88) | 89 | 91 | 58 |
+| Frozen DINOv3-B/16 at 224 px, seed 42 (`dp_dinov3_lang_frames_1s_prune2k_leaffix_20m`) | 91 | 43 (70) | 12 (6) | 0 (0) | 66 (69) | 91 | 89 | 49 |
 | DART-style noisy demonstrations, from-scratch ViT (`dp_vit_lang_frames_1s_prune2k_leaffix_dart01_20m`) | 40 | 2 (0) | 3 (2) | 0 (0) | 16 (32) | 39 | 43 | 22 |
 | Paired consistency loss, from-scratch ViT (`dp_vit_lang_frames_1s_twin_prune2k_leaffix_paired_20m`) | 0 | 0 (0) | 0 (1) | 0 (0) | 0 (0) | 2 | 1 | 0 |
 
