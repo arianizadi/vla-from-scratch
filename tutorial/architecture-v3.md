@@ -940,8 +940,21 @@ With both, v3 on the eyes with the written program (evaluation layouts) solves `
 `buds` 187: 2016 of 2600 against 1451 with step 5's writer, and above the task's program of step 7 on every situation
 but `nothing_to_do` (197 against 198) and `sick` (level). The cut stays at 8.4 mm.
 
+**The cut, diagnosed** (the notebook has the tables; `sim/pickup/cut_diag.py`, `sim/pickup/cut_probe.py`). The
+expert's own cut is a consistent target (5.8 mm, its hand settling toward a set-point on the axis). Handed the arm by
+the expert 6 cm from the cut zone, the fast level cuts as the expert does (6.0 mm; 6.4 from 10 cm); from its own
+approach, 7.4 to 8.1. The error is made on the way in, before 10 cm (the jaws' height off by a standard deviation of
+6.8 mm at 6 cm against the expert's 4.2, the hand 3 degrees off square on average), and never corrected: handed over
+10 cm out on a line moved 6 mm up or down, it keeps 93% of the offset. The frozen encoder's wrist tokens at 224 pixels
+read that height to 1.6 mm from 10 cm out (1.2 mm with twice the pixels), and executing fewer actions per chunk, more
+flow steps or averaged chunks change nothing. So neither perception nor inference is the limit but a policy whose
+demonstrations never correct the line. DART-style demonstrations, quiet near the cut (`collect.py --action_noise 0.02
+--action_noise_quiet_cm 3`, 35% of a 3M fine-tune), teach a quarter of the correction (75% of a 6 mm error kept): the
+mean cut 0.6 mm nearer and the 90th percentile 1.2 to 1.8 mm, the median 8.0 against 8.4 on v3 whole, and 1990 of
+2600 against 2016. Not adopted; the DINOv2 seed-43 fast level stays.
+
 **Next**: rung 5 (step 9) on the adapted writer, whose held-out compositions are its weakest (64 of 100); then steps 8
-to 12. The cut's distance from the shoot (about 8 mm against 6) is not the encoder's and remains open.
+to 12. For the cut: demonstrations that correct the line as most of the data, from the start (20M samples).
 
 
 ## Risks

@@ -1345,7 +1345,8 @@ What the pieces show:
   wrong-shoot cuts come from the same error (an arm that went for a shoot it cannot reach closes on one it can). The
   rule sends the arm back to its start pose when the jaws are set to cut a shoot more than 45 degrees out of reach and
   the plate stands, with a grace of four looks after each cut. All of v2 on the eyes, written program: **180/200 and
-  165/200 held out** with the seed-43 fast level (169 and 148 without), 175 and 157 with seed 44 (169 and 145); with
+  165/200 held out** (single runs; 179 and 160 on average over repeats, see "The headline, reproduced") with the
+  seed-43 fast level (169 and 148 without), 175 and 157 with seed 44 (169 and 145); with
   the task's own program 178 and 183, 171 and 174. Wrong-shoot cuts fall from 6-8 per run to 0-1. Single runs of
   200, with the thresholds tuned on seed 43's validation layouts. It does not help the 1 s memory fast level.
 - **Eyes trained on the fast level's own frames** cut false "cut" reports from 0.79% to 0.11% of parts in view but
@@ -1375,6 +1376,23 @@ What the pieces show:
 - **The film** (`reasoning-v2`) now shows that headline configuration (v2 on the eyes, written program, memory options,
   seed-43 sub-goal fast level, up to two resets): five episodes, among them a reset followed by a turn and the cut, and
   a label read, turned away and remembered.
+- **The headline, reproduced** (after architecture v3's step 7: the same configuration in v3's code gave 182 and 153).
+  The run's own record and the code agree on every setting (the fast level's file, its averaged weights, evaluation
+  layouts 1,000,000 to 1,000,199, 8 actions a chunk and 10 flow steps, the eyes' checkpoint, the writer's snapshot,
+  prompt and greedy decoding, the memory's options, `--resets 2`), the written programs are the same on all 400
+  layouts, and nothing changed since in the simulator, the wordings or v2's slow level. Repeated, 200 episodes each:
+
+  | Code | training wordings | held-out wordings |
+  |---|---|---|
+  | the published run's (exported and run again) | 180 (published), 181 | 165 (published), 165, 162 |
+  | v3's | 182, 178, 175 | 153, 161, 156, 161 |
+  | both, every run | **179** on average (175 to 182) | **160** on average (153 to 165) |
+
+  On held-out wordings no layout fails in every run of one code and succeeds in every run of the other, and with the sampler's noise seeded
+  per episode (`--noise episode`) the two codes solve 72 and 74 of the same 100 held-out layouts, with only 28 of 100
+  episodes alike to the step: rollouts are chaotic, and a run of 200 varies by about 6 either way. The published
+  165 is a high draw, not a configuration since lost. **The numbers to quote are 179/200 and 160/200** (the mean of 5
+  and 7 runs); the comparisons above, made against single runs, stand.
 
 ## Architecture v3: the language, the truth with attributes, the plan (steps 1 to 3)
 
@@ -2180,8 +2198,9 @@ E13b and step 7), the task's program, every run as step 7's:
 
 v2 in its headline configuration (the eyes `eyes_vit_fwp_2m`, v2's written program, the memory's two options, up to two
 resets; `reason_mix` in training and held-out wordings, 200 evaluation layouts), run in this code over each fast level:
-v2's own fast level (the seed-43 ViT, not fine-tuned on ties) 182 and 153 (the published run: 180 and 165), DINOv2
-seed 43 175 and 164, seed 42 169 and 156.
+v2's own fast level (the seed-43 ViT, not fine-tuned on ties) 182 and 153 (the published run: 180 and 165; over 5
+and 7 repeats in both codes 179 and 160 on average, see "The headline, reproduced" in v2's section), DINOv2 seed 43
+175 and 164, seed 42 169 and 156.
 
 - **The cut is no closer.** The jaws close 7.9 to 8.8 mm from the shoot's axis on every set of layouts, as the ViT
   fast level's 8.2 to 8.3, against the expert's 5.9. Neither a pretrained encoder nor the takeover data of step 7 moves
@@ -2228,6 +2247,132 @@ configurations (v3) and two (v2), 2 validation and 4 evaluation grids of the fas
 headline runs (1200), and 39 closed-loop runs with written programs (6,800 episodes), in
 `results/pickup/v3fix/`. GPUs 6 and 7 of an L40S machine were held for 11.5 and 11.7 hours of wall time (23.2
 GPU-hours), 18.1 of them training the two fast levels beside the rest.
+
+### The cut, diagnosed: where the fast level's 8 mm come from
+
+Every fast level tried closes its jaws 7.9 to 8.8 mm from the shoot's axis, the expert 5.9 mm, and neither a
+pretrained encoder nor takeover data moved it. Diagnosed first, cheaply, with the DINOv2 seed-43 fast level
+(`sim/pickup/cut_diag.py`: the simulator and the fast level in one process, `prune` on validation layouts from clear
+starts; the scripted expert chooses the shoot and turns the plate; each cut measured as `cut_places` measures it, and
+the offset also split in the hand's frame: along the closing jaws, which close vertically, and across them).
+
+**(c) The expert's own cut is a consistent target.** Its set-point is always on the shoot's axis (0.2 to 0.7 mm in its
+commands over the last 5 cm), at a point drawn from 31 to 39 mm out along it. Where its hand really is when the shoot
+is cut (200 episodes, 488 cuts): 5.8 mm median, 6.2 mean, 9.8 at the 90th percentile, almost all of it along the
+closing jaws (standard deviation 4.1 mm; 0.8 mm across them): the hand still settling toward the set-point when the
+jaws shut (it closes once within 12 mm of it, and the cut comes 3 control steps later). Two runs of the expert agree
+to 0.1 mm. So 5.9 mm is the floor this expert's demonstrations teach, and the right thing to compare with.
+
+**(a) Perception or control: the expert drives, then hands the arm to the fast level** at a distance from the middle
+of the shoot's cut zone, with the jaws open and the sub-goal of that shoot (`--mode handover`, 150 episodes each, the
+first cut of each episode):
+
+| Handed over | cuts | across the shoot: median | mean | 90th percentile | spread along the jaws (sd) | across the jaws (sd) |
+|---|---|---|---|---|---|---|
+| the expert alone | 488 | 5.8 mm | 6.2 | 9.8 | 4.1 | 0.8 |
+| at 1.5 cm | 148 | 5.7 mm | 6.0 | 9.5 | 4.1 | 1.0 |
+| at 3 cm | 147 | 5.8 mm | 6.1 | 9.5 | 4.0 | 1.5 |
+| at 6 cm | 149 | 6.0 mm | 6.3 | 9.7 | 4.4 | 1.3 |
+| at 10 cm | 149 | 6.4 mm | 6.7 | 10.4 | 4.8 | 1.4 |
+| as soon as the shoot is chosen and in reach (two runs) | 147, 143 | 8.1, 7.4 mm | 8.3, 7.5 | 14.5, 13.6 | 7.2, 6.3 | 2.9, 2.5 |
+
+- **From the expert's state 6 cm out the fast level cuts as well as the expert** (6.0 mm against 5.8), from 10 cm
+  nearly (6.4). The last centimetres, the closing and what the 224-pixel cameras show there are not the limit.
+- **The error is made on the fast level's own way in, before 10 cm, and never corrected.** Where its hand passes 6 cm
+  from the cut zone, on its own approach: along the jaws (height) a standard deviation of 6.8 mm against the expert's
+  4.2, across them 5.4 against 0.7, and its pointing 3.1 degrees from square across the shoot on average, 11.7 at the
+  90th percentile, against 0.0. From there to the cut it keeps the height error (correlation 0.93, slope 0.93 between
+  the offset at 6 cm and at the cut) and the angle, and takes out only a third of the sideways error. The expert's
+  demonstrations never show a correction there: its line of approach is set 13 to 15 cm out and followed straight.
+- **Open loop, at the expert's own states** (60 episodes), the fast level's chunks are where the expert's commands are
+  to 2.5 to 3.5 mm over the 8 actions executed within 5 cm of the cut zone (4.1 from 5 to 8 cm), and the hand they lead
+  to is 2.2 to 2.8 mm from the axis (the expert's 0.2 to 0.7); 8 chunks drawn at the same state lie 1.8 to 2.1 mm
+  apart. Small next to the 6 to 7 mm the
+  closed loop adds: the gap is compounding error on states the demonstrations do not cover.
+
+**(b) Inference settings near the cut** (handed over as soon as the shoot is chosen, 150 episodes each): 8 actions
+executed per chunk 8.1 and 7.4 mm (two runs; the noise between runs is about 0.7 mm); 4 actions 7.7; 2 actions 8.4 (4
+episodes damaged); 8 chunks drawn per look and averaged 7.7; 4 actions and 8 chunks averaged 7.8; 30 flow steps instead
+of 10 breaks the policy (13.4 mm, 68 of 150 episodes damaged; it was trained and always run with 10). No setting moves
+the cut beyond the noise: the error is not in how the chunks are sampled or executed.
+
+**(d) Resolution: the encoder sees the error; the policy does not act on it.** The expert approached along its line
+moved by up to 10 mm up or down and sideways (300 `prune` episodes, 2191 frames where its hand passed 10, 6 and 3 cm
+from the cut zone; `sim/pickup/cut_probe.py`), and a ridge regression on the frozen DINOv2-B patch tokens of one image,
+fitted on four fifths of the episodes, read the offset of the shoot's axis in the hand's frame on the rest:
+
+| View (224 pixels to the encoder) | along the jaws (height), sd 6.6 mm | across them, sd 2.5 mm | along the shoot, sd 6.3 mm |
+|---|---|---|---|
+| wrist | 1.6 mm at 10, 6 and 3 cm | 0.7 to 0.8 | 1.9 to 2.2 |
+| wrist rendered at 448, its middle kept (twice the pixels) | 1.2 to 1.3 | 0.5 to 0.6 | 1.7 to 2.2 |
+| front | 4.4 to 4.6 | 2.1 to 2.2 | 3.9 to 4.0 |
+
+  The wrist image at 224 pixels already tells the height of the jaws against the shoot to 1.6 mm from 10 cm out, a
+  quarter of the fast level's 6.8 mm error there; twice the pixels takes 0.3 to 0.4 mm off that. And handed the arm at
+  10 cm on a line moved 6 mm up or down (150 episodes), the fast level keeps 93% of the offset to the cut (the slope
+  of the offset at the cut on the offset at the handover; 0.94 when handed over at 1 cm, where no correction is
+  possible): it does not correct an error its encoder can read. So no high-resolution crop was trained: the limit is
+  what the policy learned to do with what it sees (its demonstrations never correct the line), not the pixels.
+
+**The fix tried: demonstrations that show the correction (DART-style, quiet near the cut).** `collect.py
+--action_noise 0.02 --action_noise_quiet_cm 3`: the expert's executed joint targets get a smooth random offset
+(standard deviation 0.02 rad, correlation 0.9 a step), its own commands are recorded as the actions, and no fresh noise
+is added within 3 cm of an uncut shoot's cut zone or with the jaws commanded shut (`ActionNoise.calm`), so the offset
+dies away and the demonstrations show the hand brought back onto the line before the cut. The size was chosen with the
+expert alone (80 `prune` episodes each):
+
+| Expert with noise | solved | damaged | at 6 cm: sd along the jaws | pointing (mean, 90th pct) | its cut: median |
+|---|---|---|---|---|---|
+| none | 196 of 200 | 0 | 4.2 mm | 0.0, 0.0 degrees | 5.8 mm |
+| 0.01 rad, everywhere | 63 | 17 | 6.4 | 0.7, 1.5 | 8.1 |
+| 0.01 rad, quiet within 3 cm | 70 | 5 | 6.1 | 0.7, 1.4 | 6.3 |
+| **0.02 rad, quiet within 3 cm** | 53 | 13 | **10.1** | 1.3, 2.5 | 6.9 |
+| 0.02 rad, everywhere | 21 | 42 | 10.0 | 1.4, 2.7 | 8.7 |
+| 0.03 rad, quiet within 3 cm | 37 | 20 | 14.4 | 2.0, 4.1 | 6.7 |
+| 0.03 rad, everywhere | 2 | 58 | 14.5 | 1.9, 3.7 | 9.6 |
+
+Noise of 0.02 rad pushes the hand off its line of approach by more than the fast level's own errors (10.1 mm at 6 cm
+against 6.8), and quiet near the cut the expert still cuts at 6.9 mm: only successful episodes are kept, with the clean
+commands as labels. 3000 `reason_mix` demonstrations from random starts (seeds from 400,000, 4758 attempted, 867,122
+frames: `reason_mix_3k_rs_tail10_dart02q3`). The DINOv2 seed-43 fast level fine-tuned from its averaged weights for 3M
+samples at a peak learning rate of 2e-4 on `reason_mix_8k_rs_tail10`, `ties_1500_rs_tail10` and these (0.45, 0.2,
+0.35 of each batch, the old normalisation: `dp_dinov2_lang_reactive_subgoal_reason8k_ties_dart_ft3m_seed43`), and as
+the control the same fine-tune without them (0.7, 0.3: `..._ctrl_ft3m_seed43`), which step 7 lacked.
+
+**Result** (the DART fine-tune against the fast level as it is and the control fine-tune):
+
+| | DINOv2 seed 43 | control fine-tune | **DART fine-tune** |
+|---|---|---|---|
+| handed over as soon as the shoot is chosen (150): cut, median (mean, 90th pct) | 8.1, 7.4 (8.3, 7.5; 14.5, 13.6) mm | 7.3 (7.7, 12.3) | 7.3 (7.4, 11.6) |
+| a 6 mm height error handed over at 10 cm: kept at the cut | 93% | | 75% |
+| validation layouts, the simulator's scene, of 650 | 611 | 614 | 608 |
+| cut on validation: median (mean, 90th pct) | 7.9 (8.4, 13.8) mm | 7.8 (8.2, 13.6) | 7.6 (7.8, 12.6) |
+| v3 whole (LoRA writer, rollout eyes, written programs; evaluation layouts, the 14 cells above), of 2600 | 2016 | | 1990 |
+| ... cut over all its cuts: median (mean, 90th pct) | 8.4 (8.7, 14.2) mm | | 8.0 (8.1, 12.4) |
+| v2's `reason_mix` (v2's slow level, clear starts): the simulator's scene / the rollout eyes | 180 / 193 | | 189 / 189 |
+
+v3 whole, cell by cell for the DART fine-tune (against DINOv2 seed 43): `prune` 181 (186), `order` 264 of 300 (276),
+`nothing_to_do` 198 (197), `ties` 195 (194), `sick` 171 (172), `buds` 184 (189); held-out frames `order` 251 (245),
+`ties` 195 (195), `sick` 164 (175), `buds` 187 (187).
+
+- **The demonstrations of the correction help a little and not enough.** The fine-tune now takes out a quarter of a
+  height error from 10 cm (75% kept against 93%) and narrows the spread: the mean cut 0.4 to 0.6 mm nearer and the 90th
+  percentile 1.2 to 1.8 mm nearer, on validation layouts and on all 3060 cuts of v3 whole. The median moves 0.3 to 0.4
+  mm, the same as the control fine-tune moves it in the handover test, and stays 8.0 against the expert's 5.9.
+- **No success is gained** (608 against 611 on validation, 1990 against 2016 of 2600 in v3 whole, within noise of
+  14 cells; `reason_mix` level). By the rule set for this change (kept only if the cut is clearly closer and nothing is
+  lost) **the DART fine-tune is not adopted**: v3's fast level stays the DINOv2 seed-43 one.
+- **Inference settings and resolution are ruled out, and so is the encoder**: what the cut needs is a policy that
+  corrects its line from what the wrist camera shows, which these demonstrations teach weakly at 35% of the batches for
+  3M samples. A stronger dose (DART demonstrations as most of the data, noise that reaches nearer the cut, a 20M run
+  from the start) is the next step; a scripted correction from the simulator's truth would only hide it.
+
+Runs: 29 diagnosis runs (`cut_diag.py`: 3840 episodes; `cut_probe.py`: 300), one DART collection (3000 kept of 4758,
+11 minutes on 48 processes), two fine-tunes (3M samples each, 84 and 79 minutes beside the rest), two validation
+grids (1300 episodes), v3 whole over the DART fine-tune (2600) and `reason_mix` (400), in `results/pickup/cutdiag/`,
+`results/pickup/v3fix/fast/` and `results/pickup/v3fix/writer_loop/lora_dart43/`; with the v2 reproduction below
+(10 runs, 1800 episodes), GPUs 6 and 7 of an L40S machine were held for 3.4 hours of wall time each (6.8
+GPU-hours).
 
 ## Throughput
 
