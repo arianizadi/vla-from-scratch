@@ -1174,6 +1174,16 @@ than from scratch too (wind 89, bump 89-91, a sticky button 50-58 against 38). A
 plain success and buys no robustness; the consistency loss between a frame and its re-rendered twin keeps the
 from-scratch policy from learning at all, as the paired data alone did.
 
+**A frozen encoder on paired demonstrations: the first policy that holds when the camera or the bench changes (interim).**
+The frozen Qwen3-VL vision tower trained on the paired demonstrations (the plain ones plus the same ones drawn again
+under other lighting, camera poses and benches; `dp_tower_lang_frames_1s_prune2k_leaffix_paired_20m`, seed 42), final
+averaged weights, the first six cells of its report card (the rest are being run): plain 75 (to be confirmed), lighting
+60 (29 under lights never seen), camera 51 (53 for the larger held-out moves), bench 37 (16 for benches never seen).
+Every policy trained on plain demonstrations scored 0-15 under a moved camera and 0-2 on another bench, and the
+from-scratch ViT never learned from the paired data at all: a frozen pretrained encoder is what lets the paired looks
+be learned, and the looks are what carry over to the camera and the bench. Runs of the same with frozen DINOv2 (seeds
+42, 43, 44) are under way.
+
 **Aim drills.** Seven motor drills on the bare table (`tutorial/aim-range.md`: touch, touch along a pin, stop on,
 follow, flick between, press, pinch; the expert solves each at 499-500/500), as practice for the arm. Co-trained with
 pruning (75% pruning, 25% drills, `dp_vit_lang_reactive_prune2k_aim8k_co27m`): 22/100 on pruning (66 on the drills),
