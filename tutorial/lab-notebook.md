@@ -1183,12 +1183,13 @@ complete card), 100 layouts per cell:
 | Policy | plain | lighting (/test) | camera (/test) | bench (/test) | distractors (/test) | wind | bump | sticky |
 |---|---|---|---|---|---|---|---|---|
 | Frozen Qwen3-VL tower, plain demonstrations | 92 | 29 (1) | 10 (8) | 18 (14) | 73 (87) | 85 | 86 | 58 |
-| Frozen Qwen3-VL tower, paired demonstrations (wind, bump, sticky, distractors still running) | 80 | 60 (29) | 51 (53) | 37 (16) | - | - | - | - |
+| Frozen Qwen3-VL tower, paired demonstrations | 80 | 60 (29) | 51 (53) | 37 (16) | 61 (59) | 84 | 78 | 56 |
 
 On plain demonstrations the tower is as good a pruner as DINOv2 (92) but holds less of it under new lighting (29, and
 1 under lights never seen, against DINOv2's 53 and 55). Trained on the paired demonstrations it gives up 12 in its own
 room and gains everywhere the look changes: lighting 29 to 60, camera 10 to 51 (8 to 53 for the larger held-out moves),
-bench 18 to 37. Every policy trained on plain demonstrations scored 0-15 under a moved camera and 0-18 on another
+bench 18 to 37. Distractors fall (73 and 87 to 61 and 59): the one look the paired demonstrations lack, since the
+distractors look was never drawn in them (the placement bug fixed above). Every policy trained on plain demonstrations scored 0-15 under a moved camera and 0-18 on another
 bench, and the from-scratch ViT never learned from the paired data at all: a frozen pretrained encoder is what lets the
 paired looks be learned, and the looks are what carry over to the camera and the bench. Runs of the same with frozen
 DINOv2 (seeds 42, 43, 44) and DINOv3 are under way.
