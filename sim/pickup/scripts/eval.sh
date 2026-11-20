@@ -39,5 +39,9 @@ until grep -qs "listening on" "$out/policy_server.log"; do
 done
 "${sim_python[@]}" -m sim.pickup.eval --task "$task" --episodes "$episodes" --port "$port" --out "$out" \
   "${expect[@]}" --shutdown_server "$@"
-wait $server || true
+# The server is told to stop; one that is still up a minute later is stopped here, so that an evaluator (and a report
+# card waiting on it) never hangs on a server that missed the request.
+for _ in $(seq 60); do kill -0 $server 2>/dev/null || break; sleep 1; done
+kill $server 2>/dev/null || true
+wait $server 2>/dev/null || true
 trap - EXIT
