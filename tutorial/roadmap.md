@@ -162,7 +162,7 @@ another shoot's makes it cut that shoot, so the text drives the action. Held-out
 **Stage 2 result (architecture v2, `tutorial/architecture-v2.md`).** Trained eyes read the plant into a part-level scene
 memory, the frozen language model writes the instruction as a typed program, and code runs it: 169/200 on training
 instructions and 148/200 held out, against 133 and 66 for stage 1; with a reset for the fast level's wrong first move,
-180/200 and 165/200 (175 and 157 on a second fast-level seed). The fast level is now the limit. Two tries at a
+179/200 and 160/200 on average over repeated runs (one run gave 180 and 165; 175 and 157 on a second fast-level seed). The fast level is now the limit. Two tries at a
 better fast level did not beat it: told its aim (in reach or not, which way to turn) it turns the plant reliably but
 loses as many episodes to turning past the target (163/200 and 152/200), and a frame from one second earlier does not
 help a fast level that is strong without it.

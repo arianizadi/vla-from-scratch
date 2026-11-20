@@ -185,10 +185,10 @@ went for a shoot it cannot reach closes on one it can). The **reset** sends the 
 pose when the jaws are set to cut a shoot more than 45 degrees out of reach and the plate stands, with
 a grace of four looks after each cut, so the fast level chooses again.
 
-All of v2 on the eyes, written program, with resets: **180/200 and 165/200 held out** with the seed-43
-fast level (169 and 148 without); 175 and 157 with seed 44 (169 and 145). Wrong-shoot cuts fall from
-6-8 per run to 0-1. These are single runs of 200, with the thresholds tuned on seed 43's validation
-layouts.
+All of v2 on the eyes, written program, with resets: **179/200 and 160/200 held out** with the seed-43
+fast level, the means of 5 and 7 runs of 200 (the first run gave 180 and 165; single runs vary by about
+6 either way). Without the reset, 169 and 148; 175 and 157 with seed 44 (169 and 145). Wrong-shoot cuts
+fall from 6-8 per run to 0-1. The thresholds were tuned on seed 43's validation layouts.
 
 ### Two tries at a better fast level
 
