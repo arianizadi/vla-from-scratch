@@ -41,9 +41,9 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from PIL import Image
 
-from .disturb import Disturbance
 from . import reasoning
-from .env import CONTROL_HZ, REACH_AZIMUTH, TASKS, PickupEnv
+from .disturb import Disturbance
+from .env import CONTROL_HZ, CUT_MID, REACH_AZIMUTH, TASKS, PickupEnv
 from .eval import connect, infer_request
 from .expert import ScriptedExpert, clear_start, random_start
 from .notes import NoteWriter, SubgoalWriter, note_columns
@@ -243,7 +243,7 @@ def _worker(args):
             if kind == "none" and drifts:
                 kind = "drift"
         disturbance = Disturbance(env, kind, step=step, distance=distance, seed=seed, speed=speed)
-        noise = ActionNoise(seed, action_noise)
+        noise = ActionNoise(seed, *action_noise)
         frames = {c: [] for c in CAMERAS}
         states, actions, step_notes = [], [], []
         if writer is not None:
@@ -260,7 +260,7 @@ def _worker(args):
             states.append(obs["state"])
             actions.append(action)  # the expert's own command is the label, also when another one is executed
             disturbance.update(action)
-            obs, done, info = env.step(noise.apply(action) if len(actions) > hold_steps else action)
+            obs, done, info = env.step(noise.apply(action, env) if len(actions) > hold_steps else action)
         if not info["success"]:
             results.append(dict(seed=seed, success=False, **handover, after_handover=_ending(info)))
             continue
@@ -322,13 +322,32 @@ class ActionNoise:
     CORR = 0.9
     ARM = 7
 
-    def __init__(self, seed: int, sigma: float):
+    def __init__(self, seed: int, sigma: float, quiet: float = 0.0):
         self.sigma, self.rng, self.offset = sigma, np.random.default_rng([seed, 13]), np.zeros(self.ARM)
+        self.quiet = quiet
 
-    def apply(self, action: np.ndarray) -> np.ndarray:
+    def calm(self, env, action) -> bool:
+        """--action_noise_quiet_cm: no fresh noise (the offset dies away, by CORR a step) while the jaws are commanded
+        shut or the gripper's centre is within `quiet` metres of the middle of an uncut shoot's cut zone, so that the
+        expert still cuts where it aims and the frames before show the arm brought back onto its line of approach."""
+        if self.quiet <= 0 or not env.plant_task:
+            return False
+        if action[7] < 0.5:
+            return True
+        tcp = env.tcp_pos()
+        for name in env.active:
+            if name not in env.cut:
+                a, d = env.shoot_axis(name)
+                if np.linalg.norm(tcp - (a + d * CUT_MID)) < self.quiet:
+                    return True
+        return False
+
+    def apply(self, action: np.ndarray, env=None) -> np.ndarray:
         if self.sigma <= 0:
             return action
         fresh = self.rng.normal(0.0, self.sigma * np.sqrt(1 - self.CORR**2), self.ARM)
+        if env is not None and self.calm(env, action):
+            fresh = np.zeros(self.ARM)  # drawn all the same, so the stream does not depend on where the arm is
         self.offset = self.CORR * self.offset + fresh
         executed = np.array(action, dtype=np.float64, copy=True)
         executed[: self.ARM] += self.offset
@@ -516,6 +535,13 @@ def main():
         "shows recoveries from states a policy's own small errors lead to. 0: none",
     )
     ap.add_argument(
+        "--action_noise_quiet_cm",
+        type=float,
+        default=0.0,
+        help="with --action_noise, pruning: no fresh noise while the jaws are commanded shut or the gripper's centre "
+        "is within this many cm of the middle of an uncut shoot's cut zone (ActionNoise.calm). 0: noise everywhere",
+    )
+    ap.add_argument(
         "--park_reset",
         action="store_true",
         help="put an unused side shoot back as built at every reset (PickupEnv(park_reset=True)), so that an episode "
@@ -580,7 +606,7 @@ def main():
                 args.scenario,
                 args.leaf_fix,
                 args.park_reset,
-                args.action_noise,
+                (args.action_noise, args.action_noise_quiet_cm / 100),
                 args.subgoal_column,
                 args.clear_start,
             )
@@ -687,7 +713,15 @@ def main():
         **({"scenario": args.scenario} if args.scenario else {}),
         **({"leaf_fix": True} if args.leaf_fix else {}),
         **({"park_reset": True} if args.park_reset else {}),
-        **({"action_noise": args.action_noise, "action_noise_corr": ActionNoise.CORR} if args.action_noise else {}),
+        **(
+            {
+                "action_noise": args.action_noise,
+                "action_noise_corr": ActionNoise.CORR,
+                "action_noise_quiet_cm": args.action_noise_quiet_cm,
+            }
+            if args.action_noise
+            else {}
+        ),
         takeover=_takeover_summary(args, servers, attempted, kept[len(included) :], endings),
         included=[
             dict(dataset=Path(p).name, episodes=sum(e["source"] == Path(p).name for e in included))
