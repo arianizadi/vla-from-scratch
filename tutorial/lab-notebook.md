@@ -2057,6 +2057,177 @@ temperature fits, 12 validation and 18 evaluation closed-loop runs for step 7 (a
 (2,600 episodes) and the writer alone (8 configurations), in `results/pickup/step5/`, `results/pickup/e15/` and
 `results/pickup/step7/`. GPUs 6 and 7 of an L40S machine were held for 2.5 and 2.2 hours of wall time (4.7 GPU-hours), shared by up to 16 runs at once.
 
+### After step 7: the writer fine-tuned with LoRA, and the fast level on a frozen DINOv2 encoder
+
+Design: architecture-v3.md, "After step 7, as built". The two parts that step 7 left weakest: the program writer
+(meaning on 83% of training instructions, 54% of held-out frames, 56% of held-out compositions; `sick` 125 and `buds`
+121 with written programs) and the fast level's cut (8.2 mm from the shoot's axis against the expert's 5.9, and 26 to 30
+of 650 validation episodes lost turning the plate on past a full turn).
+
+**The writer: thinking first, and LoRA on program writing.** Scored alone exactly as E15 (100 tasks per situation and
+split, seed 0, the second prompt, examples A, 16, constrained; the base run reproduces E15's report row for row). The
+writer of v2 and E15 is already the Qwen3-VL-2B **Thinking** checkpoint, made to answer at once with an empty think
+block; the Instruct checkpoint is not in the machine's cache, and nothing was downloaded. So "thinking" is the same
+checkpoint let to reason first (up to 2048 tokens, greedily or sampled at Qwen's 0.6 / top-p 0.95 / top-k 20 for
+thinking, reasoning in batches of 16 instructions; only the program after `</think>` is held to the grammar). LoRA is
+the same model with low-rank adapters (rank 16, alpha 32, on q, k, v, o, gate, up and down of the 28 language-model
+layers, 17.4M parameters, the base frozen; `writer_tune.py`) trained on program writing alone, with the same prompt as
+at test time: 2191 instructions written from templates and synonyms of every situation's training tasks (prune, the
+three orders, ties of each colour and any tie, sick and healthy, with and without a bud, in both polarities: "keep the
+healthy shoots and trim every other shoot"), the first set of compositions said in other words (never recombined), and
+v2's training tasks in its frames and training paraphrases. Kept out, and tested (`check_excluded`,
+`test_writer_tune.py`): every held-out instruction of v3 and v2, every word that only held-out instructions use (45,
+from "snip", "branch", "spare", "unhealthy" to "to", "of", "each", "only") and every two-word sequence that only they
+use, and every program equivalent to a held-out composition's (v3's eight and v2's five). Two epochs, learning rate
+1e-4, batches of 8, 548 steps in 41 minutes on a shared GPU; the loss is on the program and the end of the turn only.
+
+Meaning of 100 tasks (resolved on the plant drawn in brackets where it differs):
+
+| Writer | training (of 700) | held-out frames (of 400) | held-out compositions | order train / held out | ties held out | sick train / held out | buds train / held out | compositions, first set | seconds per instruction |
+|---|---|---|---|---|---|---|---|---|---|
+| E15: as downloaded, no thinking | 580 (610) | 215 | 56 (77) | 68 (88) / 88 | 78 | 66 / 0 | 67 / 49 | 79 (89) | 0.7 |
+| thinking first, greedy | 566 (586) | 181 (239) | 60 (75) | 77 (85) / 58 (73) | 72 | 66 / 0 (28) | 67 / 51 (66) | 56 (68) | 15.6 |
+| thinking first, sampled | 386 (432) | 212 (238) | 67 (79) | 58 (84) / 89 (91) | 72 | 100 / 0 (9) | 68 (76) / 51 (66) | 60 (72) | 22.3 |
+| **LoRA on program writing** | **700** | **382 (392)** | **64 (86)** | 100 / 82 (92) | **100** | **100 / 100** | **100 / 100** | 100 | 0.5 |
+
+v2's test of its own writer (25 tasks per kind and split, v2's prompt with eight examples, v2's grammar): 100 and 92
+of 100 as downloaded, **100 and 100 with the adapters** (the misses were "keep the middle one" in new wordings and an
+"unless" read backwards). Nothing of v2 regressed.
+
+- **Thinking does not fix polarity.** Greedy, 82 of 106 instructions ran out of 2048 tokens in a loop of "wait, no";
+  sampled, 66 did, and the one prune instruction was written `Cut(Except(All(),ReadLabel()))`, so every `prune` and
+  `nothing_to_do` task was lost. On held-out `sick` frames both still write `sick,no`. It costs 20 to 30 times the
+  time and is not used.
+- **The adapters fix polarity and the situations' held-out wordings**: every training task, and of the held-out frames
+  `ties`, `sick` and `buds` 100 of 100 each (78, 0, 49 before), so "the unhealthy shoots have to go" and "spare the
+  budding branches and snip the rest" are read right with none of their words or word pairs seen. What is left: one
+  held-out order frame of two ("remove the middle branch before the lowest branch", 12 of 30 pair tasks against 18
+  as downloaded: "before" is a word it never saw, and it writes one cut or `CutFrom`), and held-out compositions at 64
+  (P4 asks 75): "two of the shoots have to go, whichever" is `Cut(All())`, "begin at the bottom and remove each branch
+  that has no bud" loses its order, an "unless" and a "should" lose their condition. The training loss is near zero
+  within the first epoch; these are what templates of other tasks cannot teach.
+- **A verifier was not built.** The gap left on rungs 1 to 4 is one sentence frame; the compositions' gap is rung 5's,
+  which no closed loop runs yet (step 9). A verifier that reads the program back in words would ask the same 2B model
+  to judge the polarity it got wrong before.
+
+**v3 on the eyes with the written program** (the rollout eyes `eyes_v3_fwp_roll_3m`, the fast level fine-tuned on
+ties, evaluation layouts, 200 a cell, `order` 100 a mode; the adapters' writer against the writer as downloaded, run
+again on these eyes where it writes any wrong program, and the task's program of step 7):
+
+| Situation | the task's program (step 7) | as downloaded | **LoRA writer** | written right: as downloaded / LoRA | wrong shoots cut: as downloaded / LoRA |
+|---|---|---|---|---|---|
+| `prune` | 157 | (157) | **166** | 200 / 200 | 0 / 0 |
+| `order`, of 300 | 242 | 224 | **257** | 226 / 300 | 4 / 0 |
+| `order`: from the top down | 78 | 61 | 86 | 43 / 100 | 0 / 0 |
+| `order`: from the bottom up | 79 | 75 | 84 | 100 / 100 | 0 / 0 |
+| `order`: a pair | 85 | 88 | 87 | 83 / 100 | 4 / 0 |
+| `nothing_to_do` | 198 | (198) | **198** | 200 / 200 | 0 / 0 |
+| `ties` | 179 | (179) | **173** | 200 / 200 | (3) / 5 |
+| `sick` | 172 | 130 | **168** | 149 / 200 | 30 / 3 |
+| `buds` | 180 | 125 | **177** | 136 / 200 | 38 / 3 |
+| held-out frames: `order`, of 300 | (242) | 230 | **213** | 283 / 253 | 15 / 19 |
+| held-out frames: `order`, a pair | (85) | 72 | 62 | 83 / 53 | 14 / 18 |
+| held-out frames: `ties` | (179) | 152 | **173** | 146 / 200 | 33 / 7 |
+| held-out frames: `sick` | (172) | 3 | **171** | 0 / 200 | 128 / 2 |
+| held-out frames: `buds` | (180) | 80 | **175** | 98 / 200 | 72 / 2 |
+
+In brackets: cells where the writer as downloaded writes the task's program on every task, whose runs are the task
+program's.
+
+- **With the adapters the written program costs nothing measurable on rungs 1 to 4**: every cell is within 7 of the
+  task's program, in training frames and in held-out ones, except the held-out pair frame. `sick` goes from 130 to 168
+  and `buds` from 125 to 177; in held-out frames `sick` from 3 to 171, `buds` from 80 to 175 and `ties` from 152 to
+  173. The wrong cuts that a wrong polarity made (30 and 38; 128 and 72 held out) are gone.
+- **The held-out pair frame** costs 10 episodes against the writer as downloaded (62 against 72), the one place where
+  it is worse: "remove the X branch before the Y branch" is half the time written as one cut.
+- **These adapters are v3's writer from here on** (`--writer_lora`, `PICKUP_WRITER_LORA`).
+
+**The fast level on the frozen DINOv2 encoder.** The recipe of the seed-43 sub-goal fast level
+(`dp_vit_lang_reactive_subgoal_reason8k_20m`: one frame per camera, the sub-goal, 20M samples from the start, peak
+learning rate 5e-4) with the frozen DINOv2-B (registers) patch tokens at 224 pixels in place of its own ViT
+(`dp_dinov2_lang_reactive_subgoal`; the 1 s configuration of step 8 needs data preprocessed with the frames a second
+back, which the reasoning data is not), on `reason_mix_8k_rs_tail10` and `ties_1500_rs_tail10` at 0.7 and 0.3 of each
+batch as the ties fine-tune mixed them, the old normalisation; seeds 43 and 42
+(`dp_dinov2_lang_reactive_subgoal_reason8k_ties_20m_seed43`, `_seed42`; final averaged weights). 690 samples a second
+alone on an L40S, 440 beside the writer's runs: 9 hours each. Against the ViT fast level fine-tuned on ties (seed 43,
+E13b and step 7), the task's program, every run as step 7's:
+
+| | ViT, fine-tuned on ties | **DINOv2, seed 43** | DINOv2, seed 42 |
+|---|---|---|---|
+| validation layouts, the simulator's scene, of 650 | 572 | **611** | 574 |
+| `prune` / `order` of 150 / `nothing_to_do` / `ties` / `sick` / `buds` (validation) | 79 / 118 / 100 / 94 / 87 / 94 | 91 / 135 / 100 / 98 / 93 / 94 | 82 / 121 / 100 / 94 / 84 / 93 |
+| cut, across the shoot: median (90th percentile), validation | 8.3 (14.9) mm | 7.9 (13.8) mm | 8.6 (16.6) mm |
+| episodes lost, and of them with more than a full turn (validation) | 78, 26 | 39, 7 | 76, 20 |
+| **evaluation, the simulator's scene**: `prune` | 161 | **180** | 177 |
+| `order`, of 300 | 241 | **281** | 259 |
+| `nothing_to_do` | 200 | 200 | 200 |
+| `ties` | 177 | **190** | 187 |
+| `sick` | 176 | 172 | 161 |
+| `buds` | 182 | **192** | 184 |
+| v2's `reason_mix` (v2's slow level, clear starts) | 182 | 180 | 174 |
+| cut: median, all situations | 8.2 mm (`prune`, step 6) | 8.3 mm | 8.8 mm |
+| lost, of 1300; with more than a full turn | 163; 44 | 85; 19 | 132; 30 |
+| **evaluation, the rollout eyes**: `prune` | 157 | **181** | 170 |
+| `order`, of 300 | 242 | **262** | 249 |
+| `nothing_to_do` | 198 | 198 | 198 |
+| `ties` | 179 | **194** | 190 |
+| `sick` | 172 | 169 | 156 |
+| `buds` | 180 | **190** | 174 |
+| v2's `reason_mix` | 177 | **193** | 180 |
+| cut: median | 8.3 mm | 8.5 mm | 8.6 mm |
+| lost, of 1300; with more than a full turn | 172; 54 | 106; 21 | 163; 37 |
+
+v2 in its headline configuration (the eyes `eyes_vit_fwp_2m`, v2's written program, the memory's two options, up to two
+resets; `reason_mix` in training and held-out wordings, 200 evaluation layouts), run in this code over each fast level:
+v2's own fast level (the seed-43 ViT, not fine-tuned on ties) 182 and 153 (the published run: 180 and 165), DINOv2
+seed 43 175 and 164, seed 42 169 and 156.
+
+- **The cut is no closer.** The jaws close 7.9 to 8.8 mm from the shoot's axis on every set of layouts, as the ViT
+  fast level's 8.2 to 8.3, against the expert's 5.9. Neither a pretrained encoder nor the takeover data of step 7 moves
+  it, so it is not set by what the encoder lets the policy see; where it is set (the action head, the demonstrations'
+  own spread of placements, the control rate) is not separated here.
+- **Over-turning falls by half or more.** Episodes lost with the plate turned more than a full turn: 7 and 20 against
+  26 on validation layouts, 19 and 30 against 44 of 1300 on the simulator's scene, 21 and 37 against 54 on the eyes.
+  Seed 43 loses half as many episodes as the ViT fast level in all (85 against 163 on the scene).
+- **Seed 43 is better on every rung but `sick`, seed 42 is close to the ViT's.** On the rollout eyes seed 43 solves
+  1194 of 1300 situation episodes against 1128 (seed 42: 1137); `sick` is the one situation where both seeds are
+  below the ViT's (169 and 156 against 172), with more lost turning. The two seeds differ by 57 episodes, as much as
+  seed 43 differs from the ViT: the gain is not yet a property of the encoder alone.
+- **v2's headline does not move** (175 and 164 against 182 and 153 in the same code): on `reason_mix` from v2's own
+  starts the fast levels are within the seeds' spread; from v3's clear starts with v3's eyes seed 43 solves 193
+  against 177.
+- **The seed-43 DINOv2 fast level is v3's fast level from here on**, chosen on validation layouts (611 against 572 and
+  574). Whether it keeps step 8's robustness to light on the reasoning tasks is not measured here.
+
+**v3 whole, with both changes** (the adapters' writer, the rollout eyes, the seed-43 DINOv2 fast level; evaluation
+layouts, 200 a cell, `order` 100 a mode), against step 5's written-program run (the writer as downloaded, step 6's
+eyes, the ViT fast level fine-tuned on ties) and the task's program on the rollout eyes over the ViT (step 7):
+
+| Situation | step 5: written | step 7: the task's program | **written, adapters, DINOv2** | written right | wrong shoots cut | lost with more than a full turn |
+|---|---|---|---|---|---|---|
+| `prune` | 160 | 157 | **186** | 200 | 0 | 1 |
+| `order`, of 300 | 215 | 242 | **276** | 300 | 1 | 10 |
+| `nothing_to_do` | 199 | 198 | **197** | 200 | 0 | 1 |
+| `ties` | 168 | 179 | **194** | 200 | 1 | 0 |
+| `sick` | 125 | 172 | **172** | 200 | 2 | 4 |
+| `buds` | 121 | 180 | **189** | 200 | 1 | 4 |
+| held-out frames: `order`, of 300 | 220 | (242) | **245** | 253 | 15 | 10 |
+| held-out frames: `ties` | 147 | (179) | **195** | 200 | 0 | 0 |
+| held-out frames: `sick` | 2 | (172) | **175** | 200 | 0 | 4 |
+| held-out frames: `buds` | 94 | (180) | **187** | 200 | 3 | 0 |
+
+- **v3 with a written program now beats the task's program of step 7 on every situation but `nothing_to_do` (197
+  against 198) and `sick` (level)**, in training and in held-out frames: of 2600 episodes 2016 solved against 1451 with
+  step 5's writer. All but one held-out frame are read right; what is left is that frame (the held-out pair, 66 of
+  100, 14 wrong shoots) and the fast level's own losses.
+- The cut is where it was (median 8.4 mm over 3098 cuts).
+
+Runs: two fast levels (20M samples each, 9 hours each), one adapter training (41 minutes), the writer alone in four
+configurations (v3) and two (v2), 2 validation and 4 evaluation grids of the fast levels (7,300 episodes), 6 v2
+headline runs (1200), and 39 closed-loop runs with written programs (6,800 episodes), in
+`results/pickup/v3fix/`. GPUs 6 and 7 of an L40S machine were held for 11.5 and 11.7 hours of wall time (23.2
+GPU-hours), 18.1 of them training the two fast levels beside the rest.
+
 ## Throughput
 
 | Model | Machine A (RTX 4090) | Machine B (L40S) |

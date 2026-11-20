@@ -6,8 +6,9 @@ reasoning that v2's four task kinds do not ask for (telling a sick shoot from a 
 to be done, cutting in a given order, turning the plant to look before deciding, counting), and the smallest change to
 each of v2's five parts that carries it. It is a design and a plan of work for implementation agents. Steps 1 to 3 of
 the plan are built, and step 4 with its runs (E13), the runner's fixes after them and the fast level's fine-tune on
-the ties, step 6 (the eyes), step 5 (the writer) and step 7 (the retraining on the fast level's own rollouts) ("As
-built", after the plan); nothing else is. A number
+the ties, step 6 (the eyes), step 5 (the writer), step 7 (the retraining on the fast level's own rollouts) and,
+after it, the writer fine-tuned with LoRA and the fast level on a frozen DINOv2 encoder ("As built", after the plan);
+nothing else is. A number
 is v2's own (from the [lab notebook](lab-notebook.md) or from architecture-v2.md) unless it is marked as computed for
 this document, and every expectation is marked as a prediction.
 
@@ -689,7 +690,7 @@ on the evaluation layouts with the setting fixed beforehand, both seeds, trainin
 *Done when:* the notebook has a section for v3, this document has its "First results" with every prediction answered,
 and the roadmap says where it stands.
 
-## As built: steps 1 to 7
+## As built: steps 1 to 7, and after
 
 Steps 1 to 3 are in `sim/pickup/program.py`, `scene.py`, `scenarios.py`, `census.py` and `slow_level.py`, with their
 tests. Nothing of v2 changes by default: v2's language stays the default of `parse`, the acceptor and `equivalent`, so
@@ -908,8 +909,39 @@ tried on validation layouts first:
   in v2's language, where Filters that differ only in the value kept count as the same (`bud,yes` against `bud,no`);
   v3 compares in v3 now. The tables above are computed in v3 from the records.
 
-**Next**: the writer, where the closed loop now loses most (`sick` and `buds` in particular), before rung 5 (step 9)
-stands on it; then steps 8 to 12. The fast level's precision and over-turning remain its own track's.
+**After step 7, as built** (the notebook has the tables). The two weakest parts revisited:
+
+- **The writer** (`sim/pickup/writer_tune.py`). The writer is, and always was, the Qwen3-VL-2B *Thinking* checkpoint
+  made to answer at once; let to reason first (2048 tokens, greedy or sampled, the program after `</think>` held to
+  the grammar), it is no better (566 and 386 of 700 training tasks against 580, 181 and 212 of 400 held-out frames
+  against 215) and 20 to 30 times slower, so it does not think. Low-rank adapters (rank 16 on the language model's
+  linear layers, the base frozen) trained on program writing alone, with the same prompt, on 2191 instructions written
+  from templates and synonyms of every training task in both polarities, the first set of compositions in other words
+  and v2's training tasks, with every held-out instruction, held-out-only word and word pair, and every program
+  equivalent to a held-out composition kept out (tested): meaning on 700 of 700 training tasks, 382 of 400 held-out
+  frames (`ties`, `sick` and `buds` 100 of 100 each) and 64 of 100 held-out compositions, and v2's own test 200 of 200
+  (as downloaded 192). P4 now holds for training and held-out frames and misses the compositions (64 against 75). In
+  closed loop on the eyes every situation is within 7 episodes of the task's program, in training and held-out frames
+  (`sick` 168 and 171, `buds` 177 and 175), but for the held-out pair frame ("remove the X branch before the Y
+  branch", 62 against 72 as downloaded). The adapters are v3's writer (`--writer_lora`). A verifier was not built: the
+  gap left on rungs 1 to 4 is one sentence frame.
+- **The fast level on the frozen DINOv2 encoder** (`dp_dinov2_lang_reactive_subgoal`: the sub-goal fast level's recipe,
+  20M samples on `reason_mix_8k_rs_tail10` and `ties_1500_rs_tail10` at 0.7 and 0.3, seeds 43 and 42). The cut is no
+  closer (7.9 to 8.8 mm from the shoot's axis against the ViT's 8.2 to 8.3 and the expert's 5.9): the encoder is not
+  what sets it. Over-turning falls by half or more (episodes lost with more than a full turn: 7 and 20 against 26 on
+  validation, 19 and 30 against 44 on the evaluation grid). Seed 43, chosen on validation layouts (611 of 650 against
+  572 and seed 42's 574), solves on the evaluation grid `prune` 180, `order` 281 of 300, `ties` 190, `buds` 192
+  against 161, 241, 177, 182 (`sick` 172 against 176), and on the eyes 1194 of 1300 situation episodes against 1128
+  (seed 42: 1137). v2's headline does not move (175 and 164 against 182 and 153 in the same code). The seed-43 DINOv2
+  fast level is v3's fast level.
+
+With both, v3 on the eyes with the written program (evaluation layouts) solves `prune` 186, `order` 276 of 300,
+`nothing_to_do` 197, `ties` 194, `sick` 172, `buds` 189, and in held-out frames `order` 245, `ties` 195, `sick` 175,
+`buds` 187: 2016 of 2600 against 1451 with step 5's writer, and above the task's program of step 7 on every situation
+but `nothing_to_do` (197 against 198) and `sick` (level). The cut stays at 8.4 mm.
+
+**Next**: rung 5 (step 9) on the adapted writer, whose held-out compositions are its weakest (64 of 100); then steps 8
+to 12. The cut's distance from the shoot (about 8 mm against 6) is not the encoder's and remains open.
 
 
 ## Risks
