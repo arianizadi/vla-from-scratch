@@ -1165,6 +1165,7 @@ demonstrations learn slowly (25 at checkpoint 5); the paired consistency loss ha
 | Frozen DINOv2 at 224 px, seed 42 (`dp_dinov2_lang_frames_1s_prune2k_leaffix_20m`) | 92 | 53 (55) | 15 (5) | 0 (0) | 74 (82) | 89 | 89 | 50 |
 | Frozen DINOv2 at 224 px, seed 43 (`..._seed43`) | 95 | 46 (47) | 10 (4) | 1 (0) | 85 (88) | 89 | 91 | 58 |
 | Frozen DINOv3-B/16 at 224 px, seed 42 (`dp_dinov3_lang_frames_1s_prune2k_leaffix_20m`) | 91 | 43 (70) | 12 (6) | 0 (0) | 66 (69) | 91 | 89 | 49 |
+| Frozen DINOv3-B/16 at 448 px, 2 x 2 pooled, seed 42 (`dp_dinov3_448_lang_frames_1s_prune2k_leaffix_20m`) | 83 | 44 (64) | 7 (3) | 0 (0) | 68 (67) | 81 | 83 | 48 |
 | DART-style noisy demonstrations, from-scratch ViT (`dp_vit_lang_frames_1s_prune2k_leaffix_dart01_20m`) | 40 | 2 (0) | 3 (2) | 0 (0) | 16 (32) | 39 | 43 | 22 |
 | Paired consistency loss, from-scratch ViT (`dp_vit_lang_frames_1s_twin_prune2k_leaffix_paired_20m`) | 0 | 0 (0) | 0 (1) | 0 (0) | 0 (0) | 2 | 1 | 0 |
 
@@ -1172,7 +1173,7 @@ The frozen DINOv2 encoder holds across two seeds: the best plain pruning of any 
 kept under changed light (46-55, and 47-55 under lights never seen in training), and the physical situations better
 than from scratch too (wind 89, bump 89-91, a sticky button 50-58 against 38). A moved camera (4-15) and another bench
 (0-1) still defeat it: on the bench it does not engage at all. Noise injected into the expert's joints (0.01 rad) halves
-plain success and buys no robustness; the consistency loss between a frame and its re-rendered twin keeps the
+plain success and buys no robustness. Twice the resolution (DINOv3 at 448 pixels, trained at 119 samples/s against 414) is no more robust than at 224 and a little worse in the training scene (83 against 91): the gain comes from the pretrained encoder, not from more pixels; the consistency loss between a frame and its re-rendered twin keeps the
 from-scratch policy from learning at all, as the paired data alone did.
 
 **A frozen encoder on paired demonstrations: the first policy that holds when the camera or the bench changes (interim).**
