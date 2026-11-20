@@ -1195,6 +1195,22 @@ bench, and the from-scratch ViT never learned from the paired data at all: a fro
 paired looks be learned, and the looks are what carry over to the camera and the bench. Runs of the same with frozen
 DINOv2 (seeds 42, 43, 44) and DINOv3 are under way.
 
+**Frozen DINOv2 on paired demonstrations: robust everywhere the look changes, over two seeds.** The policy with the frozen
+DINOv2-B (registers) patch tokens at 224 pixels, trained on the paired demonstrations
+(`dp_dinov2_lang_frames_1s_prune2k_leaffix_paired_20m`, seeds 42 and 43), final averaged weights, 100 layouts per cell:
+
+| Policy | plain | lighting (/test) | camera (/test) | bench (/test) | distractors (/test) | wind | bump | sticky |
+|---|---|---|---|---|---|---|---|---|
+| Frozen DINOv2, paired demonstrations, seed 42 | 88 | 80 (74) | 71 (58) | 44 (30) | 85 (78) | 84 | 78 | 51 |
+| Frozen DINOv2, paired demonstrations, seed 43 | 81 | 81 (72) | 62 (44) | 46 (33) | 65 (71) | 74 | 71 | 43 |
+
+Against the same encoder on plain demonstrations (92 and 95 plain; lighting 53 and 46, camera 15 and 10, bench 0 and 1)
+the paired demonstrations cost 7-14 in the training scene and lift every visual change: lighting to 80-81 (72-74 under
+lights never seen), a moved camera to 62-71 (44-58 for the larger held-out moves), another bench to 44-46 (30-33 for
+benches never seen). It holds more than the Qwen3-VL tower on the same data (lighting 60, camera 51, bench 37). This is
+the first policy that keeps most of its success under every visual change tested, against 0-4 for the from-scratch
+policy.
+
 **Aim drills.** Seven motor drills on the bare table (`tutorial/aim-range.md`: touch, touch along a pin, stop on,
 follow, flick between, press, pinch; the expert solves each at 499-500/500), as practice for the arm. Co-trained with
 pruning (75% pruning, 25% drills, `dp_vit_lang_reactive_prune2k_aim8k_co27m`): 22/100 on pruning (66 on the drills),
