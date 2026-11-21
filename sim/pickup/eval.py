@@ -84,6 +84,7 @@ from . import reasoning
 from .diagnostics import GraspProbe, summarize
 from .disturb import Disturbance
 from .env import BUTTONS, CONTROL_HZ, PRESS_TRAVEL, REACH_AZIMUTH, PickupEnv
+from .scenarios_reach import cut_error
 
 AUTHKEY = b"pickup-sim"  # must match policy_server.AUTHKEY (not imported: that module needs torch)
 EVAL_SEED_START = 1_000_000
@@ -318,6 +319,26 @@ def cut_place(env, name) -> dict:
     return dict(shoot=name, across_mm=round(1000 * across, 1), along_mm=round(1000 * along, 1))
 
 
+def cut_errors_summary(episodes) -> dict | None:
+    """Every cut of the episodes (cut_errors): the jaws' centre from the shoot's axis in height (z, across the shoot in
+    its vertical plane) and laterally (level, across it), mm: median of the absolute offset, standard deviation, 90th
+    percentile of the absolute offset, and across the shoot in all (the root of both)."""
+    cuts = [c for e in episodes for c in e.get("cut_errors", [])]
+    if not cuts:
+        return None
+    z, lat = np.array([c["z_mm"] for c in cuts]), np.array([c["lat_mm"] for c in cuts])
+    across = np.hypot(z, lat)
+
+    def stats(v, signed=True):
+        a = np.abs(v)
+        out = dict(median_abs=round(float(np.median(a)), 2), p90_abs=round(float(np.percentile(a, 90)), 2))
+        if signed:
+            out.update(mean=round(float(v.mean()), 2), sd=round(float(v.std()), 2))
+        return out
+
+    return dict(cuts=len(cuts), z_mm=stats(z), lat_mm=stats(lat), across_mm=stats(across, signed=False))
+
+
 def swap_shoot(env, seed):
     """For the test that the text matters: a shoot the instruction does not mean, chosen per seed."""
     others = [n for n in env.active if n not in env.targets]
@@ -466,6 +487,11 @@ def main():
         choices=["clearance", "preferred"],
         default="clearance",
         help="with --expert, stems: which side the expert approaches from (see ScriptedExpert)",
+    )
+    ap.add_argument(
+        "--expert_settle",
+        action="store_true",
+        help="with --expert, pruning: the expert closes the jaws only once the hand has settled at the cut",
     )
     ap.add_argument(
         "--expert_reactive",
@@ -766,8 +792,12 @@ def main():
     if args.expert:
         from .expert import ScriptedExpert
 
-        expert = ScriptedExpert(env, seed=0, reactive=args.expert_reactive, side=args.expert_side)
-        server_info = dict(policy="scripted expert", reactive=args.expert_reactive, side=args.expert_side)
+        expert = ScriptedExpert(
+            env, seed=0, reactive=args.expert_reactive, side=args.expert_side, settle=args.expert_settle
+        )
+        server_info = dict(
+            policy="scripted expert", reactive=args.expert_reactive, side=args.expert_side, settle=args.expert_settle
+        )
     else:
         conn = connect(args.port)
         conn.send({"cmd": "info"})
@@ -781,7 +811,9 @@ def main():
         from .expert import ScriptedExpert
 
         reasoner, reasoner_info = conn, server_info
-        expert = ScriptedExpert(env, seed=0, reactive=args.expert_reactive, side=args.expert_side)
+        expert = ScriptedExpert(
+            env, seed=0, reactive=args.expert_reactive, side=args.expert_side, settle=args.expert_settle
+        )
     assert args.notes == "model" or rta, "--notes expert / swap need a policy that writes notes"
     assert args.see == "model" or (env.reason and (reasoner is not None or rta)), (
         "--see expert needs a reasoning task and something that writes notes (a reasoner or a policy that does)"
@@ -797,7 +829,8 @@ def main():
 
         starter = ScriptedExpert(env, seed=0)  # for its inverse kinematics only
         clearance = CLEARANCE if args.clearance is None else args.clearance
-    slow = recovery = None  # --slow_level v2: the slow level, and a recovery in progress (slow_level.Recovery)
+    slow = recovery = looking = None  # --slow_level v2: the slow level, a recovery in progress (slow_level.Recovery);
+    # v3: a look in progress (slow_level.Look)
     if args.slow_level in ("v2", "v3"):
         from . import slow_level
 
@@ -855,6 +888,7 @@ def main():
             env.target = env.targets[0]
         env.swapped_from = swapped_from
         cut_places = []  # v3: where the jaws were on each shoot they cut
+        cut_errors = []  # plant tasks: each cut's offset from the shoot's axis, in height and laterally (cut_error)
         if slow is not None:  # v2: the episode's program and an empty memory; its own frames, for eyes that look back
             slow.reset()
             slow_history, recovery = FrameHistory(obs, slow.offsets), None
@@ -1018,6 +1052,7 @@ def main():
                 cut_order += new_cuts
                 if v3:
                     cut_places += [cut_place(env, name) for name in new_cuts]
+                cut_errors += [dict(shoot=name, **cut_error(env, name)) for name in new_cuts]
             if turn is not None:
                 angle = env.plate_angle()
                 turn["turned"] += abs(angle - turn["plate"])
@@ -1104,6 +1139,7 @@ def main():
                                 "wrong_shoots",
                                 "distractors_touched",
                                 "distractors_moved",
+                                "cut_off_band",
                             )
                             if k in info and not (k == "wrong_shoots" and (env.named or env.reason))  # (above)
                         },
@@ -1113,6 +1149,7 @@ def main():
                 ),
                 # v3: where the jaws were at each cut; --swap_target: the shoot the situation meant before the swap
                 **(dict(cut_places=cut_places) if v3 else {}),
+                **(dict(cut_errors=cut_errors) if env.plant_task else {}),
                 **(dict(swapped_from=swapped_from) if swapped_from is not None else {}),
                 # architecture v2: what the slow level decided, and how its memory compared with the simulator
                 **(dict(v2=slow.record(info)) if slow is not None else {}),
@@ -1188,6 +1225,7 @@ def main():
         caught_rate=sum(e["caught"] for e in episodes) / n,
         per_target={t: dict(successes=s, episodes=m, success_rate=s / m) for t, (s, m) in sorted(per_target.items())},
         grasp=summarize(episodes),
+        **({"cut_errors": cut_errors_summary(episodes)} if env.plant_task else {}),
         inference_latency_ms=dict(
             mean=1000 * float(np.mean(latencies)),
             p50=1000 * float(np.percentile(latencies, 50)),

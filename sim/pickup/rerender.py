@@ -62,6 +62,7 @@ class Replayer:
         self.image_size = image_size
         self.park_reset = bool(info.get("park_reset"))
         self.random_start = bool(info.get("random_start"))
+        self.settle = bool(info.get("expert_settle"))  # collect.py --expert_settle
         self.env = PickupEnv(self.task, leaf_fix=self.leaf_fix, park_reset=self.park_reset)
         self.expert = ScriptedExpert(self.env, seed=0)  # for random_start's inverse kinematics only
         self.looks: dict[str, PickupEnv] = {}
@@ -100,7 +101,7 @@ class Replayer:
         --hold_steps; --action_noise and --action_noise_quiet_cm in metres): the commands executed are the expert's
         own with collect.py's DART noise drawn again from the seed, the actions recorded the expert's."""
         env = self.env = PickupEnv(self.task, leaf_fix=self.leaf_fix, park_reset=self.park_reset)
-        expert = ScriptedExpert(env, seed=worker_id)
+        expert = ScriptedExpert(env, seed=worker_id, settle=self.settle)
         self.expert = expert
         budget = env.max_steps
         for seed in seeds:

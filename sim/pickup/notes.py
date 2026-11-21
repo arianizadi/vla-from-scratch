@@ -168,4 +168,6 @@ class SubgoalWriter:
         if not remaining:
             return "stop"
         name = min(remaining, key=lambda n: abs(float(_wrap_angle(REACH_AZIMUTH - env.shoot_azimuth(n)))))
+        if len(env.active) == 1:  # (a full-3D-reach layout that kept one shoot, scenarios_reach.Reach.draw)
+            return "cut the lowest shoot"
         return f"cut the {reasoning.position_name(env.active.index(name), len(env.active))} shoot"

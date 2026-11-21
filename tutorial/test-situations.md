@@ -123,6 +123,89 @@ collection worker ran earlier), drifting apart from a fresh environment's within
 that existing datasets can be reproduced (`rerender.py` re-runs a collection in its own worker chunks for that); new
 datasets should use it.
 
+## Full 3D reach: no turntable, heights, pitched shoots, a blocked side
+
+In the base task the turntable brings each shoot round to the front, so the arm repeats one level reach from the front
+at a few heights. These situations (`sim/pickup/scenarios_reach.py`, on `prune` only; each changes the task, so one at
+a time, and combines with the B situations) take the turntable away and make the arm use every axis. In all of them the
+two buttons are gone (not drawn, not solid) and the plate is held on its hinge, and every layout is drawn so that each
+shoot can be cut: the arm's planner (below) must find a reachable, collision-free way in to every shoot from its
+canonical start, with 3 mm more clearance than the expert later asks of itself; a layout where it cannot is drawn again
+from the scenario's own stream (`draws` in the variation says how many it took; after 40 draws heights and elevations
+are drawn afresh too, and after 400 the shoots still without a way in are taken off the plant, `dropped`, which one
+`pitched` layout in 100 needs). The plant's other draws (flower, leaves, shoot lengths) are prune's for the seed.
+`env.flags` holds `reach3d` and `locked`.
+
+| # | Scenario | What changes | Success rule |
+|---|---|---|---|
+| R1 | `locked` | No spinning: each shoot points to a world direction drawn all round (at least 100 degrees apart, as in prune), heights and elevations as prune draws them. The arm reaches round the main stem: from the sides, diagonally behind, from below or above, the wrist turned for each | prune's |
+| R2 | `heights` | As R1, the plant a fifth shorter to a fifth taller (the stem and the flower on it: 19 to 29 cm), the shoots from 3 cm above the stem's base (just above the pot) to 6.5 cm under its top (just under the flower), at least 3.5 cm apart | prune's, and every cut within 10 mm of the shoot's axis in height (`HEIGHT_BAND`); a cut outside ends the episode (`cut_off_band`) |
+| R3 | `pitched` | As R1, every shoot pitched 40 to 60 degrees up or down (prune: 15 to 35 up), at heights where its leaves stay clear of the pot and the flower. Jaws that close straight up and down would close along such a shoot, so the wrist pitches with it | prune's |
+| R4 | `blocked` | As R1, and a large leaf (a flat green blade, 8 x 4.4 cm, on a short stalk from the main stem) lies along a shoot 24 to 27 mm above or below its axis over the whole cut zone, where the jaws' upper or lower finger would be: the arm comes in from the clear side, the jaws closing level. Above a shoot if the arm still has a way in with it there (from below), else below it (from above), else that shoot has none; at least one leaf a layout | prune's; touching a blocking leaf damages the plant (`leaf touched`) |
+| R5 | `height_named` | The plant of R2, and the instruction names one shoot by its height: "cut the shoot just below the flower" (the highest) or "the one nearest the pot" (the lowest), three frames each | that shoot cut, within the band, nothing else cut (as A1) |
+
+What is arm-specific and what is not. The scenarios say only what the plant looks like, what is in the way and what
+counts as success. Everything about the robot is in `sim/pickup/arm.py` (`PandaArm`, chosen by `arm_for(env)`): the
+gripper's frame and which way its jaws close, how wide they open, the inverse kinematics and its joint limits, which
+collision shapes are the arm's, the candidate approaches (the wrist's orientation for a cut of a segment with a given
+direction: in from the side, from above or below, leaning along the shoot) and the check of a way in (followed as the
+expert's waypoint follower moves its set-point, every pose solved with the expert's own inverse kinematics, the arm's
+collision shapes kept a margin from every obstacle, the arm left in the posture it starts from), and how the hand
+settles before the jaws close. The scenarios call only `plan_cut` (through `scenarios_reach.plan_cut`, which adds the
+plant's obstacles and one task rule: the main stem must not lie between the closing jaws). Another arm is another class
+with the same methods.
+
+The expert on these situations (`ScriptedExpert`, `_plan_reach`): of the shoots left, the first, from the one pointing
+nearest the robot round to the one pointing farthest away, that the arm has a way in to from where the hand is; back to
+the lane in front of the plant without turning, along it turning to the cut's orientation, to a point 13 to 15 cm back
+along the approach, in at 10 cm/s, the jaws at the plan's opening (48, 36 or 28 mm), close until the shoot is cut, out
+the same way. The existing expert's orientation (level, the jaws upright) is tried first, so where it is clear the cut
+looks as it does in prune. With nowhere to go from where the hand is it goes to the canonical start and plans from
+there.
+
+Settling before the cut (`ScriptedExpert(settle=True)`, `collect.py --expert_settle`, `eval.py --expert_settle`; off by
+default): at the cut, before the jaws close, the set-point is corrected for the arm's sag every control step until the
+hand is within 1 mm of the shoot's axis along the closing jaws and slower than 5 mm/s, or 2 s have passed
+(`arm.SETTLE_*`).
+
+Expert, 100 evaluation layouts (seeds from 1,000,000), random starts (`python -m sim.pickup.reach_report expert`):
+
+| Scenario | Solved | Damaged | Median steps (solved) | Approaches: level as prune / other level / from below / from above | Cut: across the shoot, median (90th pct) | in height (z): median, mean, sd | laterally: median, sd |
+|---|---|---|---|---|---|---|---|
+| `prune` (for comparison) | 99 | 0 | 584 | all as prune | 5.8 (9.7) mm | 5.6, -4.8, 1.4 | 0.5, 4.4 |
+| `locked` | 100 | 0 | 311 | 29 / 51 / 20 / 0% | 5.2 (6.3) | 5.0, -5.0, 0.8 | 1.4, 1.5 |
+| `heights` | 99 | 0 | 311 | 22 / 50 / 29 / 0% | 5.3 (6.4) | 5.1, -5.1, 0.8 | 1.3, 1.4 |
+| `pitched` | 95 | 1 | 298 | 0 / 0 / 44 / 56% | 4.2 (6.9) | 3.8, -4.0, 1.8 | 1.7, 1.9 |
+| `blocked` | 100 | 0 | 325 | 18 / 39 / 43 / 0% | 5.4 (6.4) | 5.1, -5.1, 0.7 | 1.5, 1.6 |
+| `height_named` | 100 | 0 | 94 | 20 / 49 / 30 / 0% | 5.3 (6.3) | 5.1, -5.2, 0.7 | 1.1, 1.4 |
+| **with settling** (`--expert_settle`): `prune` | 99 | 0 | 641 | | 0.6 (7.1) | 0.6, -1.2, 2.9 | 0.3, 1.9 |
+| `locked` | 100 | 0 | 339 | | 0.6 (0.7) | 0.6, +0.6, 0.1 | 0.2, 0.2 |
+| `heights` | 99 | 0 | 339 | | 0.6 (0.7) | 0.6, +0.6, 0.1 | 0.2, 0.2 |
+| `pitched` | 97 | 0 | 339 | | 0.5 (0.6) | 0.5, +0.4, 0.2 | 0.2, 0.2 |
+| `blocked` | 99 | 0 | 356 | | 0.6 (0.7) | 0.6, +0.6, 0.1 | 0.2, 0.2 |
+| `height_named` | 100 | 0 | 104 | | 0.6 (0.7) | 0.6, +0.6, 0.1 | 0.2, 0.2 |
+
+Clear starts (`expert.clear_start`, as architecture v3's evaluations start), seeds from 1,000,000, 100 episodes a row;
+height (z) is the offset across the shoot in its vertical plane, + up; laterally, level across it. Every failure is
+out of time (a cut that does not close, re-planned until the time runs out) but three: a flower touched in `pitched`
+and none elsewhere. From random starts (`expert.random_start`) the existing expert solves 79 of 100 `prune` layouts,
+20 of them lost touching the flower on its way from a start among or behind the plant, and the new situations lose
+about as many for the same reason (89 to 91 of 100 on `locked`, `heights`, `height_named`); demonstrations from random
+starts keep only the solved episodes. The expert's own height error is a bias, not a spread: it cuts 5 mm below the
+axis in every situation (the arm sags under its position servos; the spread is 0.7 to 1.8 mm), and settling removes
+it.
+
+The reach map (`python -m sim.pickup.reach_report map`): one shoot on the plant of `prune` (3 seeds), turned every 15
+degrees round the stem, at 5 heights from 3 to 17.5 cm above the stem's base and 7 elevations (15 to 35 degrees up as in
+prune, 45 and 60 up and down), each checked from the arm's canonical start as a draw checks it. At prune's heights and
+elevations the arm has a way in to 70% of the directions: 96% of shoots pointing at the robot, 95% pointing to its front
+left, 86% to its left, 100% back left, 75% straight away from it, 58% to its front right, 44% to its right and 7% back
+right (sectors of 45 degrees, seen from the robot; why the right side is so much harder is not analysed here). Low
+shoots are the hardest (14% at 3 cm above the stem's base, 60 to 83% from 7 cm
+up), and steep ones (43% of the cells at 45 to 60 degrees up or down). Over all 2016 cells: 53%. The draws keep only
+layouts where every shoot has a way in, so these shares are also how much of the plain task's variety each situation can
+show.
+
 Not yet built: A2 (the tie facing away; the ties are there, the drawing of a hidden one is not), A6, A7 and every tier 2
 and 3 situation. The reasoning tasks (`reason_*`, roadmap Phase 7) have their own hidden-card kind; the A-situations
 here are scenario options the reasoning work can reuse, not reasoning tasks of their own.

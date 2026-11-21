@@ -2552,6 +2552,140 @@ looks hold), and the paired looks for v3's fast level and eyes, which have only 
 (100 demonstrations from seeds above 1,000,000 as `val_dataset_manifest`) is cheap to add, but closed-loop success
 stays the measure.
 
+### Full 3D reach: no turntable, heights, pitched shoots
+
+Why: the policies were said not to move well in height, and the cut's diagnosis agrees (DART8K: height is the worst
+axis at the cut). In `prune` the turntable brings each shoot round to the front, so the arm repeats one level reach
+from the front at a few heights; nothing in the data asks for another approach. Five situations take the turntable
+away and make every axis matter (`sim/pickup/scenarios_reach.py`, tutorial/test-situations.md "Full 3D reach"):
+`locked` (R1: no buttons, the plate held, the shoots pointing all round), `heights` (R2: shoots from just above the pot
+to just under the flower on plants 19 to 29 cm tall, a cut counting only within 10 mm of the axis in height),
+`pitched` (R3: shoots 40 to 60 degrees up or down), `blocked` (R4: a leaf 24 to 27 mm above or below each cut zone)
+and `height_named` (R5: "cut the shoot just below the flower", "the one nearest the pot").
+
+**What is the arm's and what is the scenario's.** The next step is another arm, so the work is split: the
+scenarios (`scenarios_reach.py`) say what the plant looks like, what is in the way and what counts as success, and ask
+the arm one thing, `plan_cut` (a way in to a cut of this shoot, or none). Everything about the robot is in
+`sim/pickup/arm.py` (`PandaArm`): the gripper's frame and which way its jaws close, how wide they open, the inverse
+kinematics and its joint limits, the arm's collision shapes, the wrist orientations it tries for a cut (in level from
+either side, from below or above the shoot, leaning along it), the check of a way in (stepped as the expert's waypoint
+follower moves, every pose solved with the expert's own inverse kinematics, 8 mm kept from the plant, 12 from the pot,
+25 from the table, the stand and the plate, every joint 0.1 rad inside its limits, and the arm ending in the posture it
+starts from), and the settling rule below. Another arm is another class with those methods; the scenarios, the
+expert's cut sequence and the evaluation carry over. The existing expert's orientation (level, the jaws upright) is
+tried first, so where it is clear a cut looks as in `prune`. Without these scenarios nothing changes: the expert's
+actions and states on `prune`, `prune` with `ties` and `prune_turn` with `wind` hash the same before and after (random
+starts, two seeds each).
+
+**Every layout can be cut.** A draw is kept only if the arm has a way in to every shoot from its canonical start with 3
+mm more clearance than the expert later asks of itself (else the scenario draws again from its own stream; after 40
+draws it also draws heights and elevations afresh; after 400 it takes the shoots without a way in off the plant, which
+one `pitched` layout in 100 needs). How much of the plant that is (`reach_report.py map`: one shoot turned every 15
+degrees round the stem, 5 heights, 7 elevations, 3 plants, 2016 cells): at prune's heights and elevations **70% of the
+directions**, by 45-degree sector, seen from the robot, 96% pointing at it, 95% front left, 86% left, 100% back left,
+75% straight away, 58% front right, 44% right and 7% back right. Low shoots are the hardest (14% at 3 cm above the
+stem's base, 60 to 83% from 7 cm up), steep ones next (43% at 45 to 60
+degrees up or down); 53% of all cells.
+
+**The scripted expert** (100 evaluation layouts each, clear starts; `reach_report.py expert`):
+
+| Situation | solved | damaged | steps (median, solved) | cuts from: prune's way / other level / below / above | cut: median (90th pct) | height (z): median, mean, sd | lateral: median, sd |
+|---|---|---|---|---|---|---|---|
+| `prune` | 99 | 0 | 584 | 100 / 0 / 0 / 0% | 5.8 (9.7) mm | 5.6, -4.8, 1.4 | 0.5, 4.4 |
+| `locked` | 100 | 0 | 311 | 29 / 51 / 20 / 0% | 5.2 (6.3) | 5.0, -5.0, 0.8 | 1.4, 1.5 |
+| `heights` | 99 | 0 | 311 | 22 / 50 / 29 / 0% | 5.3 (6.4) | 5.1, -5.1, 0.8 | 1.3, 1.4 |
+| `pitched` | 95 | 1 | 298 | 0 / 0 / 44 / 56% | 4.2 (6.9) | 3.8, -4.0, 1.8 | 1.7, 1.9 |
+| `blocked` | 100 | 0 | 325 | 18 / 39 / 43 / 0% | 5.4 (6.4) | 5.1, -5.1, 0.7 | 1.5, 1.6 |
+| `height_named` | 100 | 0 | 94 | 20 / 49 / 30 / 0% | 5.3 (6.3) | 5.1, -5.2, 0.7 | 1.1, 1.4 |
+
+Height (z): the gripper's centre from the shoot's axis across the shoot in its vertical plane, + up; lateral: level
+across it. `prune` is the existing expert, which turns the plate.
+
+- **It solves every situation at 95 or more** (95 to 100 without settling, 97 to 100 with it); what it loses is a cut
+  that does not close (re-planned until the time runs out) and one `pitched` stem pushed. From random starts the
+  existing expert solves 79 of 100 `prune` layouts, 20 of them lost touching the flower on the way from a start among
+  or behind the plant, and the new situations lose about as many the same way (89 to 91 of 100,
+  measured before the last changes to the planner's margins); demonstrations from random
+  starts keep only solved episodes, as before.
+- **It uses the new axes**: of its cuts 20 to 43% come from below the shoot (the wrist pitched up), 39 to 51% level at
+  another orientation than prune's, and in `pitched` every cut from above (56%) or below (44%).
+- **Its own height error is a bias**: it cuts 5.0 to 5.2 mm below the shoot's axis (4.0 in `pitched`; the arm sags
+  under its position servos), with a spread of only 0.7 to 0.8 mm (1.8 in `pitched`); laterally 1.1 to 1.7 mm.
+
+**Settling before the cut** (`ScriptedExpert(settle=True)`, `--expert_settle`; the rule is the arm's,
+`PandaArm.settle_step`): at the cut, before closing, the set-point is corrected by 0.3 of the hand's remaining error
+every control step until the hand is within 1 mm of the shoot's axis along the closing jaws and slower than 5 mm/s, or
+2 s pass; the correction is held while the jaws close and let go on the way out. The expert's cut, before and after
+(the old numbers in [DART8K]: 5.8 mm median, standard deviations 4.1 / 0.8 / 3.6 mm along the jaws / across / depth):
+
+| | solved | cut: median (90th pct) | height (z): median, sd | along the jaws / across / depth: sd |
+|---|---|---|---|---|
+| `prune`, as it was | 99 | 5.8 (9.7) mm | 5.6, 1.4 | 4.2 / 0.8 / 3.7 |
+| `prune`, settled | 99 | **0.6 (7.1)** | 0.6, 2.9 | 3.0 / 1.2 / 1.7 |
+| the five new situations, as they were | 95 to 100 | 4.2 to 5.4 (6.3 to 6.9) | 3.8 to 5.1, 0.7 to 1.8 | 2.3 to 3.7 / 1.0 to 2.1 / 1.9 to 3.8 |
+| the five, settled | 97 to 100 | **0.5 to 0.6 (0.6 to 0.7)** | 0.5 to 0.6, 0.1 to 0.2 | 0.2 to 0.4 / 0.1 to 0.3 / 0.2 to 0.4 |
+
+- **Settling takes the expert's cut from 5.8 to 0.6 mm** (median), as successful (99, and 97 to 100), at the cost of
+  10 to 20 control steps per cut (0.5 to 1 s). On the new situations the 90th percentile falls to 0.7 mm. On `prune` it
+  stays at 7.1 mm: about one cut in seven there is not settled, plausibly because the cut point is planned while the
+  plate is still coasting after a turn (not checked).
+- **Adopted for the new demonstrations** (every set below is collected with it). The plain demonstrations of the old
+  datasets are not re-collected.
+
+**The existing policies on these situations, before any training on them** (final averaged weights; the v3 fast
+levels under v3's slow level with the simulator's scene and the task's program from clear starts as e13.sh runs them,
+with rule e's resets off on a locked plate, since it assumes a plate that turns; the plain pruning policy from the home
+pose with the leaves fixed, as its report card; `prune` 200 layouts, the situations 100, the expert's layouts above):
+
+| Policy | `prune` | `locked` | `heights` | `height_named` |
+|---|---|---|---|---|
+| v3 fast level `dart8k` seed 42 (adopted) | 178 | 0 (57 of 254 shoots cut) | 0 (29 cut) | 7 (16 wrong shoot) |
+| v3 fast level, DINOv2 seed 43 | 183 | 0 (51 cut) | 0 (28 cut) | 0 (11 wrong) |
+| plain pruning policy `dp_dinov2_lang_frames_1s_prune2k_leaffix_20m` | 189 | 0 (48 cut) | 0 (27 cut) | 1 (32 wrong) |
+
+Their cuts, across the shoot: median (90th percentile), and in height (z) and laterally: median of the absolute offset
+(mean, sd), mm:
+
+| Policy | `prune`: cut / z / lateral | `locked`: cut / z / lateral | `heights` | `height_named` |
+|---|---|---|---|---|
+| `dart8k` seed 42 | 6.6 (10.9) / 4.6 (-4.6, 2.8) / 3.4 (+0.1, 5.2) | 7.9 (12.1) / 4.6 (-3.7, 5.3) / 3.7 (-1.3, 6.4) | 7.8 (15.8) / 3.6 (+1.1, 8.2) / 5.0 | 10.9 (16.3) / 6.7 (-1.3, 9.3) / 5.8 |
+| DINOv2 seed 43 | 8.4 (14.2) / 6.2 (-5.6, 5.8) / 3.4 (+0.2, 5.4) | 10.8 (17.6) / 9.4 (-3.6, 9.8) / 5.8 (+1.0, 6.2) | 13.4 (22.1) / 10.3 (+4.8, 11.1) / 6.5 | 16.7 (23.1) / 15.4 (-2.3, 15.9) / 6.3 |
+| plain pruning policy | 7.8 (13.6) / 5.8 (-4.7, 6.1) / 3.1 (-0.2, 4.8) | 10.6 (17.2) / 8.5 (-3.6, 9.4) / 4.9 (+1.5, 6.4) | 9.0 (16.9) / 7.1 (-1.0, 9.9) / 3.4 | 11.6 (19.5) / 6.6 (-4.5, 10.1) / 5.4 |
+
+- **Without the turntable none of them prunes a plant** (0 of 100 on `locked` and `heights` for all three): each cuts
+  the shoots that happen to point toward the robot (48 to 57 of 254) and runs out of time on the rest. The plain
+  policy, told "cut the shoot just below
+  the flower", cuts another shoot in a third of the episodes: it does not read the instruction.
+- **Where they do cut, height is the worse axis**, as on `prune` (DART8K), and worse than on `prune`: a spread of 5
+  to 10 mm in height on `locked` against 3 to 6 on `prune`, 8 to 16 on the new heights, laterally 5 to 7. Even the
+  `dart8k` fast level, which corrects height on prune's frontal approach, spreads 5.3 mm on `locked` and 8.2 on
+  `heights`.
+- `pitched` and `blocked` were stopped part-way when a GPU of the machine failed (below) and are run again with the
+  trained policy.
+
+**Demonstrations for training** (settled expert, random starts, a tail of 10, leaves fixed, unused shoots parked as
+built; shards with the frame 1 s back): `locked` 693, `pitched` 492, `blocked` 456, `heights` 273 (each stopped short
+of its target and kept: the collections were hit by the failures below; every episode is written only once solved, and
+a check of a hundred episodes of each found no blank frames), and 1115 corrective (DART: 0.02 rad, quiet within 3 cm
+of a cut, as DART8K) demonstrations of plain `prune` (2385 attempted). The corrective sets of the situations themselves
+and `height_named`'s are not collected yet. The run planned on them, `dp_dinov2_lang_frames_1s_reach3d_dart_20m` (frozen
+DINOv2 1 s policy, 20M samples, seed 42, the corrective sets 0.6 of each batch from the start, the old 2000 plain
+demonstrations and the new situation sets 0.4), has not started: one of the two GPUs used failed (it needs a reset), and
+then the machine's NVIDIA driver library was updated under the loaded kernel module, so no new process can use a GPU
+until the machine restarts.
+
+What is arm-specific in all of this, for the move to another arm: `sim/pickup/arm.py` entire (the gripper's frame and
+opening, the inverse kinematics, joint limits and the posture it keeps, the collision shapes checked, the candidate
+wrist orientations, the check of a way in, the settling rule and its gains), and the expert's cut sequence's speeds
+and distances (`expert.py`, unchanged from prune). The situations, their success rules, the reach map's method and the
+evaluation carry over; the numbers that depend on the arm are the reach map's shares, which layouts a draw keeps, and
+the expert's precision.
+
+Runs: the expert on about 3000 episodes (reports and settling), the reach map (2016 cells), 1500 baseline episodes,
+five collections (3029 kept), in `results/pickup/reach/`. GPUs 6 and 7 of an L40S machine were held from 07:20 to 11:10 UTC for the evaluations (7.7
+GPU-hours held, mostly at low load; the expert and the collections run on the CPU and render on the GPU).
+
+
 ## Throughput
 
 | Model | Machine A (RTX 4090) | Machine B (L40S) |

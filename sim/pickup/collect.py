@@ -8,6 +8,9 @@ action[t] is the command applied after observing frame t.
 
   python -m sim.pickup.collect --task pick_cube --episodes 200 --out data/lerobot/pick_cube
 
+A file named STOP in the output directory stops a collection early: each worker stops before its next episode and the
+episodes kept so far are written out as the dataset (for a collection that runs longer than the time it has).
+
 Reasoning tasks (reason_*) also get the expert's notes (notes.py) as per-frame columns: note (the note in force),
 note_prev (the one before it), note_age (frames since it was written) and instruction_subgoal (its "next" field, which
 preprocessing offers as the language instruction type "subgoal"). A situation on a plant task that changes the task
@@ -187,10 +190,11 @@ def _worker(args):
         action_noise,
         subgoal_column,
         clear,
+        settle,
         takeover,
     ) = args  # takeover: None, or this worker's policy server and the range the handover step K is drawn from
     env = PickupEnv(task, scenario=scenario, leaf_fix=leaf_fix, park_reset=park_reset)
-    expert = ScriptedExpert(env, seed=worker_id, reactive=disturb_prob > 0 or drift_prob > 0, side=side)
+    expert = ScriptedExpert(env, seed=worker_id, reactive=disturb_prob > 0 or drift_prob > 0, side=side, settle=settle)
     writer = NoteWriter(env) if env.reason else None
     if writer is None and env.plant_task and (subgoal_column or any(s.changes_task for s in env.scenarios)):
         writer = SubgoalWriter(env)  # a situation (or --subgoal_column): the sub-goal column alone
@@ -208,6 +212,8 @@ def _worker(args):
         policy = served_policy(conn, env, takeover["exec_horizon"], takeover["flow_steps"], said)
     results = []
     for seed, target_index in jobs:
+        if (Path(out_dir) / "STOP").exists():  # asked to stop early: the episodes kept so far are written out
+            break
         env.max_steps = budget
         obs, start_yaw = env.reset(seed=seed, target_index=target_index), 0.0
         if clear:
@@ -434,6 +440,11 @@ def main():
         help="stems: which side the expert approaches from (see ScriptedExpert)",
     )
     ap.add_argument(
+        "--expert_settle",
+        action="store_true",
+        help="pruning: the expert closes the jaws only once the hand has settled at the cut (ScriptedExpert settle)",
+    )
+    ap.add_argument(
         "--drift_cm_s",
         type=float,
         default=2.0,
@@ -589,7 +600,7 @@ def main():
         assert len(servers) == 1, f"the policy servers serve different checkpoints: {servers}"
     kept, attempted, successes, next_seed, endings = [], 0, 0, args.seed, []
     with mp.get_context("spawn").Pool(args.workers) as pool:
-        while len(kept) < args.episodes:
+        while len(kept) < args.episodes and not (out / "STOP").exists():
             need = args.episodes - len(kept)
             seeds = list(range(next_seed, next_seed + max(-(-(need + need // 10) // per_layout), args.workers)))
             next_seed = seeds[-1] + 1
@@ -609,6 +620,7 @@ def main():
                 (args.action_noise, args.action_noise_quiet_cm / 100),
                 args.subgoal_column,
                 args.clear_start,
+                args.expert_settle,
             )
             chunks = [
                 (args.task, jobs[i :: args.workers], str(out), i, *extra, _takeover(args, i))
@@ -683,6 +695,7 @@ def main():
     for f in (out / "tmp").glob("*.parquet"):
         f.unlink()
     (out / "tmp").rmdir()
+    (out / "STOP").unlink(missing_ok=True)
 
     with open(out / "meta" / "episodes.jsonl", "w") as f:
         f.writelines(json.dumps(e) + "\n" for e in episodes)
@@ -709,6 +722,7 @@ def main():
         drift_cm_s=args.drift_cm_s if args.drift_prob > 0 else None,
         drifting_episodes=sum(r["disturbed"] == "drift" for r in kept[len(included) :]),
         expert_side=args.expert_side,
+        **({"expert_settle": True} if args.expert_settle else {}),
         tail_steps=args.tail_steps,
         **({"scenario": args.scenario} if args.scenario else {}),
         **({"leaf_fix": True} if args.leaf_fix else {}),

@@ -485,6 +485,8 @@ _SITUATION_PROGRAMS = {
     ("sick", "sick"): Cut(Filter("sick", "yes", All())),
     ("buds", "buds"): Cut(Filter("bud", "no", All())),
     ("nothing_to_do", "pruned"): Cut(All()),
+    ("height_named", "below_flower"): Cut(_NAMED["highest"]),  # scenarios_reach.py, R5
+    ("height_named", "near_pot"): Cut(_NAMED["lowest"]),
 }
 
 
@@ -499,8 +501,8 @@ def from_scenario(env) -> Stmt:
         raise ValueError(f"no program for a task with a named shoot ({env.task})")
     for scenario in getattr(env, "scenarios", ()):
         variation = env.scenario_info.get(scenario.name, {})
-        if not (scenario.changes_task and variation.get("applied")):
-            continue
+        if not (scenario.changes_task and variation.get("applied")) or getattr(scenario, "prune_program", False):
+            continue  # (the situations of scenarios_reach.py change the plant and the success rule, not what to cut)
         name = scenario.name.removesuffix("_heldout")
         mode = variation["mode"]
         if (name, mode) in _SITUATION_PROGRAMS:

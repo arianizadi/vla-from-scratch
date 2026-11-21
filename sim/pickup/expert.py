@@ -8,6 +8,7 @@ same 8-D joint-target space the policy is trained on.
 import mujoco
 import numpy as np
 
+from .arm import arm_for
 from .env import BUTTONS, HOME_Q, OBJECTS, PRESS_TRAVEL, REACH_AZIMUTH, STEM_H, PickupEnv
 
 
@@ -105,8 +106,15 @@ class ScriptedExpert:
             cls = AimExpert
         return super().__new__(cls)
 
-    def __init__(self, env: PickupEnv, seed: int = 0, reactive: bool = False, side: str = "clearance"):
+    def __init__(
+        self, env: PickupEnv, seed: int = 0, reactive: bool = False, side: str = "clearance", settle: bool = False
+    ):
+        """`settle` (pruning): before the jaws close on a shoot, wait at the cut until the hand has settled there (the
+        arm's rule: arm.PandaArm.settle_step, the set-point corrected for the arm's sag meanwhile). Off by default: the
+        existing demonstrations close as soon as the hand arrives."""
         assert side in ("clearance", "preferred"), side
+        self.settle = settle
+        self.offset = np.zeros(3)  # the set-point's correction while settling (zero unless `settle`)
         self.env = env
         self.reactive = reactive
         self.side = side
@@ -158,6 +166,7 @@ class ScriptedExpert:
         orientation, when it does not point down (see take_over)."""
         env = self.env
         self.des_pos = env.tcp_pos()
+        self.offset = np.zeros(3)
         self.des_yaw = yaw
         self.des_R = R  # also set when a grasp from the side turns the gripper away from pointing down
         self.q_cmd = env.data.ctrl[:7].copy()
@@ -235,6 +244,7 @@ class ScriptedExpert:
 
         self.waypoints = [
             (cut, PRUNE_OPEN, 0.10 * speed, 2, R_cut),
+            *self._settled_at(cut, R_cut, PRUNE_OPEN),
             (cut, 0.0, 0.0, 25, R_cut, is_cut),
             (cut, 0.0, 0.0, 2, R_cut),
             (cut, PRUNE_OPEN, 0.0, 3, R_cut),
@@ -255,7 +265,7 @@ class ScriptedExpert:
         """Is the gripper among the shoots: near the main stem's axis, below the top of the flower (plus a margin)?"""
         base, up = self.env.stem_axis()
         rel = self.env.tcp_pos() - base
-        return bool(np.linalg.norm(rel - up * (rel @ up)) < AMONG_SHOOTS and rel @ up < STEM_H + ABOVE_FLOWER)
+        return bool(np.linalg.norm(rel - up * (rel @ up)) < AMONG_SHOOTS and rel @ up < self.env.stem_h + ABOVE_FLOWER)
 
     def _plan(self, again=False):
         """Waypoints for the named object where it is now, starting from the current set-point."""
@@ -413,6 +423,8 @@ class ScriptedExpert:
         if not remaining:
             self.waypoints = [(self.des_pos.copy(), 1.0, 0.0, 10**6, R_now)]
             return
+        if "reach3d" in env.flags:  # scenarios_reach.py: no turning; the arm's planner finds the way in to each cut
+            return self._plan_reach(remaining, R_now, lane_x, speed)
         card = env.reason and env.label_colour is not None
         if card and not self.label_read and env.label_visible():
             self.label_read = True  # hidden kind: the card faces the front camera, read it
@@ -465,6 +477,7 @@ class ScriptedExpert:
                 (lane, ajar, 0.35 * speed, 0, R),
                 (pre, ajar, 0.25 * speed, 0, R),
                 (cut, ajar, 0.10 * speed, 2, R),
+                *self._settled_at(cut, R, ajar),
                 (cut, 0.0, 0.0, 25, R, is_cut),  # close and hold until the shoot is cut
                 (cut, 0.0, 0.0, 2, R),
                 (cut, ajar, 0.0, 3, R),  # open: the cut part falls (on the plate, the pot or the table)
@@ -478,6 +491,64 @@ class ScriptedExpert:
             )
         if _angle(R_now, plan[0][4]) > 0.6:  # turn the hand where it is first (it swings up, away from the plant)
             plan.insert(0, (self.des_pos.copy(), plan[0][1], 0.1, 0, self.R_down))
+        self.waypoints = plan
+
+    def _plan_reach(self, remaining, R_now, lane_x, speed):
+        """Pruning with the plate locked (scenarios_reach.py): of the shoots left, the first, from the one pointing
+        nearest the robot round to the one pointing farthest away, that the arm has a way in to from where the hand is
+        (scenarios_reach.plan_cut: the gripper's orientation, the jaws' opening, the line in); then the cut as in
+        _plan_prune (to the lane, back along the approach, in at the approach speed, close until cut, open, out the same
+        way), with the plan's orientation and opening."""
+        from .scenarios_reach import plan_cut  # imported here: it imports this module (for LANE_BACK)
+
+        env = self.env
+        s0 = self.rng.uniform(0.031, 0.039)
+        start = (self.des_pos.copy(), R_now, self.q_cmd.copy())
+        # the shoots nearest to pointing at the robot first; the first with a way in is cut
+        order = sorted(remaining, key=lambda n: abs(self._turn_needed(n)))
+        plans = {}
+        for n in order:
+            p = plan_cut(env, n, start, cut_s=(s0, 0.042))
+            if p is not None:
+                plans[n] = p
+                break
+        if not plans:
+            # nothing reachable from where the hand is: from the start the scenario's draw planned from, every shoot
+            # was (arm.canonical_start); go there and plan again, unless already there (then hold: time runs out)
+            pos, R_start, _ = arm_for(env).canonical_start(lane_x)
+            self.prune_target = None
+            if np.linalg.norm(self.des_pos - pos) > 0.01 or _angle(R_now, R_start) > 0.05:
+                staging = [(np.array([lane_x, self.des_pos[1], self.des_pos[2]]), PRUNE_OPEN, 0.30 * speed, 0, R_now)]
+                self.waypoints = (staging if self.des_pos[0] > lane_x + 0.01 else []) + [
+                    (pos, PRUNE_OPEN, 0.30 * speed, 0, R_start)
+                ]
+            else:
+                self.waypoints = [(self.des_pos.copy(), PRUNE_OPEN, 0.0, 10**6, R_now)]
+            return
+        ((name, p),) = plans.items()
+        self.prune_target, self.reach_plan = name, p
+        back = self.rng.uniform(0.13, 0.15) / 0.14
+        pre = p.cut + (p.pre - p.cut) * back
+        lane = np.array([min(lane_x, pre[0]), pre[1], pre[2]]) if p.lane[0] < p.pre[0] - 1e-9 else pre.copy()
+        R, ajar = p.R, p.opening
+
+        def is_cut(name=name):
+            return name in env.cut
+
+        plan = [
+            (lane, ajar, 0.35 * speed, 0, R),
+            (pre, ajar, 0.25 * speed, 0, R),
+            (p.cut, ajar, 0.10 * speed, 2, R),
+            *self._settled_at(p.cut, R, ajar),
+            (p.cut, 0.0, 0.0, 25, R, is_cut),  # close and hold until the shoot is cut
+            (p.cut, 0.0, 0.0, 2, R),
+            (p.cut, ajar, 0.0, 3, R),  # open: the cut part falls
+            (pre, ajar, 0.20 * speed, 0, R),
+            (lane, ajar, 0.30 * speed, 0, R),
+        ]
+        if self.des_pos[0] > lane_x + 0.01:  # first back to the lane's plane in front of the plant, not turning: the
+            # hand turns to the cut's orientation only there, clear of the plant
+            plan.insert(0, (np.array([lane_x, self.des_pos[1], self.des_pos[2]]), ajar, 0.30 * speed, 0, R_now))
         self.waypoints = plan
 
     def _press_plan(self, sign, faced, lane_x, speed):
@@ -581,8 +652,25 @@ class ScriptedExpert:
                 self.dwell = 0
             elif finished and env.plant_task:
                 self._plan_prune()
-        self.q_cmd = self.solve_ik(self.q_cmd, self.des_pos, self.des_yaw, R_des=self.des_R)
+        if self.offset.any():  # settling: the correction is held while the hand stands, let go once it moves on
+            if speed > 0:
+                self.offset = self.offset * 0.7 if np.linalg.norm(self.offset) > 1e-4 else np.zeros(3)
+            self.q_cmd = self.solve_ik(self.q_cmd, self.des_pos + self.offset, self.des_yaw, R_des=self.des_R)
+        else:
+            self.q_cmd = self.solve_ik(self.q_cmd, self.des_pos, self.des_yaw, R_des=self.des_R)
         return np.concatenate([self.q_cmd, [grip]]).astype(np.float32)
+
+    def _settled_at(self, cut, R, grip):
+        """The settle waypoint (`settle`): at the cut, the jaws open, until the hand has settled or SETTLE_STEPS."""
+        from .arm import SETTLE_STEPS
+
+        arm = arm_for(self.env)
+
+        def settled():
+            self.offset, done = arm.settle_step(self.offset, cut, R)
+            return done
+
+        return [(cut, grip, 0.0, SETTLE_STEPS, R, settled)] if self.settle else []
 
 
 # Where an episode may start when it does not start at the home pose: gripper position (metres) and yaw.

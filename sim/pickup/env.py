@@ -1065,6 +1065,7 @@ class PickupEnv:
         self._fixed_exclusions = [s for s in m.exclude_signature if s not in self._shoot_exclusion.values()]
         assert len(self._fixed_exclusions) + MAX_SHOOTS == m.nexclude
         self.shoots: dict[str, dict] = {}  # per episode: shoot geometry in the plant frame
+        self.stem_h = STEM_H  # the main stem's length (a scenario may grow a taller or shorter plant: heights)
         self.damaged: str | None = None
         self.stem_hold = 0
         self.max_stem_push = 0.0  # largest summed normal force of the robot on the main stem this episode (N)
@@ -1363,7 +1364,7 @@ class PickupEnv:
 
     def holds_main_stem(self):
         a, d = self.stem_axis()
-        return self._segment_held([self.plant_body], a, d, (0.0, STEM_H))
+        return self._segment_held([self.plant_body], a, d, (0.0, self.stem_h))
 
     def _check_damage(self):
         """After every physics step: the robot touching the flower head damages the plant at once; the normal force

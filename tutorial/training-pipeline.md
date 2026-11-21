@@ -32,6 +32,7 @@ rendered images; nothing here has touched a real camera.
 | [V3-8] | [After step 7: the LoRA writer and the DINOv2 fast level](lab-notebook.md#after-step-7-the-writer-fine-tuned-with-lora-and-the-fast-level-on-a-frozen-dinov2-encoder) |
 | [CUT] | [The cut, diagnosed](lab-notebook.md#the-cut-diagnosed-where-the-fast-levels-8-mm-come-from) |
 | [DART8K] | [The cut: corrective demonstrations as most of the data, from the start](lab-notebook.md#the-cut-corrective-demonstrations-as-most-of-the-data-from-the-start-dart8k) |
+| [REACH3D] | [Full 3D reach: no turntable, heights, pitched shoots](lab-notebook.md#full-3d-reach-no-turntable-heights-pitched-shoots) |
 | [OPS] | [Throughput](lab-notebook.md#throughput), [Operations](lab-notebook.md#operations) (including the pipeline timings and disk), [Bugs](lab-notebook.md#bugs-found-and-fixed) |
 
 ## 1. What to train today
@@ -574,6 +575,7 @@ Each line is something we tried, with its number, so that nobody repeats it with
 | Camera mounts and calibration: front and wrist at 224 px, the plant crop cut from the front camera; the camera looks' offsets | `env.py`, `scene.PlantCrop`, `scenarios.py` |
 | The MuJoCo model and contact settings (stiff contacts, `o_solref` 0.004 s) | `sim/pickup/assets/`, `env.py` (lab notebook, "Toward flower trimming", "Physics change") |
 | Gripper and cut mechanics (jaws shut on a shoot 2 to 5 cm out for 3 control steps), grasp tolerance | `env.py` [S6]; measure tolerance again ([lab notebook](lab-notebook.md#grasp-tolerance)) |
+| Reach round the plant: the gripper's frame and jaws, the candidate wrist orientations for a cut, joint limits, the arm's collision shapes, the check of a way in, settling before the jaws close | `sim/pickup/arm.py` (`PandaArm`); the full-3D-reach situations (`scenarios_reach.py`) ask it only `plan_cut` [REACH3D] |
 
 **Carries over**: the data recipe (random starts, recoveries, tail of 10, the 1 s frame, 2000 to 4000 demonstrations,
 20M samples); paired re-rendering (needs a simulator that replays bit for bit); the frozen encoder and the fast

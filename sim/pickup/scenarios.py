@@ -1345,6 +1345,14 @@ SCENARIOS = {
 }
 
 
+# The situations that need the arm's every axis (scenarios_reach.py: locked, heights, pitched, blocked) are names here
+# too. That module builds on this one's classes, so whichever of the two is imported second registers them.
+from . import scenarios_reach as _reach  # noqa: E402
+
+if hasattr(_reach, "register"):
+    _reach.register()
+
+
 def parse(spec) -> list[Scenario]:
     """Scenario instances from a spec: None or "" (none), "name[:mode][@p],..." or a list of such strings."""
     if not spec:
