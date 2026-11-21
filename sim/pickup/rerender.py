@@ -11,7 +11,10 @@ physics drifts apart within a few hundred steps. So the collection is re-run as 
 seeds, split among the same number of workers (--collect_workers), each worker a fresh environment and expert running
 its seeds in order, the failed ones included; the episodes the dataset kept are checked against it frame by frame.
 
-The new episodes keep the recorded states and actions unchanged; only the camera images differ. A trajectory then
+A collection made with DART noise (collect.py --action_noise, --action_noise_quiet_cm) is re-run with the same noise,
+drawn again from each episode's seed, and one that does not start at seed 0 from its first seed (--collect_seed, or the
+seed its metadata records). The new episodes keep the recorded states and actions unchanged, and the notes or sub-goals
+of a reasoning task or a situation with them; only the camera images differ. A trajectory then
 appears under several looks with exactly the same actions, which teaches what does not matter without changing what to
 do (with live collection under a scenario, the expert's trajectories drift apart from the plain ones and the data cannot
 say whether the look or the motion changed).
@@ -39,7 +42,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from .collect import CAMERAS, _included, _jpeg
+from .collect import CAMERAS, ActionNoise, _included, _jpeg
 from .env import CONTROL_HZ, PickupEnv
 from .expert import ScriptedExpert, random_start
 
@@ -91,9 +94,11 @@ class Replayer:
             geom_dataid=m.geom_dataid.copy(),
         )
 
-    def collect_chunk(self, worker_id, seeds, tail_steps):
+    def collect_chunk(self, worker_id, seeds, tail_steps, hold_steps=0, noise=(0.0, 0.0)):
         """Run the expert on `seeds` in order as one collect.py worker did (a fresh environment and expert per chunk);
-        yields (seed, states, actions, frames) for every successful episode."""
+        yields (seed, states, actions, frames) for every successful episode. `hold_steps` and `noise` (collect.py
+        --hold_steps; --action_noise and --action_noise_quiet_cm in metres): the commands executed are the expert's
+        own with collect.py's DART noise drawn again from the seed, the actions recorded the expert's."""
         env = self.env = PickupEnv(self.task, leaf_fix=self.leaf_fix, park_reset=self.park_reset)
         expert = ScriptedExpert(env, seed=worker_id)
         self.expert = expert
@@ -104,13 +109,14 @@ class Replayer:
             if self.random_start:
                 obs, yaw = random_start(env, expert, seed)
             expert.reset(yaw=yaw)
+            jitter = ActionNoise(seed, *noise)
             states, actions, frames, done, info = [], [], [], False, {}
             while not done:
-                action = expert.act()
+                action = env.last_action.copy() if len(actions) < hold_steps else expert.act()
                 states.append(obs["state"])
                 actions.append(action)
                 frames.append(self.frame())
-                obs, done, info = env.step(action)
+                obs, done, info = env.step(jitter.apply(action, env) if len(actions) > hold_steps else action)
             if not info["success"]:
                 continue
             for _ in range(tail_steps):
@@ -217,27 +223,37 @@ class Replayer:
         return images, variation
 
 
-def collection_rounds(entries, info, workers):
-    """The chunks of seeds collect.py's workers ran, round by round: [(worker id, [seeds])]. Every success of a round
-    but the last was kept (the dataset holds the first `episodes` successes by seed)."""
+def collection_rounds(entries, info, workers, first=0):
+    """The chunks of seeds collect.py's workers ran, round by round: [(worker id, [seeds])], from the collection's first
+    seed (collect.py --seed). Every success of a round but the last was kept (the dataset holds the first `episodes`
+    successes by seed)."""
     kept = sorted(e["seed"] for e in entries)
     target, attempted = len(kept), int(info["expert_attempted"])
     assert info.get("targets_per_layout", 1) == 1 and not info.get("takeover") and not info.get("disturb_prob")
-    chunks, start, done_kept = [], 0, 0
-    while start < attempted:
+    chunks, start, done_kept = [], first, 0
+    while start < first + attempted:
         need = target - done_kept
         seeds = list(range(start, start + max(need + need // 10, workers)))
         start = seeds[-1] + 1
         chunks += [(i, seeds[i::workers]) for i in range(workers)]
         done_kept = sum(s < start for s in kept)
-    if start != attempted:
+    if start != first + attempted:
         raise ValueError(
-            f"{workers} workers give {start} attempts, the dataset says {attempted}: wrong --collect_workers?"
+            f"{workers} workers give {start - first} attempts, the dataset says {attempted}: wrong --collect_workers "
+            "or --collect_seed?"
         )
     return chunks
 
 
 _REPLAYER = None
+INDEX_COLUMNS = ("timestamp", "frame_index", "episode_index", "index", "task_index")  # written again for the new set
+
+
+def recorded_columns(path):
+    """An episode's recorded columns but the images and the indices: state, action, and the notes of a reasoning task
+    or the sub-goals of a situation (collect.py), which every copy keeps unchanged."""
+    names = pq.read_schema(path).names
+    return pq.read_table(path, columns=[n for n in names if n not in CAMERAS and n not in INDEX_COLUMNS])
 
 
 def _render_copies(index, entry, seed, frames, table, out, copies, looks):
@@ -260,8 +276,9 @@ def _render_copies(index, entry, seed, frames, table, out, copies, looks):
             pa.table(
                 {
                     **{c: pa.array([{"bytes": b, "path": None} for b in images[c]]) for c in CAMERAS},
-                    "state": table["state"],  # the recorded columns themselves: bit-identical
-                    "action": table["action"],
+                    # the recorded columns themselves, bit-identical: state, action, and a reasoning task's notes or a
+                    # situation's sub-goals
+                    **{name: table[name] for name in table.column_names},
                 }
             ),
             path,
@@ -286,14 +303,16 @@ def _chunk_job(args):
     global _REPLAYER
     _REPLAYER = Replayer(info, image_size)
     results = []
-    for seed, states, actions, frames in _REPLAYER.collect_chunk(worker_id, seeds, int(info.get("tail_steps", 0))):
+    noise = (float(info.get("action_noise") or 0.0), float(info.get("action_noise_quiet_cm") or 0.0) / 100)
+    run = _REPLAYER.collect_chunk(
+        worker_id, seeds, int(info.get("tail_steps", 0)), int(info.get("hold_steps") or 0), noise
+    )
+    for seed, states, actions, frames in run:
         if seed not in by_seed:
             continue  # a success past the dataset's last episode (the last round makes more than it needs)
         entry = by_seed[seed]
         index = entry["episode_index"]
-        table = pq.read_table(
-            Path(src) / "data" / "chunk-000" / f"episode_{index:06d}.parquet", columns=["state", "action"]
-        )
+        table = recorded_columns(Path(src) / "data" / "chunk-000" / f"episode_{index:06d}.parquet")
         recorded_s = np.array(table["state"].to_pylist(), dtype=np.float32)
         recorded_a = np.array(table["action"].to_pylist(), dtype=np.float32)
         if not (np.array_equal(states, recorded_s) and np.array_equal(actions.astype(np.float32), recorded_a)):
@@ -318,6 +337,12 @@ def main():
         help="the --workers the source dataset was collected with (the episodes are re-run in the same chunks)",
     )
     ap.add_argument(
+        "--collect_seed",
+        type=int,
+        default=None,
+        help="the --seed the source dataset was collected from (default: the one its metadata records, else 0)",
+    )
+    ap.add_argument(
         "--image_size",
         type=int,
         default=224,
@@ -330,7 +355,6 @@ def main():
     src, out = Path(args.src), Path(args.out)
     info = json.loads((src / "meta" / "info.json").read_text())
     assert not info.get("scenario"), "re-render a dataset collected without scenarios"
-    assert not info.get("action_noise"), "re-render a dataset collected without --action_noise (its replay skips it)"
     all_entries = [json.loads(line) for line in (src / "meta" / "episodes.jsonl").read_text().splitlines()]
     entries = all_entries[: args.episodes] if args.episodes else all_entries
     (out / "tmp").mkdir(parents=True, exist_ok=True)
@@ -338,7 +362,8 @@ def main():
     (out / "data" / "chunk-000").mkdir(parents=True, exist_ok=True)
     t0 = time.time()
     by_seed = {e["seed"]: e for e in entries}
-    chunks = collection_rounds(all_entries, info, args.collect_workers)
+    first = args.collect_seed if args.collect_seed is not None else int(info.get("seed") or 0)
+    chunks = collection_rounds(all_entries, info, args.collect_workers, first)
     jobs = [
         (str(src), str(out), info, w, seeds, by_seed, args.copies, args.looks, args.image_size) for w, seeds in chunks
     ]
@@ -349,6 +374,10 @@ def main():
         for i, res in enumerate(pool.imap_unordered(_chunk_job, jobs)):
             new.extend(res)
             print(f"[rerender] {i + 1}/{len(jobs)} chunks, {len(new)} copies, {time.time() - t0:.0f}s", flush=True)
+    if len(new) != args.copies * len(entries):  # e.g. the rounds started from the wrong seed: nothing matched
+        raise RuntimeError(
+            f"{len(new)} copies drawn for {len(entries)} episodes x {args.copies}: wrong --collect_seed?"
+        )
     new.sort(key=lambda r: (r["rerender_of"], r["path"]))
     included = _included(src, info["sim_task"]) if args.include_source else []
     if args.episodes and included:
@@ -358,7 +387,7 @@ def main():
     tasks, episodes, index = {}, [], 0
     for ep_idx, r in enumerate(kept):
         task_idx = tasks.setdefault(r["instruction"], len(tasks))
-        table = pq.read_table(r["path"], columns=[*CAMERAS, "state", "action"])
+        table = pq.read_table(r["path"], columns=[*CAMERAS, *recorded_columns(r["path"]).column_names])
         n = table.num_rows
         table = table.append_column("timestamp", pa.array(np.arange(n, dtype=np.float32) / CONTROL_HZ))
         table = table.append_column("frame_index", pa.array(np.arange(n, dtype=np.int64)))

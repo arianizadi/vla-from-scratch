@@ -713,6 +713,7 @@ def main():
         **({"scenario": args.scenario} if args.scenario else {}),
         **({"leaf_fix": True} if args.leaf_fix else {}),
         **({"park_reset": True} if args.park_reset else {}),
+        seed=args.seed,  # the first seed: rerender.py runs the collection again from it
         **(
             {
                 "action_noise": args.action_noise,

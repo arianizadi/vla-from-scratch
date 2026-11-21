@@ -29,6 +29,8 @@
 #   PICKUP_E13_HELDOUT=1          also the cells of order, ties, sick and buds in held-out sentence frames
 #                                 (<cell>_heldout_<scene>: scenarios order_heldout, ties_heldout, ...), for a written
 #                                 program; with the task's own they are the training frames' cells
+#   PICKUP_E13_LOOK=<spec>        a visual scenario (e.g. lighting, camera/test, bench) added to every cell's scenario,
+#                                 for v3 under the looks of the robustness report cards; a cell without one gets it alone
 #   PICKUP_GPU and the rest: as for eval_v2.sh and _common.sh
 set -euo pipefail
 fast43=${1:?fast run, seed 43}; fast44=${2:?fast run, seed 44}; phase=${3:-all}
@@ -53,9 +55,17 @@ run() {
   if [ "$level" = v3 ] && [ -n "${PICKUP_E13_ARGS:-}" ]; then read -r -a more <<< "$PICKUP_E13_ARGS"; fi
   local program=gold
   if [ "$level" = v3 ]; then program=${PICKUP_E13_PROGRAM:-gold}; fi
+  local args=("$@")
+  if [ -n "${PICKUP_E13_LOOK:-}" ]; then  # a look on top of the cell's own situation (or alone, on plain prune)
+    local k found=0
+    for k in "${!args[@]}"; do
+      if [ "${args[$k]}" = --scenario ]; then args[k + 1]="${args[k + 1]},$PICKUP_E13_LOOK"; found=1; fi
+    done
+    [ $found = 1 ] || args+=(--scenario "$PICKUP_E13_LOOK")
+  fi
   PICKUP_SLOW_LEVEL=$level PICKUP_SCENE=$scene PICKUP_PROGRAM=$program PICKUP_OUT=$out \
     "$here/eval_v2.sh" "$fast" "$task" "$episodes" --seed_start "$first" --clear_start \
-    ${more[@]+"${more[@]}"} "$@"
+    ${more[@]+"${more[@]}"} ${args[@]+"${args[@]}"}
 }
 
 # situations <phase> <fast run> <episodes> <first seed>
