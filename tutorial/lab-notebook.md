@@ -2474,6 +2474,84 @@ phase (the control and DART fine-tunes, `dart8k` seed 43, the fine-tunes' init f
 shards, 121 GB; `collect.py --action_noise 0.02 --action_noise_quiet_cm 3 --seed 400000 / 420000` rebuilds them). Kept:
 `dart8k` seed 42 and the DINOv2 seed-43 and seed-42 fast levels the tables cite.
 
+## Overfitting check
+
+The question: are we overfitting? Answered from what is already on disk (no new runs): the training logs, the
+per-checkpoint evaluations and the tables above, one axis at a time.
+
+**Loss.** No held-out loss has ever been logged: the trainer supports one (`val_dataset_manifest`,
+`val_every_n_checkpoints`), but the manifest is empty in every run's config. Training loss (mean over the last fifth of
+each checkpoint) falls smoothly and flattens with the cosine: paired DINOv2 0.044 at checkpoint 1 to 0.016 at 10,
+from-scratch 1 s ViT 0.046 to 0.014, the 40M run 0.0144 against 0.0156 at 20M with the same success (80 against 79).
+The from-scratch ViT and frozen DINOv2 on plain data end at the same loss (0.014 and 0.013) and 3 against 53 under new
+lighting, so training loss cannot see the overfitting that matters here (lesson 2 of the training pipeline, again).
+
+**Success against checkpoint: no decline late in training.** All 118 curves with eleven evaluated checkpoints (104
+runs, averaged weights, 100 layouts each): the best checkpoint beats the final one by a median of 3 (what picking the
+best of eleven noisy points gives), checkpoints 9 to 11 against 6 to 8 a median of +1.3, and of the 84 that reach 30
+only two fall by more than 10 late, both the first takeover dataset (contradictory actions near the shoot, above).
+The peak is at checkpoint 7 or later in 70 of 84. Passes over the data: 20M samples on the 2000 plain pruning
+demonstrations (1.10M windows) are 18 epochs, the 40M run 36, paired data (3.31M windows) 6, `reason_mix_8k` (2.06M) 10.
+
+| Run (averaged weights, checkpoints 1 to 11) | |
+|---|---|
+| from-scratch ViT, 1 s memory, plain, seed 42 | 8 32 36 56 63 65 73 73 69 76 70 |
+| from-scratch ViT, no memory, 40M (36 epochs) | 0 28 46 51 64 78 69 77 76 76 80 |
+| frozen DINOv2, plain, seed 42 | 59 77 88 88 91 92 93 89 91 92 92 |
+| frozen DINOv2, paired, seed 42 / seed 44 | 41 61 70 64 78 74 87 84 88 87 88 / 45 63 54 62 72 75 73 73 69 71 63 |
+| frozen DINOv3, paired, seed 42 | 42 72 72 81 90 85 91 89 91 86 91 |
+| v2's sub-goal fast level, expert sub-goals, seed 43 / seed 44 | 10 26 51 60 72 71 85 83 75 77 75 / 18 31 48 62 79 88 79 81 76 80 83 |
+
+(Paired DINOv2 seed 44 is the one curve of the table that ends below its plateau; its trained weights end at 72.
+v3's DINOv2 fast levels were evaluated at the final checkpoint only.)
+
+**New layouts.** Confirmed: demonstrations use seeds from 0 (8000 at most), validation layouts from 900,000,
+evaluation from 1,000,000 (`eval.py`); every closed-loop result on disk starts at 900,000 or above, except the
+rollouts recorded as training data (from 300,000 and 700,000). Closed-loop success on demonstration layouts was never
+measured; the one comparison is open loop ("First action chunk, open loop"): the first chunk heads for the named
+object in 35% of training layouts and 48% of unseen ones, 12.1 against 11.2 cm from the expert's. No memorised
+layouts. Choices made on validation layouts hold on evaluation ones (v3's DINOv2 fast level: `prune` 91 against 90%,
+`order` 90 against 94%, `ties` 98 against 95%, `sick` 93 against 86%).
+
+**Instructions: overfit where the words are learned from scratch, fixed by the frozen language model.** The
+end-to-end policy on named shoots (three seeds): training phrasings 53, 62, 67 against held-out 28, 36, 41, new words
+worst (7 to 11). Per checkpoint, over the three seeds, the gap opens from 3 points at checkpoint 1 (24 against 21%) to
+26 at checkpoint 11 (61 against 35%), and held-out success drops at the last checkpoint on all three seeds (41 over
+checkpoints 8 to 10, 35 at 11) while training phrasings stay at 61: a word table memorised, the one place where
+held-out success turns down while training holds. The stage-1 reasoner, a fine-tuned VLM, likewise: 153 against 78.
+v2: 179 against 160 (means of repeats), against 178 and 183 single runs with the task's own program in place of the
+written one, so the gap is the writer's (v2's writer test: 100 and 92 as downloaded, 100 and 100 with v3's adapters).
+v3's LoRA writer: 700 of 700 training tasks, 382 of 400 held-out frames, 64 of 100 held-out compositions (56 as
+downloaded: the adapters raised held-out, not lowered it); in closed loop v3's held-out frames match its training
+ones (`ties` 195 against 194, `sick` 175 against 172, `buds` 187 against 189) except `order` (245 against 276: the
+held-out pair frame, "before" never seen).
+
+**Visual: overfit to the look, which is the real problem.** From-scratch ViT: 87 plain, 3 lighting, 2 camera, 2
+bench. Frozen DINOv2 on plain data: 92, 53, 15, 0. On paired data (three seeds) the looks seen in training hold
+(lighting 74 to 81, camera 58 to 71, bench 36 to 46) but the held-out halves of the same situations lose 6 to 9
+(lighting), 13 to 18 (camera) and 13 to 19 (bench: 17 to 33); DINOv3 the same (bench 52 seen, 28 held out). The
+policy has learned the benches it was shown, not benches. v3 was trained on plain looks only, and its robustness is
+unmeasured.
+
+**Data.** More demonstrations of the same look did not help: pruning at 20M, 2000 against 4000 (79, 56, 78 against
+65, 76); the cut at 10M, 4000 against 16000 (16000 never switched). The budget did (10M 22 to 34, 20M 78 to 81, 40M
+80) and so did diversity: paired looks (lighting 3 to 80) and corrective demonstrations (the cut 8.4 to 6.7 mm). Not
+limited by the number of layouts; limited by what the demonstrations show.
+
+**Seeds and shortcuts.** The seed moves results more than any late-training change: paired DINOv2 88, 81, 63; the
+sub-goal fast level 42, 75, 83 on expert sub-goals; 611 against 574 of 650 for the two DINOv2 fast levels. The ties
+shortcut probe found none (sent to an untied shoot, the fine-tuned level cut the shoot named in 176 of 200 and the
+tied one in 2, as before the fine-tune, 180 and 2), and with its sub-goal swapped v2's fast level cut the swapped
+shoot in half the episodes: the fast levels follow the sub-goal, not a prior over the scene.
+
+**Answer.** Not in time (no checkpoint curve turns down; train as long as planned and take the final checkpoint), not
+over layouts, and not in v3's language. Yes over looks (unseen benches and camera poses), and in any instruction
+reader trained from scratch (the end-to-end policy, the fine-tuned VLM). The highest-yield fixes: more distinct
+benches and camera poses in the paired re-rendering (the held-out gap is 13 to 19 points even where the trained
+looks hold), and the paired looks for v3's fast level and eyes, which have only seen the plain look. A held-out loss
+(100 demonstrations from seeds above 1,000,000 as `val_dataset_manifest`) is cheap to add, but closed-loop success
+stays the measure.
+
 ## Throughput
 
 | Model | Machine A (RTX 4090) | Machine B (L40S) |
