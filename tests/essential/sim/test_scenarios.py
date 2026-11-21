@@ -906,3 +906,29 @@ def test_the_census_counts_each_shoot_once_per_attribute_and_view():
             assert sum(v["shoots"] for v in c["by_value"].values()) == shoots
             assert all(key in c for key in COUNTS)
     assert set(counted["bud"]["any"]["by_value"]) <= {"yes", "no"}
+
+
+# ------------------------------------------------------------------------------------------- the randomised bench
+def test_the_random_bench_changes_only_the_look_and_never_draws_the_greenhouse():
+    from sim.pickup.scenarios import BenchRandom
+
+    plain, env = _env("prune"), _env("prune", "bench_random")
+    try:
+        assert not any("greenhouse" in env.model.texture(i).name for i in range(env.model.ntex))
+        assert not any("backdrop" in env.model.geom(i).name for i in range(env.model.ngeom))  # no glass walls, frames
+        drawn = []
+        for seed in (3, 4, 5, 6):
+            obs_a, obs_b = plain.reset(seed=seed), env.reset(seed=seed)
+            assert np.array_equal(obs_a["state"], obs_b["state"])
+            for _ in range(5):  # the same commands give the same motion
+                act = plain.last_action.copy()
+                obs_a, *_ = plain.step(act)
+                obs_b, *_ = env.step(act)
+            assert np.array_equal(obs_a["state"], obs_b["state"])
+            assert not np.array_equal(obs_a["front"], obs_b["front"])
+            drawn.append(env.scenario_info["bench_random"]["surface"])
+        assert len(set(drawn)) > 1  # different surfaces for different seeds
+        assert len(BenchRandom.BENCH_KINDS) + len(BenchRandom.WALL_KINDS) >= 36  # several dozen textures
+    finally:
+        plain.close()
+        env.close()

@@ -62,6 +62,7 @@ CATALOGUE = {
     "B1": "lighting",
     "B2": "camera",
     "B3": "bench",
+    "B3R": "bench_random",
     "B4": "distractors",
     "B5": "wind",
     "B6": "bump",
@@ -1196,6 +1197,156 @@ class Bench(Scenario):
         return out
 
 
+# ------------------------------------------------------------------------------------- B3r randomised bench and wall
+TEX = 128  # pixels a side of each procedural texture
+
+
+def _noise(rng, size, cells):
+    """Smooth noise in 0..1: a cells x cells grid of random values, interpolated bilinearly to size x size."""
+    grid = rng.random((cells + 1, cells + 1))
+    x = np.linspace(0, cells, size, endpoint=False)
+    i, f = x.astype(int), x - x.astype(int)
+    rows = grid[i] * (1 - f)[:, None] + grid[i + 1] * f[:, None]
+    return rows[:, i] * (1 - f)[None] + rows[:, i + 1] * f[None]
+
+
+def _bench_texture(kind, rng):
+    """One procedural surface or wall texture: RGB uint8 [TEX, TEX, 3]."""
+    n = TEX
+    y, x = np.mgrid[0:n, 0:n] / n
+    base = rng.uniform(0.15, 0.9, 3)
+    fine = rng.random((n, n))
+    if kind == "wood":
+        base = rng.choice(
+            [(0.72, 0.55, 0.36), (0.55, 0.36, 0.2), (0.38, 0.24, 0.14), (0.6, 0.6, 0.55), (0.82, 0.72, 0.56)]
+        )
+        warp = 6 * _noise(rng, n, 4)
+        rings = 0.5 + 0.5 * np.sin(2 * np.pi * (rng.uniform(6, 18) * y + warp))
+        shade = 0.8 + 0.2 * rings[..., None] + 0.05 * fine[..., None]
+    elif kind == "painted":
+        shade = 0.95 + 0.05 * fine[..., None] - 0.25 * (_noise(rng, n, 24) > 0.93)[..., None]  # a few chips
+    elif kind == "metal":
+        base = np.full(3, rng.uniform(0.35, 0.8)) * rng.uniform(0.95, 1.05, 3)
+        streaks = np.repeat(rng.random((n, 1)), n, axis=1)  # brushed along x
+        shade = 0.85 + 0.15 * streaks[..., None] + 0.03 * fine[..., None]
+    elif kind == "cloth":
+        period = int(rng.integers(4, 12))
+        weave = ((np.arange(n)[:, None] // period + np.arange(n)[None] // period) % 2).astype(float)
+        shade = 0.8 + 0.15 * weave[..., None] + 0.08 * fine[..., None]
+    elif kind == "mat":  # a cutting or rubber mat: a grid of lines
+        period = int(rng.integers(8, 20))
+        lines = ((np.arange(n) % period) < 1)[:, None] | ((np.arange(n) % period) < 1)[None]
+        shade = 0.9 + 0.05 * fine[..., None] + 0.3 * lines[..., None]
+    elif kind == "soil":
+        blotches = _noise(rng, n, 8) > rng.uniform(0.5, 0.7)
+        shade = 0.9 + 0.08 * fine[..., None]
+        img = base * shade
+        img[blotches] = img[blotches] * 0.45 + np.array([0.18, 0.12, 0.07]) * 0.55
+        return (np.clip(img, 0, 1) * 255).astype(np.uint8)
+    elif kind == "brick":
+        h, w = int(rng.integers(8, 16)), int(rng.integers(16, 32))
+        row = np.arange(n)[:, None] // h
+        col = (np.arange(n)[None] + (row % 2) * (w // 2)) % w
+        mortar = ((np.arange(n)[:, None] % h) < 2) | (col < 2)
+        shade = 0.85 + 0.1 * _noise(rng, n, 16)[..., None]
+        img = base * shade
+        img[mortar] = rng.uniform(0.6, 0.85)
+        return (np.clip(img, 0, 1) * 255).astype(np.uint8)
+    elif kind == "shelves":  # shelf boards and rows of boxes and pots in random colours
+        img = np.ones((n, n, 3)) * base
+        board = n // int(rng.integers(3, 6))
+        for top in range(0, n, board):
+            img[top : top + 3] = base * 0.5
+            left = 0
+            while left < n:
+                w = int(rng.integers(6, 20))
+                hgt = int(rng.integers(board // 3, board - 4))
+                img[top + board - hgt : top + board, left : left + w] = rng.uniform(0.1, 0.95, 3)
+                left += w + int(rng.integers(1, 6))
+        return (np.clip(img, 0, 1) * 255).astype(np.uint8)
+    elif kind == "noise":
+        img = np.stack([_noise(rng, n, int(rng.integers(4, 32))) for _ in range(3)], -1)
+        return (np.clip(0.2 + 0.7 * img, 0, 1) * 255).astype(np.uint8)
+    else:  # solid
+        shade = np.ones((n, n, 1)) * (0.97 + 0.03 * fine[..., None])
+    return (np.clip(base * shade, 0, 1) * 255).astype(np.uint8)
+
+
+class BenchRandom(Scenario):
+    """B3r, a randomised bench for training: the table's top drawn with one of BENCH_KINDS' procedural surfaces (wood
+    grains, painted, brushed metal, cloth, a gridded mat, soil-stained, solid colours, noise), tinted and scaled per
+    episode, and in two thirds of the episodes plain walls behind the scene (solid, noise, brick, shelves) on one or
+    both sides. Many looks of a bench for a policy to learn that the bench does not matter. The held-out benches of B3
+    (bench/test: the greenhouse, alone or with either bench) are not among them: its glass walls, their frame and its
+    textures are never drawn here. Only what is seen changes; the table's height is not (the plant stands on it)."""
+
+    name, catalogue = "bench_random", "B3r"
+    modes = ("random",)
+    needs_plant = False
+    BENCH_KINDS = ("wood",) * 6 + ("painted",) * 4 + ("metal",) * 3 + ("cloth",) * 3 + ("mat",) * 2 + ("soil",) * 3
+    BENCH_KINDS += ("solid",) * 3 + ("noise",) * 2
+    WALL_KINDS = ("solid",) * 4 + ("noise",) * 2 + ("brick",) * 3 + ("shelves",) * 3
+    SEED = 20261120  # the textures are the same in every build
+
+    def build(self, spec):
+        rng = np.random.default_rng(self.SEED)
+        _add_mesh(spec, "sit_bench_top")
+        _add_mesh(spec, "sit_backdrop_glass")
+        for group, kinds in (("rbench", self.BENCH_KINDS), ("rwall", self.WALL_KINDS)):
+            for i, kind in enumerate(kinds):
+                img = _bench_texture(kind, rng)
+                t = spec.add_texture()
+                t.name, t.type = f"sit_{group}{i}", mujoco.mjtTexture.mjTEXTURE_2D
+                t.width, t.height, t.nchannel = TEX, TEX, 3
+                t.data = img.tobytes()
+                mat = spec.add_material()
+                mat.name = f"sit_{group}{i}"
+                mat.textures[mujoco.mjtTextureRole.mjTEXROLE_RGB] = f"sit_{group}{i}"
+        wb = spec.worldbody
+        g = _visual(wb, "sit_rbench", "sit_bench_top", (1, 1, 1, 1))
+        g.pos, g.material = list(TABLE_POS), "sit_rbench0"
+        for i, (pos, yaw) in enumerate(BACKDROPS):
+            g = _visual(wb, f"sit_rwall{i}", "sit_backdrop_glass", (1, 1, 1, 1))
+            g.pos, g.quat, g.material = list(pos), list(E._quat(E._rot("z", yaw))), "sit_rwall0"
+
+    def init(self, env):
+        m = env.model
+        self.table = m.geom("table_visual").id
+        self.bench = m.geom("sit_rbench").id
+        self.walls = [m.geom(f"sit_rwall{i}").id for i in range(len(BACKDROPS))]
+        self.bench_mats = [m.material(f"sit_rbench{i}").id for i in range(len(self.BENCH_KINDS))]
+        self.wall_mats = [m.material(f"sit_rwall{i}").id for i in range(len(self.WALL_KINDS))]
+        self.mat_rgba, self.mat_texrepeat = m.mat_rgba.copy(), m.mat_texrepeat.copy()
+        self.geom_matid = m.geom_matid.copy()
+
+    def restore(self, env):
+        m = env.model
+        _show(m, [self.table], True)
+        _show(m, [self.bench, *self.walls], False)
+        m.mat_rgba[:], m.mat_texrepeat[:], m.geom_matid[:] = self.mat_rgba, self.mat_texrepeat, self.geom_matid
+
+    def draw(self, env, rng, mode):
+        m = env.model
+        k = int(rng.integers(len(self.bench_mats)))
+        mat = self.bench_mats[k]
+        m.geom_matid[self.bench] = mat
+        tint = rng.uniform(0.8, 1.15, 3)
+        m.mat_rgba[mat, :3] = np.clip(tint, 0, 1.2)
+        m.mat_texrepeat[mat] = rng.uniform(0.5, 3.0, 2)
+        _show(m, [self.table], False)
+        _show(m, [self.bench], True)
+        out = {"surface": float(k), "tint": tint}
+        walls = int(rng.integers(3))  # none, one or both sides
+        shown = list(rng.permutation(len(self.walls))[:walls]) if walls else []
+        for w in shown:
+            j = int(rng.integers(len(self.wall_mats)))
+            m.geom_matid[self.walls[w]] = self.wall_mats[j]
+            m.mat_rgba[self.wall_mats[j], :3] = rng.uniform(0.7, 1.0) * rng.uniform(0.9, 1.1, 3)
+            out[f"wall{w}"] = float(j)
+        _show(m, [self.walls[w] for w in shown], True)
+        return out
+
+
 # ------------------------------------------------------------------------------------------------- B4 distractors
 DISTRACTORS = ("watering_can", "gloves", "trowel", "seed_packet", "pot_small")
 DISTRACTOR_RING = (0.12, 0.40)  # metres from the stand's axis: clear of its base (radius 0.11) and on the table
@@ -1340,6 +1491,7 @@ SCENARIOS = {
         Buds,
         BudsHeldout,
         Bench,
+        BenchRandom,
         Distractors,
     )
 }
