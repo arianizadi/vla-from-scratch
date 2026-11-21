@@ -31,6 +31,7 @@ rendered images; nothing here has touched a real camera.
 | [V3-7] | [Step 7: retraining on the fast level's own rollouts](lab-notebook.md#step-7-retraining-on-the-fast-levels-own-rollouts-the-fast-level-and-the-eyes-and-calibration) |
 | [V3-8] | [After step 7: the LoRA writer and the DINOv2 fast level](lab-notebook.md#after-step-7-the-writer-fine-tuned-with-lora-and-the-fast-level-on-a-frozen-dinov2-encoder) |
 | [CUT] | [The cut, diagnosed](lab-notebook.md#the-cut-diagnosed-where-the-fast-levels-8-mm-come-from) |
+| [DART8K] | [The cut: corrective demonstrations as most of the data, from the start](lab-notebook.md#the-cut-corrective-demonstrations-as-most-of-the-data-from-the-start-dart8k) |
 | [OPS] | [Throughput](lab-notebook.md#throughput), [Operations](lab-notebook.md#operations) (including the pipeline timings and disk), [Bugs](lab-notebook.md#bugs-found-and-fixed) |
 
 ## 1. What to train today
@@ -174,7 +175,7 @@ type `subgoal` (the sub-goal written by the expert's notes, "cut the middle shoo
   the sub-goal fast level [V3-8].
 - **The bench** is the weakest visual change: 36 to 52, and 17 to 33 on benches never seen [S8-rob].
 - **Paired data costs 7 to 14 in the training scene** [S8-rob].
-- **The cut**: 7.9 to 8.8 mm from the shoot's axis against the expert's 5.9 [V3-8].
+- **The cut**: 7.9 to 8.8 mm from the shoot's axis against the expert's 5.9 for fast levels on clean demonstrations [V3-8]; 6.2 to 7.0 with corrective (DART) demonstrations as 60% of a 20M run from the start [DART8K].
 - **Over-turning the plate**: halved by DINOv2 but still 7 to 37 lost episodes per grid [V3-8].
 - **A press that did nothing** goes unnoticed: the sticky button costs the frozen-encoder policies 24 to 42 points
   against their plain score [S8-rob].
@@ -244,7 +245,7 @@ level [V3-8].
   of 100 [V3-8].
 - **Held-out compositions**: 64 of 100 programs right (the design asked 75); rung 5 is not yet run in closed loop
   [V3-8].
-- **The cut** is where it was: median 8.4 mm over 3098 cuts [V3-8].
+- **The cut**: median 8.4 mm over 3098 cuts with the first sub-goal fast level [V3-8]; 6.7 mm with the `dart8k` fast level now adopted (1994 of 2600, within noise of 2016) [DART8K].
 - **`sick`** is the one situation where both DINOv2 seeds are below the ViT fast level (169 and 156 against 172) [V3-8].
 - **A tie read with 0.7 to 0.9 confidence is right in 68%**: a higher `p_min` for the tie is untried [V3-6].
 - **The eyes' errors come in runs** (a median of 13 to 20 looks), which three readings in a row do not filter; rollout
@@ -426,7 +427,9 @@ Rules (the ones we decide by):
 3. **Final checkpoint, averaged weights** is the number; the best of eleven is optimistic [S8].
 4. **Two seeds** before concluding that a change works or fails; three where the spread is the question [S2, S8-rob].
 5. **Keep a change only if it clearly improves what it was for and loses nothing elsewhere beyond the noise.** The
-   DART fine-tune moved the mean cut 0.4 to 0.6 mm closer and lost 26 of 2600 episodes: not adopted [CUT]. The cut
+   DART fine-tune moved the mean cut 0.4 to 0.6 mm closer and lost 26 of 2600 episodes: not adopted [CUT]; the same
+   corrective demonstrations as 60% of a 20M run from the start cut 0.9 to 2.0 mm closer on both seeds within the
+   noise elsewhere: adopted [DART8K]. Corrective data belongs in the run from the start, not in a fine-tune. The cut
    gate stays off unless the fast level cuts an unnamed shoot in more than 2 of 200 episodes [E13]. A look that costs
    the fast level more than 30 of 200 means a fine-tune; up to 15, none (P8) [E13, E13b]. All of a new slow level
    within 15 of the simulator's scene, or count its errors first (P5) [V3-6].
@@ -513,10 +516,13 @@ Each line is something we tried, with its number, so that nobody repeats it with
 
 ## 6. Open problems, with current numbers
 
-- **Cut precision.** Every fast level cuts 7.9 to 8.8 mm from the shoot's axis (8.4 over 3098 cuts of v3 whole); the
-  expert 5.8 to 5.9. Diagnosed as compounding error on the approach (lesson 13); DART demonstrations at 35% of a 3M
-  fine-tune correct a quarter of a height error. Next: DART as most of the data in a 20M run from the start; such
-  runs are trained and not yet in the notebook [CUT].
+- **Cut precision.** Fast levels on clean demonstrations cut 7.9 to 8.8 mm from the shoot's axis; the expert 5.8 to
+  5.9. Corrective (DART) demonstrations as 60% of each batch of a 20M run from the start bring it to 6.2 to 7.0 mm
+  (90th percentile 13.6-16.6 down to 10-11 mm) on both seeds, and remove about half of an injected 6 mm height error
+  before the cut (the old fast levels kept 93-96%): adopted as v3's fast level (seed 42) [DART8K]. Height is the
+  worst axis (55-62% of the squared miss before, now near the expert's own spread of 4.1 mm), and part of it is the
+  expert's: it shuts the jaws while its hand is still settling, so the next gain needs an expert that closes only once
+  settled [DART8K].
 - **Bench robustness.** The weakest visual change for the best policies: 36 to 52 on benches seen in training, 17 to
   33 on benches never seen [S8-rob]. Runs with more camera and bench copies and with the distractors look drawn are
   under way, not yet in the notebook.
