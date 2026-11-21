@@ -214,4 +214,5 @@ against a real task, property by property, and lists the experiments now startin
 | [lab-notebook.md](lab-notebook.md) | Every number measured in this repository, with the machine, data and budget it was measured on, and the bugs found. Chapters cite it; a number that is not there was not measured here. |
 | [notes.md](notes.md) | Field notes: what worked, what did not, what we got wrong, and what to do about it. Chapters cite its entries by title. |
 | [roadmap.md](roadmap.md) | Where the repository is going: the phases, the planned chapters, and the ledger of framework fixes. |
+| [training-pipeline.md](training-pipeline.md) | The training recipe as measured: the lessons, the architectures (the fast policy on a frozen encoder, v2, v3) with their training recipes and failure modes, the pipeline stage by stage with commands, costs and decision rules, what did not work, and what is specific to this arm. |
 | [STYLE.md](STYLE.md) | How the chapters are written: reader, voice, the three kinds of statement, chapter structure and the list of interactive figures. |

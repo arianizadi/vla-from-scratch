@@ -1,6 +1,8 @@
 # Roadmap
 
-Where this repo is going, and what is already measured. Findings are in [notes.md](notes.md).
+Where this repo is going, and what is already measured. Findings are in [notes.md](notes.md). The training recipe as
+it stands, with the architectures, their recipes and the rules we decide by, is in
+[training-pipeline.md](training-pipeline.md).
 
 ## Goal
 

@@ -2430,6 +2430,21 @@ Policy inference per chunk: 20-65 ms for the 36M policy (`dp_vit`), about 190 ms
 - `uv pip install -e .` after `uv sync` replaced the locked `draccus` 0.11.5 with 0.11.6.
 - Collecting 1500 demonstrations took 70 s with 48 simulator processes; 4000 with recoveries took
   272 s with 40.
+- Pipeline timings and disk on machine B for the robustness runs of step 8, from the runs' launch logs
+  (`tutorial/training-pipeline.md` uses them):
+  - the 2000 leaf-fixed `prune` demonstrations (random starts, tail of 10) preprocessed again from their collection
+    into shards with the frame 1 s back (`preprocess_1s`): 5 minutes, 57 GB of shards;
+  - their paired re-rendering (`rerender.py --copies 2 --include_source`, 6000 episodes) and its 1 s shards: 2 h 32
+    min, 172 GB of shards. Two later re-renders of the same source side by side drew 4000 copies each in 28 minutes,
+    and had their shards 66 and 76 minutes after the start (136 and 180 GB);
+  - `reason_mix_8k_rs_tail10` takes 106 GB of shards;
+  - a 20M-sample run of the 1 s memory policy on a frozen encoder at 224 pixels, with every checkpoint evaluated on
+    the same GPU as it appeared: 18.5 hours for each of the three DINOv2 runs on paired demonstrations, 15.9 for
+    DINOv3 on them; its report card (the 11 situations, 100 episodes each, final averaged weights) on one or two GPUs
+    41 to 52 minutes;
+  - one checkpoint of such a run, with its averaged weights and optimiser state, takes about 340 MB (a run at its
+    eighth of eleven: 2.6 GB); the final checkpoint and its averaged weights alone 253 MB, which is all the cleanup
+    after the report card keeps.
 - Two evaluations started on the same port both talked to whichever policy server had bound it
   first, and the second one filed the other run's results under its own name: about 40 evaluations here.
   They were found by comparing the checkpoint path each result recorded with its directory, deleted
