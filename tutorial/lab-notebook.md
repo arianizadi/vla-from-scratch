@@ -1204,6 +1204,8 @@ DINOv2-B (registers) patch tokens at 224 pixels, trained on the paired demonstra
 |---|---|---|---|---|---|---|---|---|
 | Frozen DINOv2, paired demonstrations, seed 42 | 88 | 80 (74) | 71 (58) | 44 (30) | 85 (78) | 84 | 78 | 51 |
 | Frozen DINOv2, paired demonstrations, seed 43 | 81 | 81 (72) | 62 (44) | 46 (33) | 65 (71) | 74 | 71 | 43 |
+| Frozen DINOv2, paired demonstrations, seed 44 | 63 | 74 (65) | 58 (42) | 36 (17) | 62 (64) | 73 | 57 | 39 |
+| Frozen DINOv3-B/16, paired demonstrations, seed 42 (`dp_dinov3_lang_frames_1s_prune2k_leaffix_paired_20m`) | 91 | 78 (72) | 67 (58) | 52 (28) | 86 (85) | 91 | 83 | 50 |
 
 Against the same encoder on plain demonstrations (92 and 95 plain; lighting 53 and 46, camera 15 and 10, bench 0 and 1)
 the paired demonstrations cost 7-14 in the training scene and lift every visual change: lighting to 80-81 (72-74 under
@@ -1211,6 +1213,13 @@ lights never seen), a moved camera to 62-71 (44-58 for the larger held-out moves
 benches never seen). It holds more than the Qwen3-VL tower on the same data (lighting 60, camera 51, bench 37). This is
 the first policy that keeps most of its success under every visual change tested, against 0-4 for the from-scratch
 policy.
+
+A third DINOv2 seed is weaker everywhere (63 in the training scene), so the spread between seeds is wide; frozen DINOv3
+on the same paired demonstrations keeps the training scene (91) and holds as well under the changes (lighting 78,
+camera 67, bench 52). On plain demonstrations neither twice the resolution (DINOv2 at 448 pixels, 2 x 2 pooled: 92 plain,
+lighting 52 (74), camera 9 (7), bench 0 (0)) nor mild augmentation (shift up to 4 pixels, brightness, contrast and
+white balance at half strength, no overlays: 84 plain, lighting 54 (76), camera 26 (13), bench 2 (1)) reaches the camera
+or the bench: the looks have to be in the demonstrations.
 
 **Aim drills.** Seven motor drills on the bare table (`tutorial/aim-range.md`: touch, touch along a pin, stop on,
 follow, flick between, press, pinch; the expert solves each at 499-500/500), as practice for the arm. Co-trained with
