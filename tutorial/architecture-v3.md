@@ -953,8 +953,16 @@ demonstrations never correct the line. DART-style demonstrations, quiet near the
 mean cut 0.6 mm nearer and the 90th percentile 1.2 to 1.8 mm, the median 8.0 against 8.4 on v3 whole, and 1990 of
 2600 against 2016. Not adopted; the DINOv2 seed-43 fast level stays.
 
+**The cut, with corrective demonstrations from the start** (`dart8k`: 8000 DART demonstrations, 0.6 of each batch,
+20M samples, seeds 43 and 42). Half of an injected 6 mm height error is now corrected (48 and 49% kept against 93 and
+96%); the cut's median falls to 6.2 to 7.0 mm (handed over, validation, v3 whole) against 7.4 to 8.6, the 90th
+percentile to 10 to 11 mm against 13.6 to 16.6; validation 612 and 609 of 650 (611, 574), v3 whole 1994 and 1958 of 2600
+(2016). Height (z) was and stays the largest error at the cut (spread 6.3 to 8.0 mm for the old fast levels, 4.9 and 5.0
+now, the expert's 4.1; sideways 2.5 to 3.3, now 1.4 to 1.6). **`dart8k` seed 42 is v3's fast level**
+(`dp_dinov2_lang_reactive_subgoal_dart8k_20m_seed42`), chosen on validation layouts.
+
 **Next**: rung 5 (step 9) on the adapted writer, whose held-out compositions are its weakest (64 of 100); then steps 8
-to 12. For the cut: demonstrations that correct the line as most of the data, from the start (20M samples).
+to 12. For the cut, the expert's own 5.8 mm is now the bound: an expert that closes only once its hand has settled.
 
 
 ## Risks

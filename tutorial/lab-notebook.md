@@ -2391,7 +2391,8 @@ v3 whole, cell by cell for the DART fine-tune (against DINOv2 seed 43): `prune` 
 - **Inference settings and resolution are ruled out, and so is the encoder**: what the cut needs is a policy that
   corrects its line from what the wrist camera shows, which these demonstrations teach weakly at 35% of the batches for
   3M samples. A stronger dose (DART demonstrations as most of the data, noise that reaches nearer the cut, a 20M run
-  from the start) is the next step; a scripted correction from the simulator's truth would only hide it.
+  from the start) is the next step (run next: `dart8k`, below); a scripted correction from the simulator's truth would
+  only hide it.
 
 Runs: 29 diagnosis runs (`cut_diag.py`: 3840 episodes; `cut_probe.py`: 300), one DART collection (3000 kept of 4758,
 11 minutes on 48 processes), two fine-tunes (3M samples each, 84 and 79 minutes beside the rest), two validation
@@ -2399,6 +2400,79 @@ grids (1300 episodes), v3 whole over the DART fine-tune (2600) and `reason_mix` 
 `results/pickup/v3fix/fast/` and `results/pickup/v3fix/writer_loop/lora_dart43/`; with the v2 reproduction below
 (10 runs, 1800 episodes), GPUs 6 and 7 of an L40S machine were held for 3.4 hours of wall time each (6.8
 GPU-hours).
+
+### The cut: corrective demonstrations as most of the data, from the start (`dart8k`)
+
+The next step above, run. 5000 more DART demonstrations by the same recipe (`reason_mix` from random starts, seeds from
+420,000, 7819 attempted, 1,463,017 frames: `reason_mix_5k_rs_tail10_dart02q3`), so 8000 in all (2.33M frames). The
+DINOv2 sub-goal fast level trained from the start for 20M samples at a peak learning rate of 5e-4, as
+`dp_dinov2_lang_reactive_subgoal_reason8k_ties_20m`, on `reason_mix_8k_rs_tail10` 0.25, `ties_1500_rs_tail10` 0.15 and
+the two DART sets 0.225 and 0.375 (corrective demonstrations 0.6 of each batch; the old normalisation), seeds 43 and 42
+(`dp_dinov2_lang_reactive_subgoal_dart8k_20m_seed43`, `_seed42`, final averaged weights; 8 hours 9 minutes each, side by
+side). Measured as the fine-tunes were, against the DINOv2 fast levels of the same seeds:
+
+| | DINOv2 seed 43 | **`dart8k` seed 43** | DINOv2 seed 42 | **`dart8k` seed 42** |
+|---|---|---|---|---|
+| handed over as soon as the shoot is chosen (150): cut, median (mean, 90th pct) | 8.1, 7.4 (8.3, 7.5; 14.5, 13.6) mm | **6.8** (6.6, 10.0) | 7.9 (8.9, 15.5) | **6.2** (6.5, 10.8) |
+| a 6 mm height error handed over at 10 cm: kept at the cut | 93% | **48%** | 96% | **49%** |
+| validation layouts, the simulator's scene, of 650 | 611 | 609 | 574 | **612** |
+| cut on validation (878 / 881 / 837 / 882 cuts): median (mean, 90th pct) | 7.9 (8.4, 13.8) mm | **7.0** (7.1, 10.8) | 8.6 (9.3, 16.6) | **6.6** (6.7, 10.7) |
+| v3 whole (LoRA writer, rollout eyes, written programs; 14 cells), of 2600 | 2016 | 1958 | | 1994 |
+| ... cut over all its cuts: median (mean, 90th pct) | 8.4 (8.7, 14.2) mm | **7.0** (7.2, 10.9) | | **6.7** (6.9, 10.9) |
+| v2's `reason_mix` (v2's slow level, clear starts): the simulator's scene / the rollout eyes | 180 / 193 | 186 / 193 | 174 / 180 | 188 / 189 |
+
+v3 whole cell by cell, `dart8k` seed 42 (seed 43; DINOv2 seed 43): `prune` 183 (179; 186), `order` 268 of 300 (266;
+276), `nothing_to_do` 198 (197; 197), `ties` 190 (186; 194), `sick` 172 (165; 172), `buds` 187 (184; 189); held-out
+frames `order` 248 (237; 245), `ties` 186 (188; 195), `sick` 178 (167; 175), `buds` 184 (189; 187).
+
+**Height against sideways and depth** (the user's question: "does it move badly in z?"). The jaws close vertically
+(within about 1 degree), so the offset of the gripper's centre from the shoot's axis splits into height (along the
+closing jaws), sideways (horizontal, across the jaws) and depth (horizontal, the way the hand points). Standard
+deviations, handed over as soon as the shoot is chosen (150 episodes each; the expert alone, 150):
+
+| | at 10 cm: height / sideways | at 6 cm | at 2 cm | **at the cut: height / sideways / depth** | height's share of the squared distance |
+|---|---|---|---|---|---|
+| the expert | 4.2 / 0.8 mm | 4.2 / 0.7 | 4.2 / 0.7 | **4.1 / 0.8 / 3.6** | 48% |
+| DINOv2 seed 43 | 7.7 / 8.5 | 6.8 / 5.4 | 6.4 / 2.8 | **6.3 / 2.5 / 4.4** | 55% |
+| DINOv2 seed 42 | 9.7 / 9.1 | 9.4 / 6.2 | 6.9 / 3.1 | **8.0 / 3.3 / 4.7** | 62% |
+| `dart8k` seed 43 | 7.8 / 7.7 | 5.3 / 4.2 | 5.0 / 1.7 | **4.9 / 1.6 / 4.2** | 47% |
+| `dart8k` seed 42 | 6.9 / 7.8 | 5.5 / 4.3 | 5.2 / 1.7 | **5.0 / 1.4 / 3.9** | 51% |
+
+- **Yes, height (z) is the worst axis, and it is the one the old fast levels never corrected.** At the cut their height
+  spread is 6.3 and 8.0 mm, against 2.5 and 3.3 sideways and 4.4 and 4.7 in depth; height is 55 to 62% of the squared
+  distance. On the way in the sideways error is as large as the height error at 10 cm (8.5 and 9.1 mm) but is taken
+  out on the way (to 2.5 and 3.3 at the cut); the height error is not (7.7 to 6.3, 9.7 to 8.0), and an injected 6 mm
+  height error is kept at 93 to 96%.
+- **Part of the height error is the expert's**: it, too, cuts about 5 mm off the axis in height (the median of the
+  absolute height offset 5.0 mm, standard deviation 4.1, against 0.8 sideways), its hand still settling along the
+  closing jaws when they shut; the fast levels inherit that bias (median of the absolute height offset 4.2 to 5.5 mm in
+  every run). What the old fast levels add on top is spread: 6.3 to 8.0 mm against 4.1.
+- **The `dart8k` fast levels correct height on the way in**: half of an injected 6 mm error is gone at the cut (48 and
+  49% kept), the height spread falls from 6.3 and 8.0 to 4.9 and 5.0 mm (the expert's 4.1), sideways from 2.5 and 3.3 to
+  1.6 and 1.4 (the expert's 0.8). Height stays the largest component, as it is for the expert.
+
+- **The cut is clearly closer, on both seeds and every measure**: the median 6.2 and 6.8 mm against 7.4 to 8.1 when
+  handed over, 6.6 and 7.0 against 7.9 and 8.6 on validation layouts, 6.7 and 7.0 against 8.4 over v3 whole's 3000
+  cuts; the 90th percentile 10 to 11 mm against 13.6 to 16.6. That is 0.9 to 2.0 mm nearer, about half of what lay
+  between the old fast levels and the expert (5.8).
+- **Success**: on validation layouts 612 and 609 of 650 against 611 and 574; on v3 whole 1994 and 1958 of 2600
+  against 2016 (seed 42 within noise; seed 43 58 fewer, mostly `ties` and held-out frames, with 45 episodes lost turning
+  past a full turn against 34); `reason_mix` 188 and 186 against 180 and 174 on the scene, 189 and 193 against 180 and 193 on the eyes.
+- **Kept** (the rule: the median clearly drops): **`dart8k` seed 42 is v3's fast level from here on**, chosen on
+  validation layouts (612 against 609); the DINOv2 seed-43 fast level stays the baseline the tables above cite.
+- What is left of the cut: the expert's own 5.8 mm (its hand settling in height when the jaws shut) bounds what its
+  demonstrations can teach; the last 1 mm against it is the spread in height. A closer cut now needs a better expert
+  (close only once the hand has settled), not a better fast level.
+
+Runs: one DART collection (5000 kept of 7819, 18 minutes on 48 processes), two fast levels (20M samples, 8 hours 9
+minutes each, side by side), 6 diagnosis runs (900 episodes), 2 validation grids (1300 episodes), v3 whole over each
+(5200) and `reason_mix` (800, the two on the eyes run again after running out of GPU memory beside v3 whole), in
+`results/pickup/cutdiag/dart20m/`, `results/pickup/v3fix/fast/` and `results/pickup/v3fix/writer_loop/lora_dart8k_s4*/`.
+GPUs 6 and 7 of an L40S machine were held from the collection to the last evaluation, 9.8 hours of wall time each,
+and 0.4 more for the rerun (20.4 GPU-hours). Afterwards deleted: the weights of the fast levels not kept from this
+phase (the control and DART fine-tunes, `dart8k` seed 43, the fine-tunes' init file) and both DART datasets (their
+shards, 121 GB; `collect.py --action_noise 0.02 --action_noise_quiet_cm 3 --seed 400000 / 420000` rebuilds them). Kept:
+`dart8k` seed 42 and the DINOv2 seed-43 and seed-42 fast levels the tables cite.
 
 ## Throughput
 
